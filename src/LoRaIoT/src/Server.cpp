@@ -8,9 +8,9 @@
 
 #include "../../service/src/RestService.h"
 #include "../../service/src/WebSocketService.h"
-#include "ESPInfo.h"
-#include "LogBuffer.h"
-#include "StatusLed.h"
+#include "../../diagnostics/src/ESPInfo.h"
+#include "../../util/src/LogBuffer.h"
+#include "../../util/src/StatusLed.h"
 #include "Tier.h"
 #include "index_html.h"
 #include "openapi_json.h"

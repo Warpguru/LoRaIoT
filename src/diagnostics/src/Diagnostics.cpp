@@ -4,8 +4,8 @@
 #include <atomic>
 #include <HardwareSerial.h>
 
-#include "../../LoRaIoT/src/LogBuffer.h"
-#include "../../LoRaIoT/src/StatusLed.h"
+#include "../../util/src/LogBuffer.h"
+#include "../../util/src/StatusLed.h"
 
 /**
  * Diagnostics.cpp - E220 wiring and register read/write check.

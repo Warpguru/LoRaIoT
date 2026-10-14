@@ -3,8 +3,8 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-#include "../../LoRaIoT/src/LogBuffer.h"
-#include "../../LoRaIoT/src/TaskUtils.h"
+#include "../../util/src/LogBuffer.h"
+#include "../../util/src/TaskUtils.h"
 
 /**
  * WebSocketService.cpp - WebSocket broadcast task + command queue.

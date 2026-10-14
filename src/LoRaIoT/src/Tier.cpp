@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-#include "LogBuffer.h"
+#include "../../util/src/LogBuffer.h"
 
 /**
  * Tier.cpp - Gateway tier (LOCAL / REMOTE) definition and NVS persistence.

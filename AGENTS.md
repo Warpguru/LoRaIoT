@@ -38,23 +38,31 @@ LoRaIoT.ino                    Arduino IDE entry point (stub - delegates to Appl
 LoRaIoT.cpp                    PlatformIO entry point (#ifndef ARDUINO guard)
 platformio.ini
 src/
-  LoRaIoT/src/
-    Application.h/.cpp         applicationSetup() / applicationLoop() - wiring
+  util/src/                    Platform layer - zero project-specific knowledge
+    LogBuffer.h/.cpp           Levelled ring-buffer logger (Log_* macros, NVS persist)
+    StatusLed.h/.cpp           LED state machine BOOTING/NO_DEVICE/READY/FAULT
+    TaskUtils.h                TASK_CREATE macro (single/dual-core portability)
+  diagnostics/src/
+    Diagnostics.h/.cpp         E220 6-step wiring check; diagnosticsLoop()/diagnosticsRequest()
+    ESPInfo.h                  GET /status hardware diagnostics helper
+  LoRaIoT/src/                 Application wiring + LoRaIoT domain model
+    Application.h/.cpp         applicationSetup() / applicationLoop()
     Server.h/.cpp              WiFiManager, AsyncWebServer, route registration
-    LogBuffer.h/.cpp           Levelled ring-buffer logger (copied verbatim from SerialController)
-    StatusLed.h/.cpp           LED state machine BOOTING/NO_DEVICE/READY/FAULT (copied verbatim)
-    ESPInfo.h                  GET /status hardware diagnostics helper (copied verbatim)
-    index_html.h               PROGMEM macro for browser UI HTML (placeholder - replace with real UI)
+    Tier.h/.cpp                Gateway tier (LOCAL/REMOTE); GatewayClass singleton
+    openapi_json.h             OpenAPI 3.0 spec in PROGMEM - source of truth for API
+    index_html.h               PROGMEM macro for browser UI HTML (placeholder)
   service/src/
     RestService.h/.cpp         /api/* HTTP handlers - add LoRaIoT endpoints here
     WebSocketService.h/.cpp    1 s broadcast task + command queue
 ```
 
-`LogBuffer`, `StatusLed`, and `ESPInfo.h` are **identical copies** from `ESP/SerialController/` - update both if the shared components need changes.
+Dependency direction (one-way only): `service` and `LoRaIoT` → `diagnostics` → `util`.
+
+`LogBuffer`, `StatusLed`, and `ESPInfo.h` originate from `ESP/SerialController/` - update both if the shared components need changes.
 
 ## Single-core / Dual-core Portability
 
-**`TASK_CREATE` macro** (in `src/LoRaIoT/src/TaskUtils.h`) - use this instead of `xTaskCreate` or `xTaskCreatePinnedToCore` everywhere:
+**`TASK_CREATE` macro** (in `src/util/src/TaskUtils.h`) - use this instead of `xTaskCreate` or `xTaskCreatePinnedToCore` everywhere:
 
 ```cpp
 TASK_CREATE(taskFunc, "TaskName", stackSize, param, priority, &handle);

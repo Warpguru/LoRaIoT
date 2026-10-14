@@ -2,7 +2,7 @@
 
 #include <ArduinoJson.h>
 
-#include "../../LoRaIoT/src/LogBuffer.h"
+#include "../../util/src/LogBuffer.h"
 #include "../../LoRaIoT/src/Tier.h"
 #include "../../diagnostics/src/Diagnostics.h"
 

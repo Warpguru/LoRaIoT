@@ -2,9 +2,9 @@
 
 #include <Arduino.h>
 
-#include "LogBuffer.h"
+#include "../../util/src/LogBuffer.h"
 #include "Server.h"
-#include "StatusLed.h"
+#include "../../util/src/StatusLed.h"
 #include "Tier.h"
 #include "../../diagnostics/src/Diagnostics.h"
 
