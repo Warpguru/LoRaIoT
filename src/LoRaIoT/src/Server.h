@@ -30,6 +30,11 @@ static constexpr int HTTP_CODE_OK                  = 200;
 static constexpr int HTTP_CODE_BAD_REQUEST         = 400;
 static constexpr int HTTP_CODE_SERVICE_UNAVAILABLE = 503;
 
+// ---- Global objects (defined in Server.cpp) ---------------------------------
+
+/** WebSocket broadcast service. Constructed in Server.cpp, started by setupServer(). */
+extern WebSocketService wsService;
+
 // ---- Public functions -------------------------------------------------------
 
 /**

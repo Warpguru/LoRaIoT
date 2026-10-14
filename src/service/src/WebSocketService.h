@@ -14,12 +14,12 @@
  */
 class WebSocketService {
  public:
-  explicit WebSocketService(AsyncWebSocket* ws);
+  explicit WebSocketService(AsyncWebSocket* webSocket);
 
-  /** Starts the FreeRTOS broadcast task on Core 1. Call once from setupServer(). */
+  /** Starts the FreeRTOS broadcast task. On dual-core builds pins to Core 1. Call once from setupServer(). */
   void begin();
 
  private:
-  AsyncWebSocket* _ws;
+  AsyncWebSocket* ws;
   static void broadcastTask(void* param);
 };

@@ -1,0 +1,105 @@
+#pragma once
+
+#include <Arduino.h>
+
+/**
+ * Tier.h - Gateway tier selection (LOCAL vs REMOTE).
+ *
+ * "Tier" describes the role of this LoRaIoT instance in the two-node system:
+ *
+ *   LOCAL  - Connected to the local LAN / Home Assistant. Receives LoRa frames
+ *            from the REMOTE instance and forwards sensor data upstream.
+ *
+ *   REMOTE - Hosts the WiFi SoftAP that IoT sensors connect to. Forwards their
+ *            data over the LoRa link to the LOCAL instance.
+ *
+ * The active tier is:
+ *   - Selected once in the WiFiManager captive-portal form.
+ *   - Persisted in NVS (namespace TIER_NVS_NAMESPACE, key TIER_NVS_KEY).
+ *   - Loaded at boot via Gateway.begin() before setupServer().
+ *   - Readable at runtime via Gateway.getTier() / GET /api/tier.
+ *
+ * Design mirrors LogLevel / LogBufferClass so both follow the same pattern:
+ *   - Tier      = the immutable value type (like LogLevel)
+ *   - GatewayClass = the singleton that owns NVS persistence (like LogBufferClass)
+ *
+ * NVS namespace and key are separate constants so they can be referenced from
+ * any translation unit without including the whole class.
+ */
+
+// NVS namespace and key used to persist the tier across reboots.
+static constexpr const char* TIER_NVS_NAMESPACE = "sc_prefs";   // shared with LogBuffer
+static constexpr const char* TIER_NVS_KEY        = "tier";
+
+/**
+ * Tier - immutable value type representing one gateway role.
+ *
+ * Only the two static constants (LOCAL, REMOTE) may exist - the constructor
+ * is private. String literals live in flash; no heap allocation.
+ */
+class Tier {
+ public:
+  /** Human-readable name used in NVS, REST API responses, and portal HTML. */
+  const char* name() const { return tierName; }
+
+  /** The two valid tiers. */
+  static const Tier LOCAL;   ///< Handles data received from REMOTE; connects to local LAN.
+  static const Tier REMOTE;  ///< Hosts SoftAP for IoT sensors; forwards data over LoRa.
+
+  /**
+   * All tiers in definition order as a plain C array.
+   * Usage:
+   *   size_t count;
+   *   const Tier* const* tiers = Tier::values(count);
+   */
+  static const Tier* const* values(size_t& count);
+
+ private:
+  constexpr Tier(const char* name) : tierName(name) {}
+  const char* tierName;
+};
+
+/**
+ * GatewayClass - singleton that owns the active Tier and its NVS persistence.
+ *
+ * Mirrors LogBufferClass. The global singleton is `Gateway` (defined in Tier.cpp).
+ *
+ * Call begin() once from applicationSetup() before setupServer(). It loads
+ * the persisted tier from NVS; if none is found the default (UNSET) is used
+ * until the user selects one in the captive portal.
+ */
+class GatewayClass {
+ public:
+  /**
+   * Load the persisted tier from NVS. Must be called once before setupServer()
+   * so the portal pre-selects the previously chosen tier.
+   */
+  void begin();
+
+  /** Persist the current tier to NVS. Called after every portal save. */
+  void saveTier() const;
+
+  /** Return the currently active tier. */
+  const Tier& getTier() const;
+
+  /** Set the active tier. */
+  void setTier(const Tier& tier);
+
+  /**
+   * Set the tier from a name string ("LOCAL" or "REMOTE").
+   * Returns false and leaves the tier unchanged if the name is unrecognised.
+   */
+  bool setTierFromString(const char* name);
+
+  /** Canonical name of the active tier, e.g. "LOCAL". */
+  const char* getTierName() const;
+
+  /** True when a valid tier has been selected (not the boot default). */
+  bool isConfigured() const;
+
+ private:
+  const Tier* activeTier = nullptr;  ///< nullptr = not yet set
+};
+
+/** Global singleton. Include Tier.h and use Gateway.getTier() anywhere. */
+extern GatewayClass Gateway;

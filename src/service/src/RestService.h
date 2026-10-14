@@ -10,12 +10,14 @@
  *
  * Add LoRaIoT-specific REST endpoints here (e.g. GET /api/state,
  * GET /api/lora/status, PUT /api/lora/config, etc.).
+ *
+ * API documentation: doc/RestApi.md (OpenAPI specification to follow).
  */
 class RestService {
  public:
-  explicit RestService(AsyncWebServer* server);
+  explicit RestService(AsyncWebServer* webServer);
   void registerRoutes();
 
  private:
-  AsyncWebServer* _server;
+  AsyncWebServer* server;
 };

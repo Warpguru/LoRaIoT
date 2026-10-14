@@ -8,11 +8,10 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Project State
 
-This is an ESP32 embedded firmware project. The Maven/Eclipse Java project shell (`pom.xml`, `.classpath`, `src/main/java/`) is a scaffolding artifact - there is **no Java source code**. All firmware lives under `ESP/`.
+This is an ESP32 embedded firmware project. The Maven/Eclipse Java project shell (`pom.xml`, `.classpath`, `src/main/java/`) is a scaffolding artifact - there is **no Java source code**.
 
-Two firmware projects exist under `ESP/`:
-- `ESP/SerialController/` - **reference implementation** (complete, working). Reuse its patterns.
-- `ESP/LoRaIoT/` - **this project** (scaffold in place, LoRa logic to be implemented).
+- **`ESP/`** is a **symlink to a read-only reference project** - never write to anything under `ESP/`. Use it only to copy proven patterns (FreeRTOS task wiring, logging, NVS persistence).
+- All firmware for this project lives at the repository root (`LoRaIoT.ino`, `LoRaIoT.cpp`, `platformio.ini`, `src/`).
 
 ## Stack
 
@@ -20,7 +19,7 @@ Two firmware projects exist under `ESP/`:
 - **Firmware framework:** Arduino (C++), FreeRTOS tasks on ESP32
 - **Build toolchain:** PlatformIO or Arduino IDE (both supported - identical source, different entry-point stubs)
 
-## Libraries (declared in `ESP/LoRaIoT/platformio.ini`)
+## Libraries (declared in `platformio.ini`)
 
 | Library | Author | Version | Purpose |
 |---|---|---|---|
@@ -32,7 +31,7 @@ Two firmware projects exist under `ESP/`:
 PlatformIO: `lib_deps` in `platformio.ini` - downloaded automatically.
 Arduino IDE: Sketch -> Include Library -> Manage Libraries, install all four.
 
-## Source Layout (`ESP/LoRaIoT/`)
+## Source Layout
 
 ```
 LoRaIoT.ino                    Arduino IDE entry point (stub - delegates to Application)
@@ -53,10 +52,27 @@ src/
 
 `LogBuffer`, `StatusLed`, and `ESPInfo.h` are **identical copies** from `ESP/SerialController/` - update both if the shared components need changes.
 
+## Single-core / Dual-core Portability
+
+**`TASK_CREATE` macro** (in `src/LoRaIoT/src/TaskUtils.h`) - use this instead of `xTaskCreate` or `xTaskCreatePinnedToCore` everywhere:
+
+```cpp
+TASK_CREATE(taskFunc, "TaskName", stackSize, param, priority, &handle);
+```
+
+- When `LORAIOT_DUAL_CORE` is defined **and** `CONFIG_FREERTOS_UNICORE` is **not** defined: pins the task to Core 1.
+- Otherwise (all single-core targets, or dual-core without the flag): calls `xTaskCreate` with no affinity.
+- `CONFIG_FREERTOS_UNICORE` is set automatically by ESP-IDF for **every** single-core chip (C3, C6, S2, H2) - no per-board `#ifdef` needed.
+- Calling `xTaskCreatePinnedToCore(..., 1)` on a single-core build causes an **immediate kernel panic** - always use `TASK_CREATE`.
+
+`LORAIOT_DUAL_CORE` is the single toggle:
+- Arduino IDE: uncomment `#define LORAIOT_DUAL_CORE` in `LoRaIoT.ino` / `LoRaIoT.cpp`.
+- PlatformIO: set automatically via `build_flags = -D LORAIOT_DUAL_CORE` on `[env:esp32dev]` and `[env:esp32s3]`. Single-core envs (`esp32c3`, `esp32c6`, `esp32s2`, `esp32h2`) deliberately omit this flag.
+
 ## Threading Model (must be followed exactly)
 
 ```
-Core 0                                   Core 1
+Core 0  (dual-core only)                 Core 1  (or the only core on single-core builds)
 ─────────────────────────────────────    ─────────────────────────────────────
 WiFi / lwIP stack (system)               Arduino main task: setup() -> loop()
 ESPAsyncWebServer request callbacks        applicationSetup() wiring
@@ -66,8 +82,8 @@ loraTask (priority 2)                      applicationLoop() - WS command drain
 StatusLed ledTask (priority 1, tskNO_AFFINITY)
 ```
 
-- **ESPAsyncWebServer callbacks run on Core 0** alongside the WiFi stack - never do Serial2/LoRa I/O directly inside an HTTP or WebSocket handler.
-- **Serial2 (UART2) must have a single owner task** - use a FreeRTOS request/response queue (same pattern as `ModbusTransport` in `ESP/SerialController/src/modbus/`) so HTTP/WS handlers post requests and block for results.
+- **ESPAsyncWebServer callbacks run on Core 0** (dual-core) alongside the WiFi stack - never do Serial2/LoRa I/O directly inside an HTTP or WebSocket handler.
+- **Serial2 (UART2) must have a single owner task** - use a FreeRTOS request/response queue so HTTP/WS handlers post requests and block for results. See `ESP/SerialController/` for the queue/task wiring pattern (ignore protocol details - only the concurrency structure applies).
 - **Shared state must be protected by a FreeRTOS mutex** - `volatile` alone is not sufficient on dual-core ESP32. See `ESP/README.md` §"Java volatile vs FreeRTOS Mutex".
 
 ## WebServer / REST API Conventions
@@ -77,6 +93,8 @@ StatusLed ledTask (priority 1, tskNO_AFFINITY)
 - **PUT handler with body:** signature is `(AsyncWebServerRequest*, uint8_t* data, size_t len, size_t, size_t)`.
 - **JSON:** `JsonDocument doc; serializeJson(doc, json); request->send(200, "application/json", json)`.
 - **Route registration:** add all `/api/*` endpoints in `RestService::registerRoutes()`, not scattered in `setupServer()`.
+- **API documentation:** every endpoint must be added to both `src/LoRaIoT/src/openapi_json.h` (source of truth, served at `GET /openapi`) and `doc/RestApi.md` (human-readable companion) in the same change that registers it.
+- **Manual-use endpoints must be `GET`** so they work from a browser address bar or a link on the index page. Add a link for each one to `index_html.h`.
 - **WiFi failure:** `statusLed.setState(LedState::FAULT)` then `vTaskSuspend(NULL)` - ledTask drives SOS forever.
 - **Diagnostics endpoints** (already wired in `Server.cpp`): `GET /api/log`, `PUT /api/log/level`, `GET /status`, `GET /reset`.
 - **Log level** is persisted in NVS (`sc_prefs` / `logLevel`) and survives reboots. Set via captive-portal form or `PUT /api/log/level`.
@@ -143,10 +161,17 @@ Max frame = 200 bytes. Type values: `0x01` sensor, `0x02` HTTP GET proxy, `0x03`
 uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xEF, 0x00, 0x17, 0x00, 0x00, 0x00};
 ```
 
+## Code Style
+
+- **No underscore-prefixed member variables** - use plain names (`server`, `ws`). Constructor parameters that shadow a member name use a descriptive prefix (e.g. `webServer` instead of `server`).
+- **Function prototypes belong in header files** - any function called from another translation unit must be declared in the corresponding `.h` file.
+- Use `Log_*` macros everywhere - `Serial.println()` directly is only acceptable in standalone diagnostic sketches, never in firmware library code.
+
 ## Build / Flash Commands
+
+PlatformIO (from repository root): `pio run -e esp32dev` / `pio run -e esp32c6 --target upload` / `pio device monitor`
 
 Arduino IDE: Sketch -> Export Compiled Binary -> flash with esptool:
 ```
 esptool.exe --chip esp32 --port COM3 --baud 921600 write-flash 0x0 LoRaIoT.ino.merged.bin
 ```
-PlatformIO (from `ESP/LoRaIoT/`): `pio run` / `pio run --target upload` / `pio device monitor`

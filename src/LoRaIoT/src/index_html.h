@@ -28,9 +28,20 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <body>
   <h1>LoRaIoT Gateway</h1>
   <p>REST API and WebSocket gateway UI - not yet implemented.</p>
-  <p>REST API: <a href="/api/state"><code>/api/state</code></a></p>
-  <p>Diagnostics: <a href="/status"><code>/status</code></a> |
-     <a href="/api/log"><code>/api/log</code></a></p>
+  <p>API:
+     <a href="/openapi/ui"><strong>Swagger UI</strong></a> |
+     <a href="/openapi"><code>/openapi</code></a>
+  </p>
+  <p>Diagnostics:
+     <a href="/status"><code>/status</code></a> |
+     <a href="/api/log"><code>/api/log</code></a> |
+     <a href="/api/log?clear=1"><code>/api/log?clear=1</code></a> |
+     <a href="/api/tier"><code>/api/tier</code></a> |
+     <a href="/api/diag/e220"><code>/api/diag/e220</code></a>
+  </p>
+  <p>E220 hardware check: click <a href="/api/diag/e220"><code>/api/diag/e220</code></a>,
+     wait a few seconds, then open <a href="/api/log"><code>/api/log</code></a>
+     and look for the lines starting with <code>E220 diag:</code>.</p>
   <p>WebSocket: <code>ws://&lt;host&gt;/ws/data</code></p>
 </body>
 </html>
