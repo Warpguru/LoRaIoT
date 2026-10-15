@@ -41,6 +41,13 @@ enum class LedState {
   FAULT      // SOS, loops forever
 };
 
+/**
+ * StatusLed - Singleton controller of the physical status LED state machine.
+ *
+ * This class operates as a global singleton instance 'statusLed'.
+ * It manages an internal FreeRTOS task that drives the blink codes and transitions
+ * based on the LedState enum.
+ */
 class StatusLed {
 public:
   /**
@@ -64,6 +71,5 @@ private:
   TaskHandle_t taskHandle = nullptr;
 };
 
-/** Global singleton - defined in StatusLed.cpp, used by Application.cpp and
- * Server.cpp. */
+/** Global singleton instance exported for direct use across the application. */
 extern StatusLed statusLed;

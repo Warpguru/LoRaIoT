@@ -29,7 +29,7 @@
  */
 
 // Global singleton defined here; declared extern in LogBuffer.h.
-LogBufferClass Log;
+LogBufferClass LogBuffer;
 
 // ---- LogLevel static constants ---------------------------------------------
 // String literals are stored in flash (PROGMEM-compatible); no heap used.

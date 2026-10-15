@@ -24,7 +24,7 @@
  *   [INFO ][Application.cpp:52] Starting SerialController v1.0.0 ...
  *
  * The active level is readable/writable at runtime via:
- *   Log.getLogLevel() / Log.setLogLevel(LogLevel)
+ *   LogBuffer.getLogLevel() / LogBuffer.setLogLevel(LogLevel)
  * and over HTTP via PUT /api/log/level {"level":"DEBUG"}.
  *
  * The active log level is persisted in ESP32 NVS (namespace "sc_prefs",
@@ -102,6 +102,16 @@ class LogLevel {
   int         levelOrdinalValue;
 };
 
+/**
+ * LogBufferClass - Singleton that manages the logging ring buffer and active level.
+ *
+ * This class follows the standard Arduino Singleton Pattern:
+ * - 'LogBufferClass' is the underlying class type. A suffix is used here
+ *   because C++ prevents a global variable from having the exact same name
+ *   as its class type in the same scope (name shadowing collision).
+ * - 'Log' is the single globally exported object instance (mirroring 'Serial' / 'HardwareSerial').
+ * - Application code should always interact with the 'Log' instance or the 'Log_*' macros.
+ */
 class LogBufferClass {
  public:
   // Default active level used when no persisted value is found in NVS.
@@ -169,15 +179,15 @@ class LogBufferClass {
   SemaphoreHandle_t mutex = nullptr;
 };
 
-/** Global singleton. */
-extern LogBufferClass Log;
+// Global singleton instance exported for direct use across the application (mirroring 'Serial')
+extern LogBufferClass LogBuffer;
 
 // ---- Convenience macros ----------------------------------------------------
 // __FILE__ and __LINE__ are captured at the call site by the preprocessor.
 // ## before __VA_ARGS__ swallows the trailing comma when no extra args are given
 // (GNU extension; supported by GCC/Clang/MSVC and all Arduino toolchains).
-#define Log_error(fmt, ...) Log.logError(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
-#define Log_warn(fmt, ...) Log.logWarn(__FILE__, __LINE__, fmt, ##__VA_ARGS__)    // NOLINT
-#define Log_info(fmt, ...) Log.logInfo(__FILE__, __LINE__, fmt, ##__VA_ARGS__)    // NOLINT
-#define Log_debug(fmt, ...) Log.logDebug(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
-#define Log_trace(fmt, ...) Log.logTrace(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
+#define Log_error(fmt, ...) LogBuffer.logError(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
+#define Log_warn(fmt, ...) LogBuffer.logWarn(__FILE__, __LINE__, fmt, ##__VA_ARGS__)    // NOLINT
+#define Log_info(fmt, ...) LogBuffer.logInfo(__FILE__, __LINE__, fmt, ##__VA_ARGS__)    // NOLINT
+#define Log_debug(fmt, ...) LogBuffer.logDebug(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
+#define Log_trace(fmt, ...) LogBuffer.logTrace(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT

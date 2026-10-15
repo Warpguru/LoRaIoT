@@ -6,6 +6,7 @@
 
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
+#include "../../lora/src/LoRaTransport.h"
 
 /**
  * Diagnostics.cpp - E220 wiring and register read/write check.
@@ -55,7 +56,12 @@ static constexpr uint8_t REG_START = 0x00;
 static constexpr uint8_t REG_COUNT = 8;                 // ADDH ADDL REG0 REG1 REG2 REG3 CRYPT_H CRYPT_L
 static constexpr size_t REPLY_LEN = 3 + REG_COUNT;      // C1 start len + 8 values
 static constexpr uint8_t IDX_CHANNEL = 4;               // REG2 position within the 8 values
+static constexpr uint8_t IDX_CRYPT_H = 6;               // CRYPT_H position within the 8 values
+static constexpr uint8_t IDX_CRYPT_L = 7;               // CRYPT_L position within the 8 values
 static constexpr uint8_t VERIFY_BYTES = 6;              // ADDH..REG3; CRYPT bytes are write-only (read as 0x00)
+static constexpr uint8_t VAL_CRYPT_DEFAULT = 0x00;      // Default crypt byte value (write-only, read returns 0x00)
+static constexpr uint8_t TEST_CHANNEL_A = 0x20;          // First channel value used for diagnostic testing
+static constexpr uint8_t TEST_CHANNEL_B = 0x21;          // Alternate channel value used for diagnostic testing
 static constexpr uint32_t CONFIG_BAUD = 9600;           // fixed in Mode 3 regardless of REG0
 static constexpr uint32_t AUX_TIMEOUT_MS = 1000;
 static constexpr uint32_t REPLY_TIMEOUT_MS = 500;
@@ -198,6 +204,10 @@ static bool writeTempAndVerify(const uint8_t* regs) {
 
 /** Runs the whole sequence. Returns true only if every step passed. */
 static bool runE220Check() {
+  // Suspend the background transceiver task and close its UART handle
+  LoRaTransport.pause();
+  delay(50);
+
   Log_info("E220 diag: ===== start (M0=GPIO%u M1=GPIO%u AUX=GPIO%u RX=GPIO%u TX=GPIO%u) =====",
            PIN_M0, PIN_M1, PIN_AUX, PIN_RX, PIN_TX);
 
@@ -239,13 +249,13 @@ static bool runE220Check() {
     Log_info("E220 diag:   factory default (manual) is 00 00 62 00 17; REG3 is not specified there");
 
     // Step 4: temporary write of a different channel.
-    const uint8_t testChannel = (original[IDX_CHANNEL] == 0x20) ? 0x21 : 0x20;
+    const uint8_t testChannel = (original[IDX_CHANNEL] == TEST_CHANNEL_A) ? TEST_CHANNEL_B : TEST_CHANNEL_A;
     Log_info("E220 diag: [4/6] Temporary write: channel %02X -> %02X", original[IDX_CHANNEL], testChannel);
     uint8_t changed[REG_COUNT];
     memcpy(changed, original, REG_COUNT);
     changed[IDX_CHANNEL] = testChannel;
-    changed[6] = 0x00;  // CRYPT_H/L always read back as 0x00; write 0 to keep the echo comparable
-    changed[7] = 0x00;
+    changed[IDX_CRYPT_H] = VAL_CRYPT_DEFAULT;  // CRYPT_H/L always read back as 0x00; write 0 to keep the echo comparable
+    changed[IDX_CRYPT_L] = VAL_CRYPT_DEFAULT;
     if (!writeTempAndVerify(changed)) {
       break;
     }
@@ -253,8 +263,8 @@ static bool runE220Check() {
 
     // Step 5: put the original values back.
     Log_info("E220 diag: [5/6] Temporary write: restoring original values");
-    original[6] = 0x00;
-    original[7] = 0x00;
+    original[IDX_CRYPT_H] = VAL_CRYPT_DEFAULT;
+    original[IDX_CRYPT_L] = VAL_CRYPT_DEFAULT;
     if (!writeTempAndVerify(original)) {
       break;
     }
@@ -273,6 +283,10 @@ static bool runE220Check() {
   } else {
     Log_error("E220 diag: ===== RESULT: FAIL. See the FAIL line above for the likely cause =====");
   }
+
+  // Resume the background transceiver task and reopen its UART handle
+  LoRaTransport.resume();
+
   return ok;
 }
 

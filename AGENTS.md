@@ -122,6 +122,12 @@ Log_trace("fmt", ...);   // level TRACE
 Output format: `[INFO ][Application.cpp:52] message text`
 Remote retrieval: `GET /api/log` (last 128 lines as JSON).
 
+- **Multi-node log comparison** - because standard serial monitors can only show one COM port at a time, you can fetch and compare the live logs of both nodes concurrently via the network API using `curl`:
+  ```bash
+  curl -s http://<local_node_ip>/api/log
+  curl -s http://<remote_node_ip>/api/log
+  ```
+
 ## LoRa / E220 Architecture (from `doc/Feasibility.md`)
 
 Two ESP32 gateway nodes bridge a remote WiFi SoftAP to a local network via a 433 MHz LoRa P2P link:
@@ -172,6 +178,9 @@ uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xEF, 0x00, 0x17, 0x00, 0x0
 ## Code Style
 
 - **No underscore-prefixed member variables** - use plain names (`server`, `ws`). Constructor parameters that shadow a member name use a descriptive prefix (e.g. `webServer` instead of `server`).
+- **Constants preferred over hardcoded values** - never use "magic numbers" directly in logic. Define them as descriptive `static constexpr` or inline constants.
+- **Naming semantics for constants** - use uppercase with underscores (e.g. `REG3_MODE_FIXED`, `POLL_INTERVAL_MS`). Group similar registers or settings together with matching prefixes so the codebase is naturally organized.
+- **Self-documenting code** - write inline comments or place constants directly near the code where they are used when required, making it clear what each value represents without external lookup.
 - **Function prototypes belong in header files** - any function called from another translation unit must be declared in the corresponding `.h` file.
 - Use `Log_*` macros everywhere - `Serial.println()` directly is only acceptable in standalone diagnostic sketches, never in firmware library code.
 

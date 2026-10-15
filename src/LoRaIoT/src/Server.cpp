@@ -12,6 +12,7 @@
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
 #include "Tier.h"
+#include "LoRaConfig.h"
 #include "index_html.h"
 #include "openapi_json.h"
 
@@ -44,12 +45,12 @@ static void handleGetStatus(AsyncWebServerRequest* request) {
   fillESPInfo(statusObject);
   String json;
   serializeJson(doc, json);
-  request->send(HTTP_CODE_OK, "application/json", json);
+  request->send(HTTP_STATUS_OK, "application/json", json);
 }
 
 static void handleReset(AsyncWebServerRequest* request) {
   Log_warn("GET /reset - CLEARING SETTINGS");
-  request->send(HTTP_CODE_OK, "text/plain",
+  request->send(HTTP_STATUS_OK, "text/plain",
                 "WiFi settings cleared. ESP32 rebooting to Configuration Mode...");
   delay(RESET_REBOOT_DELAY_MS);
   wm.resetSettings();
@@ -61,45 +62,45 @@ static void handleReset(AsyncWebServerRequest* request) {
 static void handleGetLog(AsyncWebServerRequest* request) {
   Log_info("GET /api/log");
   if (request->hasArg("clear") && request->arg("clear") == "1") {
-    Log.clear();
+    LogBuffer.clear();
   }
   String json;
-  Log.getJson(json);
-  request->send(HTTP_CODE_OK, "application/json", json);
+  LogBuffer.getJson(json);
+  request->send(HTTP_STATUS_OK, "application/json", json);
 }
 
 static void handlePutLogLevel(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, data, len);
   if (err || !doc["level"].is<const char*>()) {
-    request->send(HTTP_CODE_BAD_REQUEST, "application/json", "{\"error\":\"Expected {\\\"level\\\":\\\"INFO\\\"}\"}");
+    request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Expected {\\\"level\\\":\\\"INFO\\\"}\"}");
     return;
   }
   const char* levelName = doc["level"].as<const char*>();
-  if (!Log.setLevelFromString(levelName)) {
-    request->send(HTTP_CODE_BAD_REQUEST, "application/json", "{\"error\":\"Unknown level\"}");
+  if (!LogBuffer.setLevelFromString(levelName)) {
+    request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Unknown level\"}");
     return;
   }
-  Log.saveLevel();
-  Log_info("Log level changed to %s", Log.getLevelName());
+  LogBuffer.saveLevel();
+  Log_info("Log level changed to %s", LogBuffer.getLevelName());
   String json = "{\"level\":\"";
-  json += Log.getLevelName();
+  json += LogBuffer.getLevelName();
   json += "\"}";
-  request->send(HTTP_CODE_OK, "application/json", json);
+  request->send(HTTP_STATUS_OK, "application/json", json);
 }
 
 // ---- Browser UI ------------------------------------------------------------
 
 static void handleRoot(AsyncWebServerRequest* request) {
   Log_info("GET /");
-  request->send_P(HTTP_CODE_OK, "text/html", INDEX_HTML);
+  request->send_P(HTTP_STATUS_OK, "text/html", INDEX_HTML);
 }
 
 // ---- OpenAPI ---------------------------------------------------------------
 
 static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
   Log_info("GET /openapi");
-  request->send_P(HTTP_CODE_OK, "application/json", OPENAPI_JSON);
+  request->send_P(HTTP_STATUS_OK, "application/json", OPENAPI_JSON);
 }
 
 /**
@@ -143,7 +144,7 @@ static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
       "};"
       "</script>"
       "</body></html>";
-  request->send(HTTP_CODE_OK, "text/html", html);
+  request->send(HTTP_STATUS_OK, "text/html", html);
 }
 
 // ---- setupServer -----------------------------------------------------------
@@ -166,6 +167,29 @@ void setupServer() {
   //
   // Using the raw-HTML-only constructor WiFiManagerParameter(html) leaves id=""
   // so getValue() always returns an empty string - that was the original bug.
+  //
+  // -- Non-Obvious WiFiManager Parameter Injection Mechanics --
+  //
+  // 1. THE DOUBLE-WIDGET / JAVASCRIPT ONCHANGE BIND:
+  //    WiFiManager internally renders each parameter as:
+  //      "<input id='[id]' name='[id]' value='[default]' ... [customHTML]>"
+  //    To render a custom dropdown, we inject custom HTML. By starting customHTML with
+  //    " type='hidden'>", we:
+  //      - Convert WiFiManager's default <input> to type='hidden' (invisible to the user).
+  //      - Close the original <input> tag.
+  //    Next, we append our actual custom `<select id='[id]Select' ...>` dropdown WITHOUT
+  //    any "name" attribute. Because it has no "name", the browser never submits this dropdown directly,
+  //    completely avoiding duplicate POST parameters or name conflicts.
+  //    To link them, we add an `onchange` handler to our `<select>` element:
+  //      `onchange="document.getElementById('[id]').value=this.value"`
+  //    When the user changes the dropdown option, the hidden <input>'s value is immediately updated
+  //    in the DOM. On submit, only the single, updated value of the <input> field is sent to the server.
+  //
+  // 2. THE DELIBERATELY MISSING TRAILING '>' ON THE </select> TAG:
+  //    Because WiFiManager appends its own closing '>' at the very end of the rendered tag,
+  //    our customHTML must end with "</select" (WITHOUT the closing '>'). If we included
+  //    the closing '>', the output would render as "</select>>", causing a literal '>'
+  //    to appear as unformatted text right before the "Save" button in the browser GUI.
 
   // -- Tier selector (LOCAL / REMOTE) --
   size_t tierCount;
@@ -189,7 +213,7 @@ void setupServer() {
   snprintf(tierCustomHtml, sizeof(tierCustomHtml),
            " type='hidden'><br/>"
            "<label for='tier'>Gateway Tier</label>"
-           "<select id='tier' name='tier'>%s</select"
+           "<select id='tierSelect' onchange=\"document.getElementById('tier').value=this.value\">%s</select"
            , tierOptions);
   WiFiManagerParameter tierParam("tier", "", Gateway.getTierName(), 8, tierCustomHtml);
   wm.addParameter(&tierParam);
@@ -202,7 +226,7 @@ void setupServer() {
   char levelOptions[300];
   levelOptions[0] = '\0';
   for (size_t i = 0; i < levelCount && i < 8; i++) {
-    const char* sel = (strcmp(Log.getLevelName(), levelNames[i]) == 0) ? " selected" : "";
+    const char* sel = (strcmp(LogBuffer.getLevelName(), levelNames[i]) == 0) ? " selected" : "";
     char opt[60];
     snprintf(opt, sizeof(opt), "<option value='%s'%s>%s</option>",
              levelNames[i], sel, levelNames[i]);
@@ -212,14 +236,35 @@ void setupServer() {
   snprintf(levelCustomHtml, sizeof(levelCustomHtml),
            " type='hidden'><br/>"
            "<label for='logLevel'>Log Level</label>"
-           "<select id='logLevel' name='logLevel'>%s</select"
+           "<select id='logLevelSelect' onchange=\"document.getElementById('logLevel').value=this.value\">%s</select"
            , levelOptions);
-  WiFiManagerParameter levelParam("logLevel", "", Log.getLevelName(), 8, levelCustomHtml);
+  WiFiManagerParameter levelParam("logLevel", "", LogBuffer.getLevelName(), 8, levelCustomHtml);
   wm.addParameter(&levelParam);
 
-  auto saveCallback = [&tierParam, &levelParam]() {
-    const char* chosenTier  = tierParam.getValue();
-    const char* chosenLevel = levelParam.getValue();
+  // -- LoRa channel selector --
+  String channelOptions = "";
+  for (uint8_t i = 0; i <= 31; i++) {
+    const char* sel = (LoRaConfig.getChannel() == i) ? " selected" : "";
+    char opt[80];
+    snprintf(opt, sizeof(opt), "<option value='%d'%s>Ch %d - %.3f MHz</option>",
+             i, sel, i, LORA_BASE_FREQUENCY + i);
+    channelOptions += opt;
+  }
+  String channelCustomHtml = " type='hidden'><br/>"
+                             "<label for='loraChannel'>LoRa Channel</label>"
+                             "<select id='loraChannelSelect' onchange=\"document.getElementById('loraChannel').value=this.value\">";
+  channelCustomHtml += channelOptions;
+  channelCustomHtml += "</select";
+
+  char channelStr[4];
+  snprintf(channelStr, sizeof(channelStr), "%d", LoRaConfig.getChannel());
+  WiFiManagerParameter channelParam("loraChannel", "", channelStr, 4, channelCustomHtml.c_str());
+  wm.addParameter(&channelParam);
+
+  auto saveCallback = [&tierParam, &levelParam, &channelParam]() {
+    const char* chosenTier    = tierParam.getValue();
+    const char* chosenLevel   = levelParam.getValue();
+    const char* chosenChannel = channelParam.getValue();
 
     if (chosenTier != nullptr && chosenTier[0] != '\0') {
       if (Gateway.setTierFromString(chosenTier)) {
@@ -230,12 +275,33 @@ void setupServer() {
       }
     }
     if (chosenLevel != nullptr && chosenLevel[0] != '\0') {
-      if (Log.setLevelFromString(chosenLevel)) {
-        Log.saveLevel();
-        Log_info("Log level set from portal to %s", Log.getLevelName());
+      if (LogBuffer.setLevelFromString(chosenLevel)) {
+        LogBuffer.saveLevel();
+        Log_info("Log level set from portal to %s", LogBuffer.getLevelName());
       } else {
         Log_warn("Portal returned unknown log level '%s' - ignored", chosenLevel);
       }
+    }
+    if (chosenChannel != nullptr && chosenChannel[0] != '\0') {
+      int chan = atoi(chosenChannel);
+      if (chan >= 0 && chan <= 31) {
+        LoRaConfig.setChannel((uint8_t)chan);
+        LoRaConfig.save();
+        Log_info("LoRa channel set from portal to %d", LoRaConfig.getChannel());
+      } else {
+        Log_warn("Portal returned invalid LoRa channel '%s' - ignored", chosenChannel);
+      }
+    }
+
+    // Auto-configure the LoRa address based on the selected tier (no GUI visible)
+    if (Gateway.isConfigured()) {
+      if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
+        LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
+      } else {
+        LoRaConfig.setAddress(LORA_DEFAULT_ADDR_LOCAL);
+      }
+      LoRaConfig.save();
+      Log_info("LoRa address auto-configured to 0x%02X based on tier %s", LoRaConfig.getAddress(), Gateway.getTierName());
     }
   };
   wm.setSaveParamsCallback(saveCallback);
@@ -259,8 +325,8 @@ void setupServer() {
 
   // Browser UI and API documentation
   server.on("/",            AsyncWebRequestMethod::HTTP_GET, handleRoot);
-  server.on("/openapi",     AsyncWebRequestMethod::HTTP_GET, handleGetOpenApiJson);
   server.on("/openapi/ui",  AsyncWebRequestMethod::HTTP_GET, handleGetOpenApiUi);
+  server.on("/openapi",     AsyncWebRequestMethod::HTTP_GET, handleGetOpenApiJson);
 
   // Diagnostics
   server.on("/api/log", AsyncWebRequestMethod::HTTP_GET, handleGetLog);

@@ -49,6 +49,186 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
+    "/api/lora/channel": {
+      "get": {
+        "tags": ["Gateway"],
+        "summary": "Get active LoRa channel",
+        "description": "Returns the currently configured LoRa channel. This endpoint is available on both LOCAL and REMOTE instances.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "channel": { "type": "integer", "description": "The active LoRa channel (0-31)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Gateway"],
+        "summary": "Set active LoRa channel",
+        "description": "Sets the active LoRa channel. The new channel is persisted in NVS and survives reboots. This endpoint is available on both LOCAL and REMOTE instances.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["channel"],
+                "properties": {
+                  "channel": { "type": "integer", "minimum": 0, "maximum": 31, "description": "New LoRa channel" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "channel": { "type": "integer", "description": "The new active LoRa channel (0-31)" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, field missing, or out of range",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/lora/address": {
+      "get": {
+        "tags": ["Gateway"],
+        "summary": "Get active LoRa node address",
+        "description": "Returns the currently configured LoRa node address. This endpoint is available on all nodes (returns `0` for LOCAL, and `1-254` for REMOTE).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "address": { "type": "integer", "description": "The active LoRa node address (0-254)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Gateway"],
+        "summary": "Set active LoRa node address",
+        "description": "Sets the active LoRa node address. The new address (`1-254` for REMOTE) is persisted in NVS and survives reboots. This endpoint is only available on REMOTE instances; accessing it on a LOCAL instance returns a bad request.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["address"],
+                "properties": {
+                  "address": { "type": "integer", "minimum": 1, "maximum": 254, "description": "New LoRa address (1-254)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Address changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "address": { "type": "integer", "description": "The new active LoRa address (1-254)" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, field missing, out of range, or not a REMOTE instance",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/system/cpu": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Get active CPU frequency",
+        "description": "Returns the currently active CPU frequency of the ESP32 in MHz.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "frequency": { "type": "integer", "description": "The active CPU frequency in MHz (80, 160, or 240)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["System"],
+        "summary": "Set active CPU frequency",
+        "description": "Dynamically scales the ESP32's CPU clock frequency (80, 160, or 240). Frequencies below 80 MHz are rejected because the ESP32 WiFi radio PLL requires at least 80 MHz to function. The value is persisted in NVS and automatically applied on boot.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["frequency"],
+                "properties": {
+                  "frequency": { "type": "integer", "enum": [80, 160, 240], "description": "New CPU frequency in MHz" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "CPU frequency changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "frequency": { "type": "integer", "description": "The new active CPU frequency in MHz (80, 160, or 240)" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, field missing, or not a supported value (80, 160, 240)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
     "/api/log": {
       "get": {
         "tags": ["Diagnostics"],
