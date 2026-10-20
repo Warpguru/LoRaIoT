@@ -14,13 +14,15 @@ static HardwareSerial LoRaSerial(2);
 // All application-level files include "LoRaTransport.h" and interact with this object.
 LoRaTransportClass LoRaTransport;
 
+static constexpr size_t HEX_LOG_BUFFER_SIZE = 128;  // Output buffer for logHex()
+
 /**
  * Reusable helper to format and log a byte array in hexadecimal.
  */
 static void logHex(const char* prefix, const uint8_t* data, size_t len) {
-  char hex[128] = {0};
+  char hex[HEX_LOG_BUFFER_SIZE] = {0};
   size_t pos = 0;
-  for (size_t i = 0; i < len && pos + 4 < sizeof(hex); i++) {
+  for (size_t i = 0; i < len && pos + LoRaTransportClass::HEX_ENTRY_SIZE < sizeof(hex); i++) {
     pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X ", data[i]);
   }
   Log_info("%s %s", prefix, hex);
@@ -47,7 +49,7 @@ void LoRaTransportClass::begin() {
       CMD_WRITE_PERSISTENT,
       REG_START_ADDR,
       REG_WRITE_COUNT,
-      ADDH_LOCAL,
+      ADDH,
       LoRaConfig.getAddress(),
       (REG0_UART_BAUD_115200 | REG0_PARITY_8N1 | REG0_AIR_DATA_RATE_62K5),
       (REG1_SUB_PACKET_200B | REG1_RSSI_NOISE_DISABLE | REG1_POWER_22DBM),
@@ -80,7 +82,7 @@ void LoRaTransportClass::begin() {
   
   logHex("LoRaTransport::begin - Read config response:", response, bytesRead);
 
-  if (bytesRead < CONFIG_RESPONSE_LEN || response[0] == 0xFF) {
+  if (bytesRead < CONFIG_RESPONSE_LEN || response[0] == ERROR_REPLY_BYTE) {
     Log_error("LoRaTransport::begin - Error writing configuration to E220 (invalid response received)");
   } else {
     Log_info("LoRaTransport::begin - E220 configuration applied successfully.");
@@ -109,7 +111,7 @@ void LoRaTransportClass::sendRaw(const uint8_t* data, size_t len) {
   if (data == nullptr || len == 0 || txQueue == nullptr) return;
 
   // Truncate to maximum sub-packet frame capacity
-  size_t transmitLen = (len > 200) ? 200 : len;
+  size_t transmitLen = (len > LORA_MAX_FRAME_LEN) ? LORA_MAX_FRAME_LEN : len;
 
   LoRaTxMessage msg;
   memcpy(msg.data, data, transmitLen);
@@ -151,13 +153,13 @@ void LoRaTransportClass::sendRawInternal(const uint8_t* data, size_t len) {
   }
 
   // 2. Prepend the Fixed Mode routing header: [ADDH][ADDL][CHAN]
-  const uint8_t targetAddh = ADDH_LOCAL; // always 0x00 in this layout
-  const uint8_t targetAddl = (LoRaConfig.getAddress() == ADDR_LOCAL) ? ADDR_REMOTE : ADDR_LOCAL;
+  const uint8_t targetAddh = ADDH;
+  const uint8_t targetAddl = (LoRaConfig.getAddress() == LORA_DEFAULT_ADDR_LOCAL) ? LORA_DEFAULT_ADDR_REMOTE : LORA_DEFAULT_ADDR_LOCAL;
   const uint8_t targetChan = LoRaConfig.getChannel();
 
   // Print diagnostics for transmission routing
   if (len > 0) {
-    char dbgPrefix[64];
+    char dbgPrefix[DEBUG_PREFIX_SIZE];
     snprintf(dbgPrefix, sizeof(dbgPrefix), "LoRa TX: target=[0x%02X, 0x%02X] ch=0x%02X payload:", targetAddh, targetAddl, targetChan);
     logHex(dbgPrefix, data, len);
   }
@@ -210,7 +212,7 @@ void LoRaTransportClass::loraTransportTask(void* param) {
   LoRaTransportClass* self = static_cast<LoRaTransportClass*>(param);
   Log_info("LoRa background transport task loop initialized.");
 
-  static uint8_t rxBuffer[256];
+  static uint8_t rxBuffer[RX_BUFFER_SIZE];
   static size_t rxIndex = 0;
 
   while (true) {
@@ -218,11 +220,11 @@ void LoRaTransportClass::loraTransportTask(void* param) {
     while (LoRaSerial.available() > 0) {
       int c = LoRaSerial.read();
       if (c >= 0) {
-        Log_debug("LoRa RX: byte 0x%02X (%c)", c, (c >= CHAR_PRINTABLE_MIN && c <= CHAR_PRINTABLE_MAX) ? static_cast<char>(c) : '.');
+        Log_debug("LoRa RX: byte 0x%02X (%c)", c, (c >= CHAR_PRINTABLE_MIN && c <= CHAR_PRINTABLE_MAX) ? static_cast<char>(c) : RX_NON_PRINTABLE_PLACEHOLDER);
         if (rxIndex < sizeof(rxBuffer) - 1) {
           rxBuffer[rxIndex++] = static_cast<uint8_t>(c);
           // For Milestone 0 raw transceiving: frames are plain-text ending with '\n'
-          if (c == '\n') {
+          if (c == RX_FRAME_TERMINATOR) {
             rxBuffer[rxIndex] = '\0';
             if (self->receiveCallback != nullptr) {
               self->receiveCallback(rxBuffer, rxIndex);

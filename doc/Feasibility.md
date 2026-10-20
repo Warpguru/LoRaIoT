@@ -129,7 +129,7 @@ When switching **from** Mode 3 back to Mode 0, the module reconfigures all param
 | 00H | ADDH | 7-0 | Module address high byte | 0x00 | Address `0xFFFF` or `0x0000` = broadcast/monitor (no address filtering) |
 | 01H | ADDL | 7-0 | Module address low byte | 0x00 | |
 | 02H | REG0 | 7-5 | UART baud rate | 011 = 9600 | 001=1200, 010=2400, 011=9600, 100=19200, 101=38400, 110=57600, **111=115200** |
-| | | 4-3 | Reserved | - | |
+| | | 4-3 | UART parity | 00 = 8N1 | 00=8N1, 01=8O1, 10=8E1, 11=8N1 (manual §7.2) |
 | | | 2-0 | Air data rate | 010 = 2.4k | 000/001=2.4k, 011=4.8k, 100=9.6k, 101=19.2k, 110=38.4k, **111=62.5k** |
 | 03H | REG1 | 7-6 | Sub-packet size | 00 = 200B | 00=200B, 01=128B, 10=64B, 11=32B |
 | | | 5 | RSSI ambient noise | 0 = disable | Enable: read dBm via `C0 C1 C2 C3` command; `dBm = -(256 - value)` |
@@ -137,7 +137,7 @@ When switching **from** Mode 3 back to Mode 0, the module reconfigures all param
 | | | 1-0 | **Transmitting power** | 00 = 22dBm | **00=22dBm, 01=17dBm, 10=13dBm, 11=10dBm** |
 | 04H | REG2 | 7-0 | Channel (CH) | 0x17 | Frequency = 410.125 MHz + CH × 1 MHz; range 0x00–0x53 (84 channels) |
 | 05H | REG3 | 7 | **RSSI byte on receive** | 0 = disable | When enabled, module **appends 1 RSSI byte** after every received payload on TXD pin. Frame parsers must account for this. |
-| | | 6 | Transmission method | 0 = Transparent | 1 = Fixed: MCU must prepend **3 bytes `[ADDH][ADDL][CH]`** to every TX payload (reduces usable payload to 187B). |
+| | | 6 | Transmission method | 0 = Transparent | 1 = Fixed: MCU must prepend **3 bytes `[ADDH][ADDL][CH]`** to every TX payload. The manual does not state whether these 3 bytes count toward the 200 B sub-packet; `doc/LoRaProtocol.md` conservatively assumes they do. |
 | | | 5 | Reserved | - | |
 | | | 4 | **LBT enable** | 0 = disable | Listen Before Talk: senses channel before TX. Prevents collisions but adds **up to 2 seconds of variable latency**. |
 | | | 3 | Reserved | - | |
@@ -156,14 +156,15 @@ Address=0x0000, Air rate=2.4kbps, UART=9600 8N1, Channel=0x17 (433.125 MHz), Pow
 // Command: C0 + StartAddress(00) + Length(08) + [ADDH][ADDL][REG0][REG1][REG2][REG3][CRYPT_H][CRYPT_L]
 //
 // ADDH = 0x00, ADDL = 0x01  → Module address 0x0001
-// REG0 = 0xEF  → UART=115200 (111), AirRate=62.5k (111)
+// REG0 = 0xE7  → UART=115200 (111), parity 8N1 (00), AirRate=62.5k (111)
 // REG1 = 0x00  → SubPacket=200B (00), RSSI noise=off (0), Power=22dBm (00)
 // REG2 = 0x17  → Channel 23 → 433.125 MHz
 // REG3 = 0x00  → RSSI byte=off, Transparent mode, LBT=off, WOR=500ms
 // CRYPT_H/L = 0x00, 0x00  → No encryption (set to shared secret to enable)
 //
-uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xEF, 0x00, 0x17, 0x00, 0x00, 0x00};
-// Expected response: C1 00 08 00 01 EF 00 17 00 00 00
+uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xE7, 0x00, 0x17, 0x00, 0x00, 0x00};
+// Expected response: C1 00 08 00 01 E7 00 17 00 00 00
+// Production firmware uses fixed transmission (REG3 = 0x40) and node addresses per doc/LoRaProtocol.md §2/§3.
 // Error response:    FF FF FF  → check wiring and that module is in Mode 3
 ```
 
@@ -280,6 +281,11 @@ graph TB
 
 To guarantee data integrity across the half-duplex LoRa link, the ESP32 firmware must implement a custom lightweight framing layer:
 
+> **Superseded:** the frame header, type table and payload rules below are the original proposal.
+> The normative specification is [`LoRaProtocol.md`](LoRaProtocol.md) (11-byte header/trailer with
+> VER, SRC and DST, message types DATA/DATA_ACK/REQUEST/RESPONSE/BEACON/PING/ACK, protobuf payloads,
+> max payload 186 B in fixed transmission mode). The text below is kept for background.
+
 ### Frame Structure (Transparent Mode, Max 200 Bytes)
 ```
 +------------+------------+---------------+-----------------+------------------+---------------+
@@ -289,7 +295,7 @@ To guarantee data integrity across the half-duplex LoRa link, the ESP32 firmware
 ```
 Total fixed overhead: 8 bytes. Maximum payload: **190 bytes** (200 − 8).
 
-In **Fixed Transmission mode** (REG3 bit 6 = 1), the E220 itself prepends `[ADDH][ADDL][CH]` (3 bytes) before air transmission, reducing the MCU-visible payload space to **187 bytes**. The frame format above remains the same from the MCU's perspective - the 3-byte routing header is transparent to the firmware in Fixed mode (sent as the first 3 bytes written to UART before the frame data).
+In **Fixed Transmission mode** (REG3 bit 6 = 1), the MCU writes `[ADDH][ADDL][CH]` (3 bytes) before the frame data. The E220 uses them as the transmit target and delivers only the frame to the receiver, so the receiver does not learn the sender address from the radio. If the 3 bytes count toward the 200 B sub-packet, the frame budget is 197 B (the manual does not say; verify on hardware).
 
 * **Header (`0xAA 0x55`):** Synchronizes start of packet over UART.
 * **Type:** `0x01` = Sensor Telemetry, `0x02` = HTTP GET Proxy Request, `0x03` = HTTP Response, `0x04` = Heartbeat / ACK.
@@ -352,9 +358,9 @@ void configureE220() {
   setMode(HIGH, HIGH);
 
   // 3. Send config: C0 00 08 [ADDH][ADDL][REG0][REG1][REG2][REG3][CRYPT_H][CRYPT_L]
-  // ADDH=0x00, ADDL=0x01, REG0=0xEF (115200 baud + 62.5k air), 
+  // ADDH=0x00, ADDL=0x01, REG0=0xE7 (115200 baud, 8N1, 62.5k air),
   // REG1=0x00 (200B sub-pkt, 22dBm), REG2=0x17 (433.125MHz), REG3=0x00, CRYPT=0x0000
-  uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xEF, 0x00, 0x17, 0x00, 0x00, 0x00};
+  uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xE7, 0x00, 0x17, 0x00, 0x00, 0x00};
   LoRaSerial.write(configCmd, sizeof(configCmd));
   delay(100);
 
@@ -422,13 +428,13 @@ bool sendLoRaFrame(uint8_t* frame, size_t length) {
    * Set Packet Sub-packaging to **200 Bytes** (`REG1 bits 7-6 = 00`).
    * Set UART Baud Rate to **115,200 bps** (`REG0 bits 7-5 = 111`).
    * Set Transmitting Power to **22 dBm** (`REG1 bits 1-0 = 00`).
-   * Complete REG0 value: `0xEF`. Complete REG1 value: `0x00`.
+   * Complete REG0 value: `0xE7` (bits 4-3 are the parity field and must be `00` for 8N1). Complete REG1 value: `0x00`.
 
 3. **Implement Correct AUX Polling:** Do not treat AUX=HIGH as "safe to transmit immediately." Always: poll HIGH → write complete frame in single call → wait for AUX LOW → wait for AUX HIGH → add 50ms RF guard delay.
 
 4. **Write Configuration in Mode 3 at 9600 Baud:** Switch to 9600 before entering Mode 3, verify the `C1` echo response, check for `FF FF FF` error, then switch back to 115200 after returning to Mode 0.
 
-5. **Keep Frames Under 190 Bytes:** Account for the 8-byte custom frame header. In Fixed Transmission mode, an additional 3-byte routing header further reduces payload to 187 bytes.
+5. **Keep Frames Under 200 Bytes:** Account for the 11-byte frame header/trailer of `LoRaProtocol.md` and, in Fixed Transmission mode, the 3 routing bytes written before the frame: maximum payload 186 B.
 
 6. **Write Each Frame Atomically:** Never dribble bytes to the E220 with delays between them - the module force-flushes its buffer after 2 seconds of UART inactivity, splitting your frame across RF packets.
 

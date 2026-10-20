@@ -113,7 +113,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Gateway"],
         "summary": "Get active LoRa node address",
-        "description": "Returns the currently configured LoRa node address. This endpoint is available on all nodes (returns `0` for LOCAL, and `1-254` for REMOTE).",
+        "description": "Returns the currently configured LoRa node address. This endpoint is available on all nodes (`1` for LOCAL, `2-254` for REMOTE). `0` is invalid and `255` is the broadcast address.",
         "responses": {
           "200": {
             "description": "OK",
@@ -122,7 +122,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "address": { "type": "integer", "description": "The active LoRa node address (0-254)" }
+                    "address": { "type": "integer", "description": "The active LoRa node address (1 = LOCAL, 2-254 = REMOTE)" }
                   }
                 }
               }
@@ -133,7 +133,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "put": {
         "tags": ["Gateway"],
         "summary": "Set active LoRa node address",
-        "description": "Sets the active LoRa node address. The new address (`1-254` for REMOTE) is persisted in NVS and survives reboots. This endpoint is only available on REMOTE instances; accessing it on a LOCAL instance returns a bad request.",
+        "description": "Sets the active LoRa node address. The new address (`2-254`, because `1` is reserved for LOCAL) is persisted in NVS and survives reboots. The E220 module is programmed at boot, so the new address takes effect after the next reboot. This endpoint is only available on REMOTE instances; accessing it on a LOCAL instance returns a bad request.",
         "requestBody": {
           "required": true,
           "content": {
@@ -142,7 +142,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
                 "type": "object",
                 "required": ["address"],
                 "properties": {
-                  "address": { "type": "integer", "minimum": 1, "maximum": 254, "description": "New LoRa address (1-254)" }
+                  "address": { "type": "integer", "minimum": 2, "maximum": 254, "description": "New LoRa address (2-254)" }
                 }
               }
             }
@@ -156,7 +156,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "address": { "type": "integer", "description": "The new active LoRa address (1-254)" }
+                    "address": { "type": "integer", "description": "The new active LoRa address (2-254)" }
                   }
                 }
               }
@@ -298,7 +298,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Diagnostics"],
         "summary": "Request E220 wiring and register check",
-        "description": "Schedules a hardware check of the E220 LoRa module (UART TX/RX, M0, M1, AUX pins, and register read/write round-trip). The check runs on the next pass of applicationLoop() - this endpoint returns immediately. Read the outcome from GET /api/log a few seconds later; look for lines starting with 'E220 diag:'. Uses only the temporary write command (0xC2) so nothing is stored in the module's flash. Removed once Milestone 3 (LoRaTransport) takes over UART2.",
+        "description": "Schedules a hardware check of the E220 LoRa module (UART TX/RX, M0, M1, AUX pins, and register read/write round-trip). The check runs on the next pass of applicationLoop() - this endpoint returns immediately. Read the outcome from GET /api/log a few seconds later; look for lines starting with 'E220 diag:'. Uses only the temporary write command (0xC2) so nothing is stored in the module's flash. The same run then performs a software-only nanopb check (encode a PING payload, compare it with the documented bytes 08 F8 AC D1 91 01, decode it again); its log lines start with 'Protobuf diag:'. Removed once Milestone 3 (LoRaTransport) takes over UART2.",
         "responses": {
           "202": {
             "description": "Check scheduled - read result from GET /api/log",
@@ -327,8 +327,8 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     "/reset": {
       "get": {
         "tags": ["Diagnostics"],
-        "summary": "Clear WiFi credentials and NVS settings, then reboot",
-        "description": "Erases the stored WiFi SSID/password and the gateway tier from NVS, then immediately reboots into the WiFiManager captive portal. The device will be unreachable until credentials and tier are re-entered via the portal.",
+        "summary": "Clear WiFi credentials and all NVS settings, then reboot",
+        "description": "Erases the stored WiFi SSID/password and every application setting persisted in NVS (gateway tier, log level, LoRa channel, LoRa address, CPU frequency), then reboots into the WiFiManager captive portal. The device will be unreachable until credentials and tier are re-entered via the portal.",
         "responses": {
           "200": {
             "description": "Settings cleared; ESP32 is rebooting",

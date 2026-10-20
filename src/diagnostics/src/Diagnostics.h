@@ -14,6 +14,10 @@
  *                      itself, because ESPAsyncWebServer callbacks must never do
  *                      Serial2 I/O (see AGENTS.md threading model).
  *
+ * Each run also performs a software-only nanopb check: a PING payload is encoded,
+ * compared with the bytes documented in doc/LoRaProtocol.md section 4.2 and decoded
+ * again (log lines start with "Protobuf diag:"). It needs no radio.
+ *
  * Results are reported only through the Log_* macros: visible on the serial
  * monitor and via GET /api/log.
  *

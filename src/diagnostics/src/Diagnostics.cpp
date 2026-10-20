@@ -7,6 +7,9 @@
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
 #include "../../lora/src/LoRaTransport.h"
+#include "../../lora/src/nanopb/pb_decode.h"
+#include "../../lora/src/nanopb/pb_encode.h"
+#include "../../lora/src/nanopb/loraiot.pb.h"
 
 /**
  * Diagnostics.cpp - E220 wiring and register read/write check.
@@ -30,6 +33,9 @@
  *   5. Temporarily write the original values back (C2), read back, compare
  *   6. Return to Mode 0
  *
+ * After the E220 sequence, runPingEncodeCheck() encodes a PING payload with nanopb and
+ * compares it with the documented bytes. It is software only and runs even if the E220 failed.
+ *
  * SAFETY
  *   Only the TEMPORARY write command (0xC2) is used, so nothing is stored in
  *   the module's flash. A power cycle always restores the previous settings.
@@ -40,31 +46,36 @@
  *   Malformed:       anything invalid                   -> FF FF FF
  */
 
-// ---- Wiring (canonical pin mapping, see AGENTS.md) -------------------------
+// Pins, E220 commands, register layout and config baud come from LoRaTransportClass
+// (single source of truth, see LoRaTransport.h). Only diagnostic-specific values live here.
 
-static constexpr uint8_t PIN_M0 = 4;    // output, mode control
-static constexpr uint8_t PIN_M1 = 2;    // output, mode control
-static constexpr uint8_t PIN_AUX = 15;  // input, HIGH = module ready
-static constexpr uint8_t PIN_RX = 16;   // ESP32 RX2 <- E220 TXD
-static constexpr uint8_t PIN_TX = 17;   // ESP32 TX2 -> E220 RXD
-
-// ---- Protocol constants ----------------------------------------------------
-
-static constexpr uint8_t CMD_READ = 0xC1;
-static constexpr uint8_t CMD_WRITE_TEMP = 0xC2;
-static constexpr uint8_t REG_START = 0x00;
-static constexpr uint8_t REG_COUNT = 8;                 // ADDH ADDL REG0 REG1 REG2 REG3 CRYPT_H CRYPT_L
-static constexpr size_t REPLY_LEN = 3 + REG_COUNT;      // C1 start len + 8 values
+static constexpr size_t REPLY_LEN = LoRaTransportClass::CONFIG_HEADER_LEN + LoRaTransportClass::REG_WRITE_COUNT;  // C1 start len + 8 values
+static constexpr uint8_t IDX_ADDH = 0;                  // ADDH position within the 8 values
+static constexpr uint8_t IDX_ADDL = 1;                  // ADDL position within the 8 values
+static constexpr uint8_t IDX_REG0 = 2;                  // REG0 position within the 8 values
+static constexpr uint8_t IDX_REG1 = 3;                  // REG1 position within the 8 values
 static constexpr uint8_t IDX_CHANNEL = 4;               // REG2 position within the 8 values
+static constexpr uint8_t IDX_REG3 = 5;                  // REG3 position within the 8 values
 static constexpr uint8_t IDX_CRYPT_H = 6;               // CRYPT_H position within the 8 values
 static constexpr uint8_t IDX_CRYPT_L = 7;               // CRYPT_L position within the 8 values
 static constexpr uint8_t VERIFY_BYTES = 6;              // ADDH..REG3; CRYPT bytes are write-only (read as 0x00)
 static constexpr uint8_t VAL_CRYPT_DEFAULT = 0x00;      // Default crypt byte value (write-only, read returns 0x00)
 static constexpr uint8_t TEST_CHANNEL_A = 0x20;          // First channel value used for diagnostic testing
 static constexpr uint8_t TEST_CHANNEL_B = 0x21;          // Alternate channel value used for diagnostic testing
-static constexpr uint32_t CONFIG_BAUD = 9600;           // fixed in Mode 3 regardless of REG0
-static constexpr uint32_t AUX_TIMEOUT_MS = 1000;
 static constexpr uint32_t REPLY_TIMEOUT_MS = 500;
+static constexpr size_t HEX_BUFFER_SIZE = LoRaTransportClass::HEX_ENTRY_SIZE * REPLY_LEN;  // Log buffer for one full reply
+static constexpr uint32_t POLL_INTERVAL_MS = 1;         // Delay between AUX polls
+static constexpr uint32_t MODE_REACT_DELAY_MS = 10;     // Let AUX react to a mode change before polling it
+static constexpr uint32_t AUX_STABLE_DELAY_MS = 2;      // AUX must stay HIGH >= 2 ms before UART data is accepted
+static constexpr uint32_t WRITE_SETTLE_DELAY_MS = 10;   // Module settle time after a register write (AUX does not signal it)
+static constexpr uint32_t MODE0_IDLE_DELAY_MS = 100;    // Wait in Mode 0 before sampling the AUX idle level
+static constexpr uint32_t TASK_PAUSE_DELAY_MS = 50;     // Let the suspended transceiver task release UART2
+
+// ---- Protobuf PING self-test constants (doc/LoRaProtocol.md section 4.2) ----
+
+static constexpr uint32_t PING_TEST_BOOT_ID = 0x12345678;
+// Expected encoding of Beacon{boot_id = 0x12345678}: tag 0x08 (field 1, varint) + varint of the value.
+static constexpr uint8_t PING_EXPECTED_PAYLOAD[] = {0x08, 0xF8, 0xAC, 0xD1, 0x91, 0x01};
 
 // UART2 object private to this file. It is closed (end()) before returning so
 // the future LoRa transport task can claim UART2 without conflict.
@@ -76,7 +87,7 @@ static HardwareSerial loraSerial(2);
 static void toHex(const uint8_t* data, size_t len, char* out, size_t outSize) {
   size_t pos = 0;
   out[0] = '\0';
-  for (size_t i = 0; i < len && pos + 4 < outSize; i++) {
+  for (size_t i = 0; i < len && pos + LoRaTransportClass::HEX_ENTRY_SIZE < outSize; i++) {
     pos += snprintf(out + pos, outSize - pos, "%02X ", data[i]);
   }
 }
@@ -84,11 +95,11 @@ static void toHex(const uint8_t* data, size_t len, char* out, size_t outSize) {
 /** Waits until AUX reaches the given level. Returns false on timeout. */
 static bool waitAux(bool level, uint32_t timeoutMs) {
   const uint32_t start = millis();
-  while (digitalRead(PIN_AUX) != level) {
+  while (digitalRead(LoRaTransportClass::PIN_AUX) != level) {
     if (millis() - start > timeoutMs) {
       return false;
     }
-    delay(1);
+    delay(POLL_INTERVAL_MS);
   }
   return true;
 }
@@ -98,11 +109,11 @@ static bool waitAux(bool level, uint32_t timeoutMs) {
  * The extra 2 ms after the edge is required before any UART data is sent.
  */
 static bool setMode(bool m1, bool m0) {
-  digitalWrite(PIN_M1, m1);
-  digitalWrite(PIN_M0, m0);
-  delay(10);  // let AUX react to the new mode before polling it
-  const bool ok = waitAux(HIGH, AUX_TIMEOUT_MS);
-  delay(2);
+  digitalWrite(LoRaTransportClass::PIN_M1, m1);
+  digitalWrite(LoRaTransportClass::PIN_M0, m0);
+  delay(MODE_REACT_DELAY_MS);  // let AUX react to the new mode before polling it
+  const bool ok = waitAux(HIGH, LoRaTransportClass::AUX_TIMEOUT_MS);
+  delay(AUX_STABLE_DELAY_MS);
   return ok;
 }
 
@@ -130,9 +141,9 @@ static size_t transact(const uint8_t* cmd, size_t cmdLen, uint8_t* reply, size_t
 
 /** Reads the 8 registers into regs[]. Logs the reason on failure. */
 static bool readRegisters(uint8_t* regs) {
-  const uint8_t cmd[] = {CMD_READ, REG_START, REG_COUNT};
+  const uint8_t cmd[] = {LoRaTransportClass::CMD_READ, LoRaTransportClass::REG_START_ADDR, LoRaTransportClass::REG_WRITE_COUNT};
   uint8_t reply[REPLY_LEN];
-  char hex[48];
+  char hex[HEX_BUFFER_SIZE];
 
   const size_t n = transact(cmd, sizeof(cmd), reply, sizeof(reply));
   toHex(reply, n, hex, sizeof(hex));
@@ -142,15 +153,16 @@ static bool readRegisters(uint8_t* regs) {
     Log_error("E220 diag:   FAIL no reply. Check ESP32 TX(GPIO17)->E220 RXD, E220 TXD->ESP32 RX(GPIO16), M0/M1.");
     return false;
   }
-  if (n == 3 && reply[0] == 0xFF) {
+  if (n == LoRaTransportClass::ERROR_REPLY_LEN && reply[0] == LoRaTransportClass::ERROR_REPLY_BYTE) {
     Log_error("E220 diag:   FAIL FF FF FF. Module is in config mode but rejected the command.");
     return false;
   }
-  if (n != REPLY_LEN || reply[0] != CMD_READ || reply[1] != REG_START || reply[2] != REG_COUNT) {
+  if (n != REPLY_LEN || reply[0] != LoRaTransportClass::CMD_READ || reply[1] != LoRaTransportClass::REG_START_ADDR ||
+      reply[2] != LoRaTransportClass::REG_WRITE_COUNT) {
     Log_error("E220 diag:   FAIL unexpected reply format (expected C1 00 08 + 8 bytes).");
     return false;
   }
-  memcpy(regs, reply + 3, REG_COUNT);
+  memcpy(regs, reply + LoRaTransportClass::CONFIG_HEADER_LEN, LoRaTransportClass::REG_WRITE_COUNT);
   return true;
 }
 
@@ -162,34 +174,36 @@ static bool readRegisters(uint8_t* regs) {
  * used. The AUX log line is kept to confirm this on every run.
  */
 static void waitForWriteToSettle() {
-  delay(10);  // fixed settle time; AUX does not signal it (see above)
+  delay(WRITE_SETTLE_DELAY_MS);  // fixed settle time; AUX does not signal it (see above)
   const uint32_t start = millis();
-  const bool wasLow = (digitalRead(PIN_AUX) == LOW);
-  const bool ok = waitAux(HIGH, AUX_TIMEOUT_MS);
-  delay(2);  // AUX must stay HIGH >= 2 ms before UART data is accepted
+  const bool wasLow = (digitalRead(LoRaTransportClass::PIN_AUX) == LOW);
+  const bool ok = waitAux(HIGH, LoRaTransportClass::AUX_TIMEOUT_MS);
+  delay(AUX_STABLE_DELAY_MS);  // AUX must stay HIGH >= 2 ms before UART data is accepted
   Log_info("E220 diag:   after write: AUX was %s, settled in %lu ms%s", wasLow ? "LOW" : "HIGH",
            static_cast<unsigned long>(millis() - start), ok ? "" : " (TIMEOUT)");
 }
 
 /** Temporarily writes regs[], checks the module's echo, reads back and compares. */
 static bool writeTempAndVerify(const uint8_t* regs) {
-  uint8_t cmd[3 + REG_COUNT] = {CMD_WRITE_TEMP, REG_START, REG_COUNT};
-  memcpy(cmd + 3, regs, REG_COUNT);
+  uint8_t cmd[LoRaTransportClass::CONFIG_HEADER_LEN + LoRaTransportClass::REG_WRITE_COUNT] = {
+      LoRaTransportClass::CMD_WRITE_TEMP, LoRaTransportClass::REG_START_ADDR, LoRaTransportClass::REG_WRITE_COUNT};
+  memcpy(cmd + LoRaTransportClass::CONFIG_HEADER_LEN, regs, LoRaTransportClass::REG_WRITE_COUNT);
 
   uint8_t reply[REPLY_LEN];
-  char hex[48];
+  char hex[HEX_BUFFER_SIZE];
   const size_t n = transact(cmd, sizeof(cmd), reply, sizeof(reply));
   toHex(reply, n, hex, sizeof(hex));
   Log_info("E220 diag:   write echo (%u bytes): %s", static_cast<unsigned>(n), hex);
 
-  if (n != REPLY_LEN || reply[0] != CMD_READ || memcmp(reply + 3, regs, REG_COUNT) != 0) {
+  if (n != REPLY_LEN || reply[0] != LoRaTransportClass::CMD_READ ||
+      memcmp(reply + LoRaTransportClass::CONFIG_HEADER_LEN, regs, LoRaTransportClass::REG_WRITE_COUNT) != 0) {
     Log_error("E220 diag:   FAIL write echo does not match what was written.");
     return false;
   }
 
   waitForWriteToSettle();
 
-  uint8_t readBack[REG_COUNT];
+  uint8_t readBack[LoRaTransportClass::REG_WRITE_COUNT];
   if (!readRegisters(readBack)) {
     return false;
   }
@@ -206,32 +220,33 @@ static bool writeTempAndVerify(const uint8_t* regs) {
 static bool runE220Check() {
   // Suspend the background transceiver task and close its UART handle
   LoRaTransport.pause();
-  delay(50);
+  delay(TASK_PAUSE_DELAY_MS);
 
   Log_info("E220 diag: ===== start (M0=GPIO%u M1=GPIO%u AUX=GPIO%u RX=GPIO%u TX=GPIO%u) =====",
-           PIN_M0, PIN_M1, PIN_AUX, PIN_RX, PIN_TX);
+           LoRaTransportClass::PIN_M0, LoRaTransportClass::PIN_M1, LoRaTransportClass::PIN_AUX,
+           LoRaTransportClass::PIN_RX, LoRaTransportClass::PIN_TX);
 
-  pinMode(PIN_M0, OUTPUT);
-  pinMode(PIN_M1, OUTPUT);
-  pinMode(PIN_AUX, INPUT);
-  loraSerial.begin(CONFIG_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
+  pinMode(LoRaTransportClass::PIN_M0, OUTPUT);
+  pinMode(LoRaTransportClass::PIN_M1, OUTPUT);
+  pinMode(LoRaTransportClass::PIN_AUX, INPUT);
+  loraSerial.begin(LoRaTransportClass::CONFIG_BAUD, SERIAL_8N1, LoRaTransportClass::PIN_RX, LoRaTransportClass::PIN_TX);
 
   bool ok = false;
 
   do {
     // Step 1: Mode 0 idle level of AUX.
     Log_info("E220 diag: [1/6] Mode 0, checking AUX idle level");
-    digitalWrite(PIN_M0, LOW);
-    digitalWrite(PIN_M1, LOW);
-    delay(100);
-    if (digitalRead(PIN_AUX) != HIGH) {
+    digitalWrite(LoRaTransportClass::PIN_M0, LOW);
+    digitalWrite(LoRaTransportClass::PIN_M1, LOW);
+    delay(MODE0_IDLE_DELAY_MS);
+    if (digitalRead(LoRaTransportClass::PIN_AUX) != HIGH) {
       Log_error("E220 diag:   FAIL AUX is LOW. AUX wire open, wrong pin, or module has no power.");
       break;
     }
     Log_info("E220 diag:   PASS AUX is HIGH");
 
     // Step 2: enter config mode.
-    Log_info("E220 diag: [2/6] Entering Mode 3 (M1=1, M0=1) at %u baud", static_cast<unsigned>(CONFIG_BAUD));
+    Log_info("E220 diag: [2/6] Entering Mode 3 (M1=1, M0=1) at %u baud", static_cast<unsigned>(LoRaTransportClass::CONFIG_BAUD));
     if (!setMode(HIGH, HIGH)) {
       Log_error("E220 diag:   FAIL AUX did not return HIGH after the mode change. Check M0/M1/AUX wiring.");
       break;
@@ -240,19 +255,20 @@ static bool runE220Check() {
 
     // Step 3: read registers. This single reply validates UART TX, UART RX, M0 and M1.
     Log_info("E220 diag: [3/6] Reading registers");
-    uint8_t original[REG_COUNT];
+    uint8_t original[LoRaTransportClass::REG_WRITE_COUNT];
     if (!readRegisters(original)) {
       break;
     }
     Log_info("E220 diag:   PASS ADDH=%02X ADDL=%02X REG0=%02X REG1=%02X REG2(ch)=%02X REG3=%02X",
-             original[0], original[1], original[2], original[3], original[4], original[5]);
+             original[IDX_ADDH], original[IDX_ADDL], original[IDX_REG0], original[IDX_REG1], original[IDX_CHANNEL],
+             original[IDX_REG3]);
     Log_info("E220 diag:   factory default (manual) is 00 00 62 00 17; REG3 is not specified there");
 
     // Step 4: temporary write of a different channel.
     const uint8_t testChannel = (original[IDX_CHANNEL] == TEST_CHANNEL_A) ? TEST_CHANNEL_B : TEST_CHANNEL_A;
     Log_info("E220 diag: [4/6] Temporary write: channel %02X -> %02X", original[IDX_CHANNEL], testChannel);
-    uint8_t changed[REG_COUNT];
-    memcpy(changed, original, REG_COUNT);
+    uint8_t changed[LoRaTransportClass::REG_WRITE_COUNT];
+    memcpy(changed, original, LoRaTransportClass::REG_WRITE_COUNT);
     changed[IDX_CHANNEL] = testChannel;
     changed[IDX_CRYPT_H] = VAL_CRYPT_DEFAULT;  // CRYPT_H/L always read back as 0x00; write 0 to keep the echo comparable
     changed[IDX_CRYPT_L] = VAL_CRYPT_DEFAULT;
@@ -290,6 +306,60 @@ static bool runE220Check() {
   return ok;
 }
 
+// ---- Protobuf PING self-test -----------------------------------------------
+
+/**
+ * Encodes a PING payload (Beacon with only boot_id) with nanopb, compares it with the
+ * bytes documented in doc/LoRaProtocol.md section 4.2, then decodes it again.
+ * Pure software: needs no UART and no radio. Returns true only if every check passed.
+ */
+static bool runPingEncodeCheck() {
+  Log_info("Protobuf diag: ===== PING encode/decode check =====");
+
+  loraiot_Beacon ping = loraiot_Beacon_init_zero;
+  ping.boot_id = PING_TEST_BOOT_ID;  // fw_version, uptime_s and registry_rev stay absent in a PING
+
+  uint8_t payload[loraiot_Beacon_size];
+  pb_ostream_t out = pb_ostream_from_buffer(payload, sizeof(payload));
+  if (!pb_encode(&out, loraiot_Beacon_fields, &ping)) {
+    Log_error("Protobuf diag:   FAIL encode: %s", PB_GET_ERROR(&out));
+    return false;
+  }
+
+  char hex[LoRaTransportClass::HEX_ENTRY_SIZE * sizeof(payload)];
+  toHex(payload, out.bytes_written, hex, sizeof(hex));
+  Log_info("Protobuf diag:   encoded PING payload (%u B): %s", static_cast<unsigned>(out.bytes_written), hex);
+
+  if (out.bytes_written != sizeof(PING_EXPECTED_PAYLOAD) ||
+      memcmp(payload, PING_EXPECTED_PAYLOAD, sizeof(PING_EXPECTED_PAYLOAD)) != 0) {
+    toHex(PING_EXPECTED_PAYLOAD, sizeof(PING_EXPECTED_PAYLOAD), hex, sizeof(hex));
+    Log_error("Protobuf diag:   FAIL payload differs from the documented bytes: %s", hex);
+    return false;
+  }
+  Log_info("Protobuf diag:   PASS payload equals the documented bytes");
+
+  loraiot_Beacon decoded = loraiot_Beacon_init_zero;
+  pb_istream_t in = pb_istream_from_buffer(payload, out.bytes_written);
+  if (!pb_decode(&in, loraiot_Beacon_fields, &decoded)) {
+    Log_error("Protobuf diag:   FAIL decode: %s", PB_GET_ERROR(&in));
+    return false;
+  }
+  if (decoded.boot_id != PING_TEST_BOOT_ID) {
+    Log_error("Protobuf diag:   FAIL decoded boot_id %08X, expected %08X",
+              static_cast<unsigned>(decoded.boot_id), static_cast<unsigned>(PING_TEST_BOOT_ID));
+    return false;
+  }
+  if (decoded.has_fw_version || decoded.has_uptime_s || decoded.has_registry_rev) {
+    Log_error("Protobuf diag:   FAIL optional fields present in a PING (has_fw_version=%d has_uptime_s=%d has_registry_rev=%d)",
+              decoded.has_fw_version, decoded.has_uptime_s, decoded.has_registry_rev);
+    return false;
+  }
+  Log_info("Protobuf diag:   PASS decode returns boot_id %08X, optional fields absent",
+           static_cast<unsigned>(decoded.boot_id));
+  Log_info("Protobuf diag: ===== RESULT: PASS. nanopb encode and decode verified =====");
+  return true;
+}
+
 // ---- Public entry points ---------------------------------------------------
 
 // Set at boot so the first diagnosticsLoop() call runs the check. Atomic because
@@ -309,5 +379,9 @@ void diagnosticsLoop() {
   if (!runE220Check()) {
     // NO_DEVICE = slow blink: server is up but the LoRa module is not responding.
     statusLed.setState(LedState::NO_DEVICE);
+  }
+  // Software-only check, independent of the radio, so it runs even if the E220 check failed.
+  if (!runPingEncodeCheck()) {
+    Log_error("Protobuf diag: ===== RESULT: FAIL. See the FAIL line above =====");
   }
 }

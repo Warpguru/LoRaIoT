@@ -18,6 +18,16 @@
  * diagnostics (e.g. JVM heap, OS serial port enumeration).
  */
 
+// ---- Formatting and unit constants -------------------------------------------
+
+static constexpr size_t ESP_INFO_MAC_BYTES        = 6;            // Bytes in an efuse MAC address
+static constexpr size_t ESP_INFO_MAC_BUF_SIZE     = 18;           // "AA:BB:CC:DD:EE:FF" plus terminator
+static constexpr uint8_t ESP_INFO_BITS_PER_BYTE   = 8;            // Shift step when splitting the 64-bit efuse MAC
+static constexpr uint32_t ESP_INFO_BYTES_PER_KB   = 1024;
+static constexpr uint32_t ESP_INFO_BYTES_PER_MB   = ESP_INFO_BYTES_PER_KB * ESP_INFO_BYTES_PER_KB;
+static constexpr uint32_t ESP_INFO_HZ_PER_MHZ     = 1000000;
+static constexpr size_t ESP_INFO_ADDR_BUF_SIZE    = 12;           // "0x" + 6 hex digits + terminator, with margin
+
 /**
  * Helper: Get Reset Reason as String.
  */
@@ -55,13 +65,13 @@ inline const char* getResetReasonString(esp_reset_reason_t reason) {
  */
 inline const char* getFlashModeString(uint32_t mode) {
   switch (mode) {
-    case 0:
+    case FM_QIO:
       return "QIO";
-    case 1:
+    case FM_QOUT:
       return "QOUT";
-    case 2:
+    case FM_DIO:
       return "DIO";
-    case 3:
+    case FM_DOUT:
       return "DOUT";
     default:
       return "Unknown";
@@ -99,10 +109,12 @@ inline void fillESPInfo(JsonObject obj) {
 
   // Efuse MAC formatting (byte-swapped to MSB-first colon notation)
   uint64_t chipid = ESP.getEfuseMac();
-  char efuseMacBuf[18];
-  snprintf(efuseMacBuf, sizeof(efuseMacBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
-           (uint8_t)(chipid), (uint8_t)(chipid >> 8), (uint8_t)(chipid >> 16),
-           (uint8_t)(chipid >> 24), (uint8_t)(chipid >> 32), (uint8_t)(chipid >> 40));
+  char efuseMacBuf[ESP_INFO_MAC_BUF_SIZE];
+  size_t macPos = 0;
+  for (size_t byteIndex = 0; byteIndex < ESP_INFO_MAC_BYTES; byteIndex++) {
+    macPos += snprintf(efuseMacBuf + macPos, sizeof(efuseMacBuf) - macPos, byteIndex == 0 ? "%02X" : ":%02X",
+                       (uint8_t)(chipid >> (byteIndex * ESP_INFO_BITS_PER_BYTE)));
+  }
 
   // Chip Info
   JsonObject chip = obj["chip"].to<JsonObject>();
@@ -116,8 +128,8 @@ inline void fillESPInfo(JsonObject obj) {
   // Flash Info
   uint32_t flash_size = ESP.getFlashChipSize();
   JsonObject flash = obj["flash"].to<JsonObject>();
-  flash["sizeMB"] = flash_size / (1024 * 1024);
-  flash["speedMHz"] = ESP.getFlashChipSpeed() / 1000000;
+  flash["sizeMB"] = flash_size / ESP_INFO_BYTES_PER_MB;
+  flash["speedMHz"] = ESP.getFlashChipSpeed() / ESP_INFO_HZ_PER_MHZ;
   flash["mode"] = getFlashModeString(ESP.getFlashChipMode());
 
   // Memory Info
@@ -148,11 +160,11 @@ inline void fillESPInfo(JsonObject obj) {
     const esp_partition_t* p = esp_partition_get(it);
     JsonObject part = partitions.add<JsonObject>();
     part["label"] = p->label;
-    part["type"] = (p->type == 0) ? "App" : "Data";
-    char addrBuf[12];
+    part["type"] = (p->type == ESP_PARTITION_TYPE_APP) ? "App" : "Data";
+    char addrBuf[ESP_INFO_ADDR_BUF_SIZE];
     snprintf(addrBuf, sizeof(addrBuf), "0x%06X", (unsigned int)p->address);
     part["address"] = addrBuf;
-    part["sizeKB"] = (int)p->size / 1024;
+    part["sizeKB"] = (int)p->size / ESP_INFO_BYTES_PER_KB;
     it = esp_partition_next(it);
   }
   esp_partition_iterator_release(it);

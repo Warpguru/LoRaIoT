@@ -1,0 +1,139 @@
+// LoRaIoT payload schema (protobuf, proto3).
+// Source of truth: doc/LoRaProtocol.md section 10 (keep both identical).
+// Technical design artifact: not compiled and not used by the firmware yet.
+
+syntax = "proto3";
+package loraiot;
+
+// ======================================================================
+// Common
+// ======================================================================
+
+// Result code. Used in ACK and RESPONSE. OK is 0, so it is omitted on the wire.
+enum Status {
+  STATUS_OK          = 0;  // Everything worked
+  STATUS_BAD_REQUEST = 1;  // Something failed, see the log of the answering node.
+                           // Also ends the Describe crawl (no such device)
+}
+
+// ======================================================================
+// Definitions: sent rarely, cached by LOCAL
+// ======================================================================
+
+// Describes ONE kind of value that a device reports.
+message Metric {
+  uint32 id    = 1;  // Short number used in Measurement.metric_id. Unique within one
+                     // device, starts at 1. Sensor A and Sensor B may both have an id 1.
+  string name  = 2;  // Human-readable key shown in REST/JSON, e.g. "Voltage" (max 12 chars).
+                     // Case-sensitive, used verbatim
+  string unit  = 3;  // Unit shown next to the value, e.g. "V". May be empty (max 5 chars)
+  uint32 scale = 4;  // Divisor that turns the integer back into the real value:
+                     // real = value / scale. Example: scale 100, value 335 -> 3.35.
+                     // 0 (not set) is treated as 1, so plain integers need no scale
+}
+
+// Describes ONE device and all the metrics it can report.
+message Device {
+  uint32 device = 1;            // Device index. 0 = the REMOTE node itself,
+                                // 1.. = a device attached through the SoftAP
+  string name = 2;              // Device name, e.g. "Sensor A" (max 12 chars)
+  repeated Metric metrics = 3;  // The metrics this device reports (max 8)
+}
+
+// ======================================================================
+// Measurements: sent often, as small as possible
+// ======================================================================
+
+// One measured value. Its meaning (name, unit, scale) comes from the Metric
+// with the same id, found through Data.device.
+message Measurement {
+  uint32 metric_id = 1;  // Which Metric this is, e.g. 1 = "Voltage" of that device
+  sint32 value = 2;      // The scaled integer. sint32 keeps negative numbers short
+                         // (a plain int32 would need 10 bytes for -5)
+}
+
+// A set of measurements from ONE device. Payload of DATA and DATA_ACK, and the
+// result inside the RESPONSE to a Read.
+message Data {
+  uint32 device = 1;                // Which device the values belong to (0 = the node itself)
+  repeated Measurement values = 2;  // The values, normally a few per frame (max 16)
+  uint32 age_ms = 3;                // Milliseconds since the values were measured.
+                                    // 0 = just now. A SoftAP device pushes its data,
+                                    // so a live read of it reports the age of its last post
+  bool alert = 4;                   // true = unsolicited event (e.g. a threshold was passed),
+                                    // false = normal reading
+}
+
+// ======================================================================
+// Control messages
+// ======================================================================
+
+// Confirms that one frame was received. Payload of the ACK type.
+// The ACK's DST is the original sender, so the sender is not repeated here.
+message Ack {
+  uint32 acked_type = 1;  // TYPE byte of the frame being confirmed.
+                          // 5 = a DATA_ACK, 1 = a PING (the only two types that need an ACK)
+  uint32 acked_seq  = 2;  // SEQ of that frame. Together with acked_type this tells the
+                          // sender exactly which of its pending frames arrived
+  Status status = 3;      // OK = accepted. BAD_REQUEST = received, but not accepted
+}
+
+// Payload of BOTH the PING type (answered by an ACK) and the BEACON type (no reply).
+// A PING sends only boot_id. A BEACON sends all four fields.
+message Beacon {
+  uint32 boot_id = 1;                // Random number chosen by the sender at boot. If it
+                                     // differs from the last one seen from that sender, the
+                                     // sender has rebooted and the receiver discards what it
+                                     // knew about it
+  optional uint32 fw_version = 2;    // Firmware version of the REMOTE (diagnostics).
+                                     // Absent in a PING
+  optional uint32 uptime_s = 3;      // Seconds since the REMOTE booted. Absent in a PING
+  optional uint32 registry_rev = 4;  // Counter that increases whenever a Device or a Metric is
+                                     // added or changed. If LOCAL sees a new value it re-reads
+                                     // the definitions with Describe. The definitions themselves
+                                     // are NOT in the beacon. Absent in a PING ("optional" lets
+                                     // LOCAL tell "absent" from a real 0)
+}
+
+// ======================================================================
+// REQUEST / RESPONSE
+// ======================================================================
+
+// "Give me the current values of this device", also known as a live read.
+// The answer is a Data containing ALL metrics of that device.
+message Read {
+  uint32 device = 1;  // Device to read (0 = the node itself)
+}
+
+// "Tell me what this device is and what it reports." The answer is a Device.
+message Describe {
+  uint32 device = 1;  // Device index to describe. LOCAL asks 0, 1, 2, ... until it gets
+                      // STATUS_BAD_REQUEST, which means there are no more devices
+}
+
+// "Send my text back". Used for link testing and for measuring the payload limit.
+message Echo {
+  string text = 1;  // The REMOTE returns it REVERSED in the RESPONSE (max 175 chars). Reversing
+                    // proves the frame was processed and not merely reflected (M3 test)
+}
+
+// Payload of the REQUEST type. Exactly one command is set.
+message Request {
+  oneof command {
+    Read read = 1;          // Live read of one device
+    Describe describe = 2;  // Fetch a device definition
+    Echo echo = 3;          // Link test
+  }
+}
+
+// Payload of the RESPONSE type. It answers exactly one REQUEST.
+message Response {
+  uint32 request_seq = 1;  // SEQ of the REQUEST this answers. This is how LOCAL matches
+                           // the answer to the REST call that is waiting for it
+  Status status = 2;       // OK, or BAD_REQUEST if the request failed
+  oneof result {           // At most one, depending on the request. None on error
+    Data data = 3;         // Answer to Read
+    Device def = 4;        // Answer to Describe
+    Echo echo = 5;         // Answer to Echo
+  }
+}

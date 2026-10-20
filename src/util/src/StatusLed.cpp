@@ -16,6 +16,18 @@
 // Global singleton instance.
 StatusLed statusLed;
 
+// ---- Timing and task constants ---------------------------------------------
+
+static constexpr int SOS_DOT_DURATION_MS = 150;
+static constexpr int SOS_DASH_DURATION_MS = 450;
+static constexpr int SOS_SYMBOL_GAP_MS = 150;
+static constexpr int SOS_WORD_GAP_MS = 700;
+static constexpr int SOS_CYCLE_GAP_MS = 2000;            // Pause between two SOS cycles
+static constexpr int SOS_PULSES_PER_LETTER = 3;          // S = ..., O = ---
+static constexpr uint32_t NO_DEVICE_TOGGLE_MS = 1000;    // Slow blink half period
+static constexpr uint32_t LED_TASK_STACK_SIZE = 1024;    // Bytes of stack for ledTask
+static constexpr UBaseType_t LED_TASK_PRIORITY = 1;
+
 // ---- blinkSOS --------------------------------------------------------------
 
 /**
@@ -23,35 +35,30 @@ StatusLed statusLed;
  * Called repeatedly by ledTask while in FAULT state.
  */
 void StatusLed::blinkSOS(int pin) {
-  const int dotDurationMs = 150;
-  const int dashDurationMs = 450;
-  const int symbolGapMs = 150;
-  const int wordGapMs = 700;
-
   // Three dots
-  for (int pulseIndex = 0; pulseIndex < 3; pulseIndex++) {
+  for (int pulseIndex = 0; pulseIndex < SOS_PULSES_PER_LETTER; pulseIndex++) {
     digitalWrite(pin, HIGH);
-    delay(dotDurationMs);
+    delay(SOS_DOT_DURATION_MS);
     digitalWrite(pin, LOW);
-    delay(symbolGapMs);
+    delay(SOS_SYMBOL_GAP_MS);
   }
-  delay(wordGapMs);
+  delay(SOS_WORD_GAP_MS);
   // Three dashes
-  for (int pulseIndex = 0; pulseIndex < 3; pulseIndex++) {
+  for (int pulseIndex = 0; pulseIndex < SOS_PULSES_PER_LETTER; pulseIndex++) {
     digitalWrite(pin, HIGH);
-    delay(dashDurationMs);
+    delay(SOS_DASH_DURATION_MS);
     digitalWrite(pin, LOW);
-    delay(symbolGapMs);
+    delay(SOS_SYMBOL_GAP_MS);
   }
-  delay(wordGapMs);
+  delay(SOS_WORD_GAP_MS);
   // Three dots
-  for (int pulseIndex = 0; pulseIndex < 3; pulseIndex++) {
+  for (int pulseIndex = 0; pulseIndex < SOS_PULSES_PER_LETTER; pulseIndex++) {
     digitalWrite(pin, HIGH);
-    delay(dotDurationMs);
+    delay(SOS_DOT_DURATION_MS);
     digitalWrite(pin, LOW);
-    delay(symbolGapMs);
+    delay(SOS_SYMBOL_GAP_MS);
   }
-  delay(2000);
+  delay(SOS_CYCLE_GAP_MS);
 }
 
 // ---- ledTask ---------------------------------------------------------------
@@ -89,7 +96,7 @@ void StatusLed::ledTask(void *param) {
       // Toggle LED then block for up to 1 s. Yields the core for the full
       // 1 s interval. setState() wakes it early via xTaskNotifyGive.
       digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN));
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(NO_DEVICE_TOGGLE_MS));
       break;
 
     case LedState::FAULT:
@@ -107,7 +114,7 @@ void StatusLed::ledTask(void *param) {
 void StatusLed::begin() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH); // ON immediately while task starts
-  xTaskCreate(ledTask, "StatusLed", 1024, this, 1, &taskHandle);
+  xTaskCreate(ledTask, "StatusLed", LED_TASK_STACK_SIZE, this, LED_TASK_PRIORITY, &taskHandle);
 }
 
 // ---- setState --------------------------------------------------------------

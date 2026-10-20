@@ -6,6 +6,8 @@ LoRaIoT is an enterprise-grade, half-duplex, point-to-point (P2P) RF bridge desi
 
 By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi Access Point (SoftAP) directly to a local LAN and downstream Home Automation/MQTT systems. To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, and an on-demand 6-step physical wiring diagnostics suite.
 
+> Abbreviations and technical terms used in this document are explained in [Appendix A: Glossary](#appendix-a-glossary-of-abbreviations).
+
 ```
        [ Remote SoftAP Node ]                           [ Local Station Node ]
   +-------------------------------+                +-------------------------------+
@@ -15,7 +17,7 @@ By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semte
   +-------------------------------+                +-------------------------------+
                  | (UART2)                                        | (UART2)
   +-------------------------------+                +-------------------------------+
-  |  E220-400T22D (ADDR 0x01)     | <=== LoRa ===> |  E220-400T22D (ADDR 0x00)     |
+  |  E220-400T22D (ADDR 0x02)     | <=== LoRa ===> |  E220-400T22D (ADDR 0x01)     |
   |  Fixed Mode (Channel 0x19)    |    (433 MHz)   |  Fixed Mode (Channel 0x19)    |
   +-------------------------------+                +-------------------------------+
 ```
@@ -131,16 +133,19 @@ Milestone 0 validates that both ESP32 boards and their E220 transceivers are phy
    - Open your browser to `http://192.168.4.1`.
    - In the configuration form, select the node's **Gateway Tier** (`LOCAL` or `REMOTE`) and select the desired **LoRa Channel** (0-31, defaults to Channel 23 / `0x17`).
 3. **Automatic Address Assignment:**
-   - Selecting `LOCAL` automatically configures the node's address to `0x00` in NVS.
-   - Selecting `REMOTE` automatically configures the node's address to `0x01` in NVS.
+   - Selecting `LOCAL` automatically configures the node's address to `0x01` in NVS.
+   - Selecting `REMOTE` automatically configures the node's address to `0x02` in NVS.
+   - `0x00` is invalid and `0xFF` is the broadcast address (the E220 treats module addresses `0x0000` and `0xFFFF` as monitor/broadcast, see manual §5.3/5.4).
+   - Nodes provisioned earlier keep their stored address: call `GET /reset` and provision again.
 
 ### Phase 3: Run & Communicate
 1. **E220 Initialization:** On boot, the ESP32 switches UART2 to 9600 baud, pulls `M0=1`/`M1=1` (Mode 3), and writes the persistent register configuration (`C0 00 08 ...`). It then switches `M0=0`/`M1=0` (Mode 0) and re-opens UART2 at 115200 baud.
 2. **Fixed Mode Routing:**
    - Both modules are configured in **Fixed Transmission Mode** (`REG3_MODE_FIXED = 0x40`).
-   - When the `LOCAL` node transmits, the transport layer prepends a 3-byte routing header: `[0x00][0x01][CH]`. The E220 transmits the airframe targeting `0x01` (REMOTE).
-   - The `REMOTE` node's E220 matches address `0x01`, strips the 3 routing bytes, and outputs the raw text over UART.
-   - When the `REMOTE` node replies, the transport layer prepends `[0x00][0x00][CH]`. The `LOCAL` node matches address `0x00` and outputs the raw reply over UART.
+   - When the `LOCAL` node transmits, the transport layer prepends a 3-byte routing header: `[0x00][0x02][CH]`. The E220 transmits the airframe targeting `0x02` (REMOTE).
+   - The `REMOTE` node's E220 matches address `0x02`, strips the 3 routing bytes, and outputs the raw text over UART.
+   - When the `REMOTE` node replies, the transport layer prepends `[0x00][0x01][CH]`. The `LOCAL` node matches address `0x01` and outputs the raw reply over UART.
+   - The E220 never tells the receiver who sent a frame; the production protocol (`doc/LoRaProtocol.md`) therefore carries SRC and DST in its own frame header.
 3. **Ping-Pong Execution:**
    - `LOCAL` transmits plain-text `"Local send: N\n"` (incrementing N) every 2 seconds.
    - `REMOTE` receives it, logs `Received ping: Local send: N`, and immediately replies back with `"Remote reply: N\n"`.
@@ -185,3 +190,9 @@ Receiver sensitivity is mathematically coupled to Spreading Factor and bandwidth
 - By changing the configuration register `REG0` from **62.5 kbps** (`REG0_AIR_DATA_RATE_62K5`) to **2.4 kbps** (`REG0_AIR_DATA_RATE_2K4`), the link budget increases by **approximately $14 \text{ dB}$**.
 - In RF physics, **every $6\text{ dB}$ increase in link budget doubles the penetrative capacity through concrete/steel walls or doubles the open-space range.**
 - Set the data rate to `2.4 kbps` or `9.6 kbps` inside `LoRaTransport.cpp` to punch through dense concrete building cores.
+
+---
+
+## Appendix A: Glossary of Abbreviations
+
+Please see [Glossary.md](./Glossary.md).

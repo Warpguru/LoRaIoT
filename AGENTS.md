@@ -157,22 +157,23 @@ Lightweight TCP/IP (DNS, NTP, MQTT, small REST with MTU=190) is viable over the 
 - **Write each frame atomically** - never byte-by-byte with delays; the E220 force-flushes after 2 s of UART inactivity.
 - **Wrong-format config response is `FF FF FF`** - always check and retry.
 
-## Frame Protocol (spec from `doc/Feasibility.md` §6)
+## Frame Protocol (spec: `doc/LoRaProtocol.md`)
 
 ```
-[0xAA 0x55][Type 1B][SeqNo 2B][PayloadLen 2B][Payload 1-190B][CRC16 2B]
+[0xAA 0x55][VER 1B][TYPE 1B][SRC 1B][DST 1B][SEQ 2B][LEN 1B][Payload 0-186B][CRC16 2B]
 ```
-Max frame = 200 bytes. Type values: `0x01` sensor, `0x02` HTTP GET proxy, `0x03` HTTP response, `0x04` heartbeat/ACK.
+Max UART write = 200 bytes (3 E220 routing bytes + 11 B frame overhead + payload). Types: `0x01` PING, `0x02` BEACON, `0x03` ACK, `0x04` DATA, `0x05` DATA_ACK, `0x06` REQUEST, `0x07` RESPONSE. Payloads are protobuf (nanopb): PING and BEACON share the `Beacon` message, `Data` carries `Measurement{metric_id, value}`, and metric definitions (name, unit, scale) are fetched once with `REQUEST(Describe)` and cached by LOCAL. There is no compile-time metric list and no over-the-air channel change (`doc/LoRaProtocol.md` §10 to §12). Addresses: LOCAL `0x01`, REMOTE `0x02`-`0xFE`, `0xFF` broadcast, `0x00` invalid. The E220 never delivers the sender address, so SRC/DST are in our header.
 
 ## Recommended E220 Configuration (max performance)
 
 ```cpp
 // C0 + StartAddr(00) + Length(08) + ADDH + ADDL + REG0 + REG1 + REG2 + REG3 + CRYPT_H + CRYPT_L
-// REG0=0xEF: UART=115200, AirRate=62.5kbps
+// REG0=0xE7: UART=115200 (bits 7-5), 8N1 (bits 4-3 = 00), AirRate=62.5kbps (bits 2-0)
 // REG1=0x00: SubPacket=200B, Power=22dBm
 // REG2=0x17: Channel 23 -> 433.125 MHz
-// REG3=0x00: Transparent mode, RSSI byte off, LBT off
-uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x01, 0xEF, 0x00, 0x17, 0x00, 0x00, 0x00};
+// REG3=0x40: Fixed transmission (bit 6), RSSI byte off, LBT off
+// ADDL = node address (LOCAL 0x01, REMOTE 0x02..0xFE); never 0x0000/0xFFFF (monitor/broadcast)
+uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x02, 0xE7, 0x00, 0x17, 0x40, 0x00, 0x00};
 ```
 
 ## Code Style

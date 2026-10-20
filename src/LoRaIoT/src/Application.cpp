@@ -79,15 +79,27 @@ void applicationSetup() {
   Serial.printf("\n--- LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ") tier=%s logLevel=%s loraChannel=0x%02X loraAddr=0x%02X cpuFreq=%d MHz ---\n",
                 Gateway.getTierName(), LogBuffer.getLevelName(), LoRaConfig.getChannel(), LoRaConfig.getAddress(), getCpuFrequencyMhz());
 
-  // Set the transport layer callback and initialize E220 hardware
-  LoRaTransport.setReceiveCallback(onLoRaReceive);
-  LoRaTransport.begin();
-
   // Initialize WiFi, construct service objects, register all routes, start server.
+  // setupServer() blocks in the captive portal until the node is provisioned, and
+  // the portal save callback stores the tier, channel and address. The E220 must
+  // therefore be configured afterwards, otherwise it would be programmed with the
+  // defaults of a tier that has not been chosen yet.
   setupServer();
 
-  // LoRa module is configured and online; transition the status LED to READY
-  statusLed.setState(LedState::READY);
+  // Set the transport layer callback and initialize E220 hardware with the final
+  // tier, address and channel. Without a tier the node has no LoRa role, so the
+  // transport stays off (the REST API remains reachable to provision the node).
+  if (Gateway.isConfigured()) {
+    LoRaTransport.setReceiveCallback(onLoRaReceive);
+    LoRaTransport.begin();
+    Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X",
+             Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress());
+    // LoRa module is configured and online; transition the status LED to READY
+    statusLed.setState(LedState::READY);
+  } else {
+    Log_error("Gateway tier is not configured - LoRa transport not started. Call GET /reset and select a tier in the captive portal.");
+    statusLed.setState(LedState::NO_DEVICE);
+  }
 }
 
 // ---- applicationLoop -------------------------------------------------------

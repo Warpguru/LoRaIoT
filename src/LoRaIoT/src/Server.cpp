@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 
@@ -28,6 +29,18 @@
  * ESP32-specific /status and /reset endpoints live here.
  */
 
+// ---- Captive portal form sizes ----------------------------------------------
+
+static constexpr size_t PORTAL_MAX_SELECT_ENTRIES   = 8;    // Max tiers / log levels listed in a portal dropdown
+static constexpr size_t PORTAL_OPTION_SIZE          = 60;   // One <option> element of the tier / level dropdown
+static constexpr size_t PORTAL_CHANNEL_OPTION_SIZE  = 80;   // One <option> element of the channel dropdown
+static constexpr size_t PORTAL_TIER_OPTIONS_SIZE    = 200;  // All tier <option> elements
+static constexpr size_t PORTAL_LEVEL_OPTIONS_SIZE   = 300;  // All log level <option> elements
+static constexpr size_t PORTAL_TIER_HTML_SIZE       = 280;  // Custom HTML of the tier parameter
+static constexpr size_t PORTAL_LEVEL_HTML_SIZE      = 350;  // Custom HTML of the log level parameter
+static constexpr size_t PORTAL_NAME_VALUE_LEN       = 8;    // Max value length of the tier / log level parameter
+static constexpr size_t PORTAL_CHANNEL_VALUE_LEN    = 4;    // Max value length of the channel parameter (incl. terminator)
+
 // ---- Global server objects -------------------------------------------------
 
 AsyncWebServer server(SERVER_PORT);
@@ -48,12 +61,29 @@ static void handleGetStatus(AsyncWebServerRequest* request) {
   request->send(HTTP_STATUS_OK, "application/json", json);
 }
 
+// Erase every key in one application NVS namespace (tier, log level, LoRa
+// channel/address/CPU frequency). Each module names its own namespace constant,
+// so all of them are cleared even if they stop sharing one namespace later.
+static void clearNvsNamespace(const char* nvsNamespace) {
+  Preferences prefs;
+  if (prefs.begin(nvsNamespace, /*readOnly=*/false)) {
+    prefs.clear();
+    prefs.end();
+    Log_info("NVS namespace '%s' cleared", nvsNamespace);
+  } else {
+    Log_error("NVS namespace '%s' could not be opened for clearing", nvsNamespace);
+  }
+}
+
 static void handleReset(AsyncWebServerRequest* request) {
   Log_warn("GET /reset - CLEARING SETTINGS");
   request->send(HTTP_STATUS_OK, "text/plain",
-                "WiFi settings cleared. ESP32 rebooting to Configuration Mode...");
+                "WiFi and application settings cleared. ESP32 rebooting to Configuration Mode...");
   delay(RESET_REBOOT_DELAY_MS);
   wm.resetSettings();
+  clearNvsNamespace(TIER_NVS_NAMESPACE);
+  clearNvsNamespace(LOG_NVS_NAMESPACE);
+  clearNvsNamespace(LORA_NVS_NAMESPACE);
   ESP.restart();
 }
 
@@ -194,58 +224,58 @@ void setupServer() {
   // -- Tier selector (LOCAL / REMOTE) --
   size_t tierCount;
   const Tier* const* tiers = Tier::values(tierCount);
-  const char* tierNames[8];
-  for (size_t i = 0; i < tierCount && i < 8; i++) tierNames[i] = tiers[i]->name();
+  const char* tierNames[PORTAL_MAX_SELECT_ENTRIES];
+  for (size_t i = 0; i < tierCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) tierNames[i] = tiers[i]->name();
   // Build the <select> options; the wrapping <select name='tier'> is supplied
   // by WiFiManager when it renders the customHTML around the registered id.
   // We use a full <select> override via customHTML so the dropdown appears
   // instead of the default text input.
-  char tierOptions[200];
+  char tierOptions[PORTAL_TIER_OPTIONS_SIZE];
   tierOptions[0] = '\0';
-  for (size_t i = 0; i < tierCount && i < 8; i++) {
+  for (size_t i = 0; i < tierCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) {
     const char* sel = (strcmp(Gateway.getTierName(), tierNames[i]) == 0) ? " selected" : "";
-    char opt[60];
+    char opt[PORTAL_OPTION_SIZE];
     snprintf(opt, sizeof(opt), "<option value='%s'%s>%s</option>",
              tierNames[i], sel, tierNames[i]);
     strncat(tierOptions, opt, sizeof(tierOptions) - strlen(tierOptions) - 1);
   }
-  char tierCustomHtml[280];
+  char tierCustomHtml[PORTAL_TIER_HTML_SIZE];
   snprintf(tierCustomHtml, sizeof(tierCustomHtml),
            " type='hidden'><br/>"
            "<label for='tier'>Gateway Tier</label>"
            "<select id='tierSelect' onchange=\"document.getElementById('tier').value=this.value\">%s</select"
            , tierOptions);
-  WiFiManagerParameter tierParam("tier", "", Gateway.getTierName(), 8, tierCustomHtml);
+  WiFiManagerParameter tierParam("tier", "", Gateway.getTierName(), PORTAL_NAME_VALUE_LEN, tierCustomHtml);
   wm.addParameter(&tierParam);
 
   // -- Log-level selector --
   size_t levelCount;
   const LogLevel* const* levels = LogLevel::values(levelCount);
-  const char* levelNames[8];
-  for (size_t i = 0; i < levelCount && i < 8; i++) levelNames[i] = levels[i]->name();
-  char levelOptions[300];
+  const char* levelNames[PORTAL_MAX_SELECT_ENTRIES];
+  for (size_t i = 0; i < levelCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) levelNames[i] = levels[i]->name();
+  char levelOptions[PORTAL_LEVEL_OPTIONS_SIZE];
   levelOptions[0] = '\0';
-  for (size_t i = 0; i < levelCount && i < 8; i++) {
+  for (size_t i = 0; i < levelCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) {
     const char* sel = (strcmp(LogBuffer.getLevelName(), levelNames[i]) == 0) ? " selected" : "";
-    char opt[60];
+    char opt[PORTAL_OPTION_SIZE];
     snprintf(opt, sizeof(opt), "<option value='%s'%s>%s</option>",
              levelNames[i], sel, levelNames[i]);
     strncat(levelOptions, opt, sizeof(levelOptions) - strlen(levelOptions) - 1);
   }
-  char levelCustomHtml[350];
+  char levelCustomHtml[PORTAL_LEVEL_HTML_SIZE];
   snprintf(levelCustomHtml, sizeof(levelCustomHtml),
            " type='hidden'><br/>"
            "<label for='logLevel'>Log Level</label>"
            "<select id='logLevelSelect' onchange=\"document.getElementById('logLevel').value=this.value\">%s</select"
            , levelOptions);
-  WiFiManagerParameter levelParam("logLevel", "", LogBuffer.getLevelName(), 8, levelCustomHtml);
+  WiFiManagerParameter levelParam("logLevel", "", LogBuffer.getLevelName(), PORTAL_NAME_VALUE_LEN, levelCustomHtml);
   wm.addParameter(&levelParam);
 
   // -- LoRa channel selector --
   String channelOptions = "";
-  for (uint8_t i = 0; i <= 31; i++) {
+  for (uint8_t i = LORA_MIN_CHANNEL; i <= LORA_MAX_CHANNEL; i++) {
     const char* sel = (LoRaConfig.getChannel() == i) ? " selected" : "";
-    char opt[80];
+    char opt[PORTAL_CHANNEL_OPTION_SIZE];
     snprintf(opt, sizeof(opt), "<option value='%d'%s>Ch %d - %.3f MHz</option>",
              i, sel, i, LORA_BASE_FREQUENCY + i);
     channelOptions += opt;
@@ -256,9 +286,9 @@ void setupServer() {
   channelCustomHtml += channelOptions;
   channelCustomHtml += "</select";
 
-  char channelStr[4];
+  char channelStr[PORTAL_CHANNEL_VALUE_LEN];
   snprintf(channelStr, sizeof(channelStr), "%d", LoRaConfig.getChannel());
-  WiFiManagerParameter channelParam("loraChannel", "", channelStr, 4, channelCustomHtml.c_str());
+  WiFiManagerParameter channelParam("loraChannel", "", channelStr, PORTAL_CHANNEL_VALUE_LEN, channelCustomHtml.c_str());
   wm.addParameter(&channelParam);
 
   auto saveCallback = [&tierParam, &levelParam, &channelParam]() {
@@ -284,7 +314,7 @@ void setupServer() {
     }
     if (chosenChannel != nullptr && chosenChannel[0] != '\0') {
       int chan = atoi(chosenChannel);
-      if (chan >= 0 && chan <= 31) {
+      if (chan >= LORA_MIN_CHANNEL && chan <= LORA_MAX_CHANNEL) {
         LoRaConfig.setChannel((uint8_t)chan);
         LoRaConfig.save();
         Log_info("LoRa channel set from portal to %d", LoRaConfig.getChannel());
@@ -339,7 +369,7 @@ void setupServer() {
   server.on("/reset",  AsyncWebRequestMethod::HTTP_GET, handleReset);
 
   server.begin();
-  Log_info("AsyncWebServer started on port 80 (HTTP + WS on /ws/data).");
+  Log_info("AsyncWebServer started on port %d (HTTP + WS on %s).", SERVER_PORT, WS_PATH);
 }
 
 void handleServerRequests() {

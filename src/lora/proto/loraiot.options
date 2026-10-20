@@ -1,0 +1,9 @@
+# nanopb size limits for loraiot.proto (no heap use).
+# String max_size includes the terminating NUL, so it is the character limit + 1.
+# Limits are defined in doc/LoRaProtocol.md section 10.
+loraiot.Metric.name      max_size:13
+loraiot.Metric.unit      max_size:6
+loraiot.Device.name      max_size:13
+loraiot.Device.metrics   max_count:8
+loraiot.Data.values      max_count:16
+loraiot.Echo.text        max_size:176

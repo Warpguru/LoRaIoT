@@ -16,9 +16,11 @@ void LoRaConfigClass::begin() {
     channel = prefs.getUChar(LORA_CHANNEL_KEY, LORA_DEFAULT_CHANNEL);
     cpuFreq = prefs.getUInt(LORA_CPU_FREQ_KEY, LORA_CPU_FREQ_DEFAULT);
     
-    // Use 0xFF as a marker since 0xFF is an invalid node address (reserved for broadcast)
-    uint8_t addr = prefs.getUChar(LORA_ADDR_KEY, 0xFF);
-    if (addr != 0xFF) {
+    // LORA_ADDR_BROADCAST doubles as the "not stored" marker (never a node address).
+    // LORA_ADDR_INVALID was the LOCAL address in an earlier firmware and would make the
+    // E220 monitor all traffic, so a stored value of it is discarded and the tier default is used.
+    uint8_t addr = prefs.getUChar(LORA_ADDR_KEY, LORA_ADDR_BROADCAST);
+    if (addr != LORA_ADDR_BROADCAST && addr != LORA_ADDR_INVALID) {
       address = addr;
     } else {
       // Default address based on active tier

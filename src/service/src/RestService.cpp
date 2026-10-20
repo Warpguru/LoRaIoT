@@ -21,6 +21,8 @@
  * HTTP status code constants are defined in Server.h.
  */
 
+static constexpr size_t ERROR_BODY_SIZE = 128;  // Buffer for a formatted JSON error response
+
 RestService::RestService(AsyncWebServer* webServer) : server(webServer) {}
 
 void RestService::registerRoutes() {
@@ -71,8 +73,10 @@ void RestService::registerRoutes() {
         }
 
         int chan = doc["channel"].as<int>();
-        if (chan < 0 || chan > 31) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Channel must be between 0 and 31\"}");
+        if (chan < LORA_MIN_CHANNEL || chan > LORA_MAX_CHANNEL) {
+          char errMsg[ERROR_BODY_SIZE];
+          snprintf(errMsg, sizeof(errMsg), "{\"error\":\"Channel must be between %d and %d\"}", LORA_MIN_CHANNEL, LORA_MAX_CHANNEL);
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);
           return;
         }
 
@@ -120,8 +124,10 @@ void RestService::registerRoutes() {
         }
 
         int addr = doc["address"].as<int>();
-        if (addr < 1 || addr > 254) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Address must be between 1 and 254\"}");
+        if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
+          char errMsg[ERROR_BODY_SIZE];
+          snprintf(errMsg, sizeof(errMsg), "{\"error\":\"Address must be between %d and %d\"}", LORA_DEFAULT_ADDR_REMOTE, LORA_MAX_ADDR_REMOTE);
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);
           return;
         }
 
@@ -163,7 +169,7 @@ void RestService::registerRoutes() {
         if (freq != LORA_CPU_FREQ_80MHZ &&
             freq != LORA_CPU_FREQ_160MHZ &&
             freq != LORA_CPU_FREQ_240MHZ) {
-          char errMsg[128];
+          char errMsg[ERROR_BODY_SIZE];
           snprintf(errMsg, sizeof(errMsg), "{\"error\":\"Frequency must be %d, %d, or %d MHz\"}",
                    LORA_CPU_FREQ_80MHZ, LORA_CPU_FREQ_160MHZ, LORA_CPU_FREQ_240MHZ);
           request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);

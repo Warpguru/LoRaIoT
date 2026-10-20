@@ -21,8 +21,11 @@
 
 typedef void (*LoRaReceiveCallback)(const uint8_t* data, size_t len);
 
+// Max E220 sub-packet / UART write size (REG1_SUB_PACKET_200B)
+static constexpr size_t LORA_MAX_FRAME_LEN = 200;
+
 struct LoRaTxMessage {
-  uint8_t data[200];  // Max E220 sub-packet / frame size
+  uint8_t data[LORA_MAX_FRAME_LEN];
   size_t len;
 };
 
@@ -43,9 +46,12 @@ class LoRaTransportClass {
   static constexpr uint8_t REG_WRITE_COUNT                   = 0x08;   // Number of registers to write
   static constexpr uint8_t CRYPT_KEY_HIGH                    = 0x00;   // Default high-byte encryption key
   static constexpr uint8_t CRYPT_KEY_LOW                     = 0x00;   // Default low-byte encryption key
-  static constexpr uint8_t ADDH_LOCAL                        = 0x00;   // High-byte of address mapping
-  static constexpr uint8_t ADDR_LOCAL                        = 0x00;   // Default software low-byte address for LOCAL
-  static constexpr uint8_t ADDR_REMOTE                       = 0x01;   // Default software low-byte address for REMOTE
+  static constexpr uint8_t ADDH                              = 0x00;   // Module address high byte (always 0; the node address is ADDL, see LoRaConfig.h)
+  static constexpr uint8_t ERROR_REPLY_BYTE                  = 0xFF;   // First byte of the E220 "FF FF FF" wrong-format reply
+  static constexpr size_t  ERROR_REPLY_LEN                   = 3;      // Length of the E220 "FF FF FF" wrong-format reply
+  static constexpr size_t  CONFIG_HEADER_LEN                 = 3;      // C0/C1/C2 + StartAddr + Length prefix of a config command or reply
+  static constexpr size_t  HEX_CHARS_PER_BYTE                = 3;      // "%02X " per byte in hex log output
+  static constexpr size_t  HEX_ENTRY_SIZE                    = HEX_CHARS_PER_BYTE + 1; // One hex entry plus string terminator
   static constexpr uint8_t CHAR_PRINTABLE_MIN                = 32;     // ASCII printable space boundary
   static constexpr uint8_t CHAR_PRINTABLE_MAX                = 126;    // ASCII printable tilde boundary
 
@@ -66,12 +72,12 @@ class LoRaTransportClass {
   static constexpr uint8_t REG0_PARITY_8E1                  = 0x10;   // Binary: 00010000
   static constexpr uint8_t REG0_PARITY_8N1_ALT              = 0x18;   // Binary: 00011000
 
-  // Air Data Rate (Bits 2-0) - for E220-400T22D (Semtech LLCC68)
-  static constexpr uint8_t REG0_AIR_DATA_RATE_2K4            = 0x00;   // Binary: 00000000
-  static constexpr uint8_t REG0_AIR_DATA_RATE_4K8            = 0x01;   // Binary: 00000001
-  static constexpr uint8_t REG0_AIR_DATA_RATE_9K6            = 0x02;   // Binary: 00000010
-  static constexpr uint8_t REG0_AIR_DATA_RATE_19K2           = 0x03;   // Binary: 00000011
-  static constexpr uint8_t REG0_AIR_DATA_RATE_38K4           = 0x04;   // Binary: 00000100
+  // Air Data Rate (Bits 2-0) - E220-400T22D manual section 7.2 (000, 001 and 010 are all 2.4k)
+  static constexpr uint8_t REG0_AIR_DATA_RATE_2K4            = 0x02;   // Binary: 00000010 (manual default)
+  static constexpr uint8_t REG0_AIR_DATA_RATE_4K8            = 0x03;   // Binary: 00000011
+  static constexpr uint8_t REG0_AIR_DATA_RATE_9K6            = 0x04;   // Binary: 00000100
+  static constexpr uint8_t REG0_AIR_DATA_RATE_19K2           = 0x05;   // Binary: 00000101
+  static constexpr uint8_t REG0_AIR_DATA_RATE_38K4           = 0x06;   // Binary: 00000110
   static constexpr uint8_t REG0_AIR_DATA_RATE_62K5           = 0x07;   // Binary: 00000111
 
   // --- E220 Register 1 (REG1) Bitfield Definitions ---
@@ -100,9 +106,9 @@ class LoRaTransportClass {
   static constexpr uint8_t REG3_MODE_TRANSPARENT             = 0x00;   // Binary: 00000000
   static constexpr uint8_t REG3_MODE_FIXED                   = 0x40;   // Binary: 01000000
 
-  // LBT Enable (Bit 5)
+  // LBT Enable (Bit 4; bit 5 is reserved)
   static constexpr uint8_t REG3_LBT_DISABLE                  = 0x00;   // Binary: 00000000
-  static constexpr uint8_t REG3_LBT_ENABLE                   = 0x20;   // Binary: 00100000
+  static constexpr uint8_t REG3_LBT_ENABLE                   = 0x10;   // Binary: 00010000
 
   // E220 Protocol & Timing Constants (from doc/Feasibility.md)
   static constexpr uint32_t CONFIG_BAUD                       = 9600;   // Fixed config baud in Mode 3
@@ -119,6 +125,11 @@ class LoRaTransportClass {
   static constexpr size_t   CONFIG_CMD_LEN                   = 11;     // Size of the E220 C0 config command
   static constexpr size_t   CONFIG_RESPONSE_LEN              = 11;     // Size of the E220 config write response
   
+  static constexpr size_t   DEBUG_PREFIX_SIZE                = 64;     // Buffer for the "LoRa TX: target=..." log prefix
+  static constexpr size_t   RX_BUFFER_SIZE                   = 256;    // Receive line buffer in loraTransportTask
+  static constexpr char     RX_FRAME_TERMINATOR              = '\n';   // Milestone 0 plain-text frames end with a newline
+  static constexpr char     RX_NON_PRINTABLE_PLACEHOLDER     = '.';    // Shown in the debug log for non-printable bytes
+
   // FreeRTOS Task Configuration Constants
   static constexpr uint32_t TASK_STACK_SIZE = 4096;
   static constexpr UBaseType_t TASK_PRIORITY = 2;
