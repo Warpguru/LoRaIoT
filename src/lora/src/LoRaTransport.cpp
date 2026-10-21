@@ -101,7 +101,13 @@ void LoRaTransportClass::begin() {
     Log_error("LoRaTransport::begin - Failed to create TX Queue!");
   }
 
-  // 5. Spawn background transceiver task (TASK_CREATE pins task to Core 1 on dual-core)
+  // 5. Create the statistics mutex
+  statsMutex = xSemaphoreCreateMutex();
+  if (statsMutex == nullptr) {
+    Log_error("LoRaTransport::begin - Failed to create stats mutex!");
+  }
+
+  // 6. Spawn background transceiver task (TASK_CREATE pins task to Core 1 on dual-core)
   TASK_CREATE(loraTransportTask, "LoRaTransTask", TASK_STACK_SIZE, this, TASK_PRIORITY, &transportTaskHandle);
 
   Log_info("LoRa transport layer task started.");
@@ -125,6 +131,28 @@ void LoRaTransportClass::sendRaw(const uint8_t* data, size_t len) {
 
 void LoRaTransportClass::setReceiveCallback(LoRaReceiveCallback cb) {
   receiveCallback = cb;
+}
+
+LoRaStats LoRaTransportClass::getStats() const {
+  LoRaStats snap = {0, 0, 0, 0};
+  if (statsMutex == nullptr) return snap;
+  xSemaphoreTake(statsMutex, portMAX_DELAY);
+  snap.txFrames  = statsTxFrames;
+  snap.rxFrames  = statsRxFrames;
+  snap.crcErrors = statsCrcErrors;
+  snap.ackLoss   = statsAckLoss;
+  xSemaphoreGive(statsMutex);
+  return snap;
+}
+
+void LoRaTransportClass::resetStats() {
+  if (statsMutex == nullptr) return;
+  xSemaphoreTake(statsMutex, portMAX_DELAY);
+  statsTxFrames  = 0;
+  statsRxFrames  = 0;
+  statsCrcErrors = 0;
+  statsAckLoss   = 0;
+  xSemaphoreGive(statsMutex);
 }
 
 void LoRaTransportClass::pause() {
@@ -229,6 +257,10 @@ void LoRaTransportClass::loraTransportTask(void* param) {
             if (self->receiveCallback != nullptr) {
               self->receiveCallback(rxBuffer, rxIndex);
             }
+            // Count every complete frame delivered to the callback
+            xSemaphoreTake(self->statsMutex, portMAX_DELAY);
+            self->statsRxFrames++;
+            xSemaphoreGive(self->statsMutex);
             rxIndex = 0;
           }
         } else {
@@ -243,6 +275,10 @@ void LoRaTransportClass::loraTransportTask(void* param) {
       LoRaTxMessage txMsg;
       if (xQueueReceive(self->txQueue, &txMsg, 0) == pdPASS) {
         self->sendRawInternal(txMsg.data, txMsg.len);
+        // Count every frame that completes the full AUX handshake sequence
+        xSemaphoreTake(self->statsMutex, portMAX_DELAY);
+        self->statsTxFrames++;
+        xSemaphoreGive(self->statsMutex);
       }
     }
 

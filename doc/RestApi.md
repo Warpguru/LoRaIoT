@@ -10,24 +10,34 @@ Base URL: `http://<device-ip>/` (port 80).
 
 ## Endpoint summary
 
-| Method | Path | Registered in | Purpose |
-|---|---|---|---|
-| GET | `/` | `Server.cpp` | Browser UI (HTML from PROGMEM) |
-| GET | `/openapi` | `Server.cpp` | OpenAPI 3.0 specification (JSON, from PROGMEM) |
-| GET | `/openapi/ui` | `Server.cpp` | Swagger UI explorer (fetches JS/CSS from unpkg CDN) |
-| GET | `/status` | `Server.cpp` | ESP32 hardware diagnostics |
-| GET | `/reset` | `Server.cpp` | Clear WiFi and all persisted NVS settings, then reboot |
-| GET | `/api/log` | `Server.cpp` | Read (and optionally clear) the log ring buffer |
-| PUT | `/api/log/level` | `Server.cpp` | Change the active log level |
-| GET | `/api/tier` | `RestService.cpp` | Return the active gateway tier (LOCAL / REMOTE) |
-| GET | `/api/diag/e220` | `RestService.cpp` | Request an E220 wiring and register check |
-| GET | `/api/lora/channel` | `RestService.cpp` | Get active LoRa channel |
-| PUT | `/api/lora/channel` | `RestService.cpp` | Set active LoRa channel |
-| GET | `/api/lora/address` | `RestService.cpp` | Get active LoRa address |
-| PUT | `/api/lora/address` | `RestService.cpp` | Set active LoRa address (REMOTE only) |
-| GET | `/api/system/cpu` | `RestService.cpp` | Get active CPU frequency |
-| PUT | `/api/system/cpu` | `RestService.cpp` | Set active CPU frequency (80, 160, 240 MHz) |
-| WS | `/ws/data` | `WebSocketService.cpp` | Live state push (1 s) |
+| Method | Path | Registered in | Node | Purpose |
+|---|---|---|---|---|
+| GET | `/` | `Server.cpp` | Both | Browser UI (HTML from PROGMEM) |
+| GET | `/openapi` | `Server.cpp` | Both | OpenAPI 3.0 specification (JSON, from PROGMEM) |
+| GET | `/openapi/ui` | `Server.cpp` | Both | Swagger UI explorer (fetches JS/CSS from unpkg CDN) |
+| GET | `/status` | `Server.cpp` | Both | ESP32 hardware diagnostics |
+| GET | `/reset` | `Server.cpp` | Both | Clear WiFi and all persisted NVS settings, then reboot |
+| GET | `/api/log` | `Server.cpp` | Both | Read (and optionally clear) the log ring buffer |
+| PUT | `/api/log/level` | `Server.cpp` | Both | Change the active log level |
+| GET | `/api/tier` | `RestService.cpp` | Both | Return the active gateway tier (LOCAL / REMOTE) |
+| GET | `/api/diag/e220` | `RestService.cpp` | Both | Request an E220 wiring and register check |
+| GET | `/api/lora/channel` | `RestService.cpp` | Both | Get active LoRa channel |
+| PUT | `/api/lora/channel` | `RestService.cpp` | Both | Set active LoRa channel |
+| GET | `/api/lora/address` | `RestService.cpp` | Both | Get active LoRa address |
+| PUT | `/api/lora/address` | `RestService.cpp` | REMOTE | Set active LoRa address |
+| GET | `/api/system/cpu` | `RestService.cpp` | Both | Get active CPU frequency |
+| PUT | `/api/system/cpu` | `RestService.cpp` | Both | Set active CPU frequency (80, 160, 240 MHz) |
+| GET | `/api/lora/nodes` | `RestService.cpp` | LOCAL | List all known remote nodes |
+| GET | `/api/lora/nodes/devices` | `RestService.cpp` | LOCAL | List/lookup devices on a remote node (`?addr=`, `?device=`, `?refresh=true`) |
+| GET | `/api/lora/nodes/metrics` | `RestService.cpp` | LOCAL | Cached or live metric readings (`?addr=`, `?device=`, `?live=true`, `?timeout=ms`) |
+| GET | `/api/lora/stats` | `RestService.cpp` | LOCAL | LoRa transport TX/RX/CRC/ACK counters |
+| POST | `/api/lora/nodes/echo` | `RestService.cpp` | LOCAL | Echo test to a remote node (`?addr=`) |
+| GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
+| GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
+| POST | `/api/lora/beacon` | `RestService.cpp` | LOCAL | Trigger an immediate manual BEACON |
+| POST | `/api/lora/nodes/data` | `RestService.cpp` | LOCAL | Send a Data frame (`?addr=`, `?ack=true\|false`) |
+| POST | `/api/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from a SoftAP IoT device |
+| WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s) |
 
 ---
 
@@ -265,3 +275,183 @@ Supported frequencies (with active WiFi radio):
 
 Pushes a JSON state snapshot to all connected clients once per second. The payload is not
 defined yet (placeholder in `WebSocketService::broadcastTask`).
+
+---
+
+## GET /api/lora/nodes
+
+Returns all remote node addresses that LOCAL has observed via PING or BEACON. LOCAL only.
+
+**Response:** `200 application/json`
+
+```json
+{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":3,"last_seen_ms":12450,"devices":2,"crawl_pending":false}]}
+```
+
+---
+
+## GET /api/lora/nodes/devices
+
+Returns cached device definitions for a remote node. LOCAL only.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Remote node LoRa address (2-254) |
+| `device` | No | Filter to a single device by index (integer) or name |
+| `refresh` | No | `true` to schedule a fresh Describe crawl before responding |
+
+| Status | Meaning |
+|---|---|
+| `200` | OK. Body: `DeviceListResponse` |
+| `400` | `addr` missing or out of range |
+| `404` | Node not found in registry |
+
+```json
+{"addr":2,"registry_rev":3,"crawl_pending":false,"devices":[{"device":0,"name":"RemoteNode","metrics":[{"id":1,"name":"Uptime","unit":"s","scale":1}]},{"device":1,"name":"SensorA","metrics":[{"id":1,"name":"Voltage","unit":"V","scale":100}]}]}
+```
+
+---
+
+## GET /api/lora/nodes/metrics
+
+Returns the most recent measurement values for a device. LOCAL only.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Remote node LoRa address (2-254) |
+| `device` | Yes | Device index |
+| `live` | No | `true` to send a REQUEST(Read) and wait for a fresh response |
+| `timeout` | No | Timeout in ms for live read (200-10000, default 3000) |
+
+| Status | Meaning |
+|---|---|
+| `200` | OK. Body: `MetricsResponse` |
+| `400` | Missing or invalid parameters |
+| `404` | Device not found |
+| `503` | LoRa broker busy (another request in flight) |
+| `504` | No response from remote node within timeout |
+
+```json
+{"addr":2,"device":1,"name":"SensorA","has_data":true,"age_ms":450,"alert":false,"live":false,"values":[{"metric_id":1,"value":335,"name":"Voltage","unit":"V","scale":100}]}
+```
+
+---
+
+## GET /api/lora/stats
+
+Returns cumulative LoRa transport counters since boot. CRC error and ACK loss counters are wired in Phase 3.
+
+**Response:** `200 application/json`
+
+```json
+{"tx_frames":42,"rx_frames":38,"crc_errors":0,"ack_loss":0}
+```
+
+---
+
+## POST /api/lora/nodes/echo
+
+Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns it, proving end-to-end frame processing. Blocks until RESPONSE or timeout. LOCAL only.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Remote node LoRa address (2-254) |
+
+**Request body:** `application/json`
+
+```json
+{"text":"hello world"}
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | Echo response received. Body: `{"addr":2,"seq":7,"status":"ok","echo":"dlrow olleh"}` |
+| `400` | Missing `addr`, invalid body, or text exceeds 175 characters |
+| `503` | LoRa broker busy |
+| `504` | No response from remote node |
+
+---
+
+## GET /api/lora/nodes/ping  /  POST /api/lora/nodes/ping
+
+Sends a PING to the specified remote node and waits for an ACK. Returns RTT and `boot_id`. LOCAL only.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Remote node LoRa address (2-254) |
+
+| Status | Meaning |
+|---|---|
+| `200` | ACK received. Body: `{"addr":2,"boot_id":305419896,"rtt_ms":87}` |
+| `400` | Missing or invalid `addr` |
+| `503` | LoRa broker busy |
+| `504` | No ACK received |
+
+---
+
+## GET /api/lora/ping
+
+Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful for discovering reachable nodes. LOCAL only.
+
+| Status | Meaning |
+|---|---|
+| `200` | At least one ACK received. Body: `{"addr":255,"boot_id":305419896,"rtt_ms":91}` |
+| `503` | LoRa broker busy |
+| `504` | No response |
+
+---
+
+## POST /api/lora/beacon
+
+Queues an immediate manual BEACON frame for broadcast transmission. Returns 202 immediately; the frame is sent asynchronously by `loraTransportTask`. LOCAL only.
+
+**Response:** `202 application/json`
+
+```json
+{"status":"queued"}
+```
+
+---
+
+## POST /api/lora/nodes/data
+
+Encodes a `loraiot_Data` payload and queues it for transmission to a remote node. LOCAL only.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Remote node LoRa address (2-254) |
+| `ack` | No | `true` = DATA_ACK (reliable), `false` = DATA (unreliable). Default `false` |
+
+**Request body:** `application/json`
+
+```json
+{"device":1,"values":[{"metric_id":1,"value":335},{"metric_id":2,"value":215}]}
+```
+
+| Status | Meaning |
+|---|---|
+| `202` | Frame queued. Body: `{"addr":2,"ack":false,"bytes":12}` |
+| `400` | Missing `addr`, invalid body, or nanopb encode failed |
+
+---
+
+## POST /api/sensor/data
+
+REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
+
+**Request body:** `application/json`
+
+```json
+{"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100},"Temp":{"value":215,"unit":"C","scale":10}}}
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | All metrics accepted |
+| `400` | Some metrics rejected, or not a REMOTE instance |
+
+**Response body** (both `200` and `400`):
+
+```json
+{"accepted":[{"metric":"Voltage","device_idx":1,"metric_id":1},{"metric":"Temp","device_idx":1,"metric_id":2}],"rejected":[],"registry_rev":2}
+```

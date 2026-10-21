@@ -9,6 +9,10 @@
 #include "LoRaConfig.h"
 #include "../../lora/src/LoRaTransport.h"
 #include "../../diagnostics/src/Diagnostics.h"
+#include "DeviceRegistry.h"
+#include "SensorRegistry.h"
+#include "DescribeCrawler.h"
+#include "LoRaBroker.h"
 
 /**
  * Application.cpp - Main application setup and loop.
@@ -58,6 +62,12 @@ void applicationSetup() {
   // The led task becomes the sole owner of STATUS_LED_PIN from this point forward.
   statusLed.begin();
 
+  // Initialize registries early so they are ready before any LoRa frames arrive.
+  // DeviceRegistry is used on LOCAL; SensorRegistry is used on REMOTE.
+  // Both are always initialized; the active tier gates which one is used at runtime.
+  DeviceRegistry.begin();
+  SensorRegistry.begin();
+
   Serial.begin(LoRaTransportClass::NORMAL_BAUD);
   delay(BOOT_DELAY_MS);
 
@@ -92,6 +102,7 @@ void applicationSetup() {
   if (Gateway.isConfigured()) {
     LoRaTransport.setReceiveCallback(onLoRaReceive);
     LoRaTransport.begin();
+    loraBrokerBegin();
     Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X",
              Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress());
     // LoRa module is configured and online; transition the status LED to READY
@@ -107,6 +118,11 @@ void applicationSetup() {
 void applicationLoop() {
   // Service any pending on-demand hardware wiring checks
   diagnosticsLoop();
+
+  // Drive the Describe crawl state machine (LOCAL only; no-op cost on REMOTE)
+  if (strcmp(Gateway.getTierName(), "LOCAL") == 0) {
+    describeCrawlerLoop();
+  }
 
   static unsigned long lastSendTime = 0;
   static int pingCounter = 0;

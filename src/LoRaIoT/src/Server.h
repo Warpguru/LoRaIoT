@@ -29,6 +29,8 @@ static constexpr int RESET_REBOOT_DELAY_MS = 200;
 static constexpr int HTTP_STATUS_OK                  = 200;
 static constexpr int HTTP_STATUS_ACCEPTED            = 202;
 static constexpr int HTTP_STATUS_BAD_REQUEST         = 400;
+static constexpr int HTTP_STATUS_NOT_FOUND           = 404;
+static constexpr int HTTP_STATUS_GATEWAY_TIMEOUT     = 504;
 static constexpr int HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 
 // ---- Global objects (defined in Server.cpp) ---------------------------------

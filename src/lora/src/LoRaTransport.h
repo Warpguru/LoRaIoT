@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 /**
  * LoRaTransport.h - Minimal E220 raw transport layer interface.
@@ -21,8 +22,36 @@
 
 typedef void (*LoRaReceiveCallback)(const uint8_t* data, size_t len);
 
+/**
+ * LoRaStats - snapshot of transport-layer counters.
+ * Returned by LoRaTransport.getStats(). All fields are reset by resetStats().
+ * CRC error and ACK loss counters are wired in Phase 3 when the frame
+ * protocol layer is added; they read zero until then.
+ */
+struct LoRaStats {
+  uint32_t txFrames;   // frames successfully written to UART2
+  uint32_t rxFrames;   // complete frames delivered to the receive callback
+  uint32_t crcErrors;  // frames discarded due to CRC mismatch
+  uint32_t ackLoss;    // ACK timeouts / unacknowledged DATA_ACK frames
+};
+
 // Max E220 sub-packet / UART write size (REG1_SUB_PACKET_200B)
-static constexpr size_t LORA_MAX_FRAME_LEN = 200;
+static constexpr size_t LORA_MAX_FRAME_LEN    = 200;
+
+// Fixed-transmission routing prefix prepended by the MCU before every frame:
+// [ADDH 1B][ADDL 1B][CH 1B] (doc/LoRaProtocol.md §2)
+static constexpr size_t LORA_ROUTING_HDR_LEN  = 3;
+
+// LoRaIoT frame header bytes that follow the routing prefix:
+// [0xAA 0x55][VER 1B][TYPE 1B][SRC 1B][DST 1B][SEQ 2B][LEN 1B] (doc/LoRaProtocol.md §4)
+// CRC16 [2B] trails the payload and is also counted against the sub-packet budget.
+static constexpr size_t LORA_FRAME_HEADER_LEN = 9;   // preamble(2)+VER+TYPE+SRC+DST+SEQ(2)+LEN
+static constexpr size_t LORA_FRAME_CRC_LEN    = 2;
+static constexpr size_t LORA_FRAME_OVERHEAD   = LORA_ROUTING_HDR_LEN + LORA_FRAME_HEADER_LEN + LORA_FRAME_CRC_LEN;
+
+// Maximum protobuf payload bytes that fit inside one LoRa frame.
+// 200 - 3 (routing) - 9 (header) - 2 (CRC) = 186 B  (doc/LoRaProtocol.md §4)
+static constexpr size_t LORA_MAX_PAYLOAD_LEN  = LORA_MAX_FRAME_LEN - LORA_FRAME_OVERHEAD;
 
 struct LoRaTxMessage {
   uint8_t data[LORA_MAX_FRAME_LEN];
@@ -143,7 +172,7 @@ class LoRaTransportClass {
   void begin();
 
   /**
-   * Pushes raw data onto the FreeRTOS TX queue to be transmitted asynchronously 
+   * Pushes raw data onto the FreeRTOS TX queue to be transmitted asynchronously
    * by the background loraTransportTask. This method is thread-safe.
    */
   void sendRaw(const uint8_t* data, size_t len);
@@ -163,10 +192,29 @@ class LoRaTransportClass {
    */
   void resume();
 
+  /**
+   * Return a snapshot of the transport statistics counters. Thread-safe.
+   * Used by GET /api/lora/stats.
+   */
+  LoRaStats getStats() const;
+
+  /**
+   * Reset all statistics counters to zero. Thread-safe.
+   */
+  void resetStats();
+
  private:
   LoRaReceiveCallback receiveCallback = nullptr;
   TaskHandle_t transportTaskHandle = nullptr;
   QueueHandle_t txQueue = nullptr;
+
+  // Statistics counters - incremented only inside loraTransportTask (single writer).
+  // Read under statsMutex from other tasks/cores.
+  uint32_t statsTxFrames  = 0;   // frames successfully written to UART2
+  uint32_t statsRxFrames  = 0;   // complete frames delivered to receiveCallback
+  uint32_t statsCrcErrors = 0;   // frames discarded due to CRC mismatch (Phase 3+)
+  uint32_t statsAckLoss   = 0;   // ACK timeouts / unacknowledged DATA_ACK frames (Phase 3+)
+  SemaphoreHandle_t statsMutex = nullptr;
 
   /**
    * Physically writes a raw frame over the UART2 interface, executing all mandatory E220 

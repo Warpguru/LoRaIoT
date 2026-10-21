@@ -29,7 +29,10 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
   ],
   "tags": [
     { "name": "Gateway",     "description": "Gateway role and link status" },
-    { "name": "Diagnostics", "description": "Logging, hardware status, and E220 wiring check" }
+    { "name": "Diagnostics", "description": "Logging, hardware status, and E220 wiring check" },
+    { "name": "LoRa-Nodes",  "description": "Remote node registry and telemetry (LOCAL only)" },
+    { "name": "LoRa-Control","description": "Ping, echo, beacon and data dispatch (LOCAL only)" },
+    { "name": "Sensor",      "description": "SoftAP sensor data ingestion (REMOTE only)" }
   ],
   "paths": {
     "/api/tier": {
@@ -336,6 +339,181 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           }
         }
       }
+    },
+    "/api/lora/nodes": {
+      "get": {
+        "tags": ["LoRa-Nodes"],
+        "summary": "List all known remote nodes",
+        "description": "Returns every remote node address that LOCAL has observed via PING or BEACON, together with their cached boot_id, registry_rev and device count. LOCAL only.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeListResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/lora/nodes/devices": {
+      "get": {
+        "tags": ["LoRa-Nodes"],
+        "summary": "List or lookup devices on a remote node",
+        "description": "Without the `device` parameter returns all cached device definitions for the node. With `device` (index or name) returns only that entry. Add `refresh=true` to schedule a fresh Describe crawl before returning (the crawl runs asynchronously; poll again after ~3 s to see results). LOCAL only.",
+        "parameters": [
+          { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
+          { "name": "device",  "in": "query", "required": false, "schema": { "type": "string" }, "description": "Device index (integer) or device name to filter by" },
+          { "name": "refresh", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to trigger a fresh Describe crawl" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceListResponse" } } }
+          },
+          "400": { "description": "addr missing or out of range", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Node not found in registry",  "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/nodes/metrics": {
+      "get": {
+        "tags": ["LoRa-Nodes"],
+        "summary": "Get cached or live metric readings for a device",
+        "description": "Returns the most recently received measurement values for the specified device. Add `live=true` to send a REQUEST(Read) to the node and wait for a fresh response (blocks until `timeout` ms or 504). LOCAL only.",
+        "parameters": [
+          { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
+          { "name": "device",  "in": "query", "required": true,  "schema": { "type": "integer" }, "description": "Device index" },
+          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to force a live REQUEST(Read) instead of returning cached data" },
+          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 10000, "default": 3000 }, "description": "Timeout in ms for live read (only used when live=true)" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK - cached or live measurements",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MetricsResponse" } } }
+          },
+          "400": { "description": "Missing or invalid parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Device not found",             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy",             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No response from remote node within timeout", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/stats": {
+      "get": {
+        "tags": ["LoRa-Nodes"],
+        "summary": "LoRa transport statistics",
+        "description": "Returns cumulative TX/RX frame counts and error counters since the last reboot or resetStats() call. CRC error and ACK loss counters are wired in Phase 3 (frame protocol layer); they return 0 until then.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoRaStatsResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/lora/nodes/echo": {
+      "post": {
+        "tags": ["LoRa-Control"],
+        "summary": "Echo test to a remote node",
+        "description": "Sends a REQUEST(Echo) to the node. REMOTE reverses the text and returns it in the RESPONSE, proving the frame was processed end-to-end. Blocks until the RESPONSE arrives or timeout. LOCAL only.",
+        "parameters": [
+          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EchoRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Echo response received", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EchoResponse" } } } },
+          "400": { "description": "Missing addr, invalid body, or text exceeds 175 characters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy",            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No response from remote node", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/nodes/ping": {
+      "get": {
+        "tags": ["LoRa-Control"],
+        "summary": "Ping a remote node (unicast)",
+        "description": "Sends a PING frame to the specified remote node and waits for an ACK. Returns round-trip time and boot_id. Also available as POST (identical behaviour). LOCAL only.",
+        "parameters": [
+          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
+        ],
+        "responses": {
+          "200": { "description": "Ping ACK received", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PingResponse" } } } },
+          "400": { "description": "Missing or invalid addr", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy",       "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No ping ACK received",   "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["LoRa-Control"],
+        "summary": "Ping a remote node (unicast, POST form)",
+        "description": "Identical to GET /api/lora/nodes/ping. POST form provided for clients that prefer POST for actions.",
+        "parameters": [
+          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
+        ],
+        "responses": {
+          "200": { "description": "Ping ACK received", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PingResponse" } } } },
+          "400": { "description": "Missing or invalid addr", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy",       "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No ping ACK received",   "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/ping": {
+      "get": {
+        "tags": ["LoRa-Control"],
+        "summary": "Broadcast PING",
+        "description": "Sends a PING to the broadcast address (0xFF). Returns the first ACK received. Useful for discovering which nodes are reachable. LOCAL only.",
+        "responses": {
+          "200": { "description": "At least one ACK received", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PingResponse" } } } },
+          "503": { "description": "LoRa broker busy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No response",      "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/beacon": {
+      "post": {
+        "tags": ["LoRa-Control"],
+        "summary": "Trigger an immediate manual BEACON",
+        "description": "Queues a BEACON frame for transmission to the broadcast address. BEACON carries boot_id, fw_version, uptime_s, and registry_rev. Returns 202 Accepted immediately; the frame is sent asynchronously by loraTransportTask. LOCAL only.",
+        "responses": {
+          "202": { "description": "BEACON queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BeaconResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/nodes/data": {
+      "post": {
+        "tags": ["LoRa-Control"],
+        "summary": "Send a Data frame to a remote node",
+        "description": "Encodes a loraiot_Data payload and queues it for transmission. Use `ack=true` for DATA_ACK (reliable, waits for ACK from REMOTE) or `ack=false` for unreliable DATA. Returns 202 Accepted immediately. LOCAL only.",
+        "parameters": [
+          { "name": "addr", "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
+          { "name": "ack",  "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true = reliable DATA_ACK, false = unreliable DATA" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataPayload" } } }
+        },
+        "responses": {
+          "202": { "description": "Frame queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataDispatchResponse" } } } },
+          "400": { "description": "Missing addr or invalid body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/sensor/data": {
+      "post": {
+        "tags": ["Sensor"],
+        "summary": "Ingest sensor data from a SoftAP-connected IoT device",
+        "description": "REMOTE only. Accepts a JSON payload from a sensor node connected to REMOTE's WiFi SoftAP. Auto-assigns a stable device index and metric_id for each new key. Increments registry_rev when the schema changes. Rejects metrics that would cause the encoded loraiot_Device proto to exceed 186 bytes.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataPayload" } } }
+        },
+        "responses": {
+          "200": { "description": "All metrics accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
+          "400": { "description": "Some metrics rejected (payload limit, table full, or not a REMOTE instance)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } }
+        }
+      }
     }
   },
   "components": {
@@ -390,6 +568,167 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "type": "object",
         "properties": {
           "error": { "type": "string", "description": "Human-readable error description" }
+        }
+      },
+      "NodeEntry": {
+        "type": "object",
+        "properties": {
+          "addr":          { "type": "integer", "description": "LoRa node address (2-254)" },
+          "boot_id":       { "type": "integer", "description": "Random number chosen by the node at boot; changes on reboot" },
+          "registry_rev":  { "type": "integer", "description": "Last successfully crawled registry revision" },
+          "last_seen_ms":  { "type": "integer", "description": "millis() timestamp of the last received frame from this node" },
+          "devices":       { "type": "integer", "description": "Number of cached device definitions" },
+          "crawl_pending": { "type": "boolean", "description": "true if a Describe crawl is scheduled or in progress" }
+        }
+      },
+      "NodeListResponse": {
+        "type": "object",
+        "properties": {
+          "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/NodeEntry" } }
+        }
+      },
+      "MetricDefinition": {
+        "type": "object",
+        "properties": {
+          "id":    { "type": "integer", "description": "Metric ID, unique within the device (1-based)" },
+          "name":  { "type": "string",  "description": "Human-readable metric name, e.g. Voltage (max 12 chars)" },
+          "unit":  { "type": "string",  "description": "Unit string, e.g. V (max 5 chars, may be empty)" },
+          "scale": { "type": "integer", "description": "Divisor: real_value = raw_value / scale. 0 treated as 1" }
+        }
+      },
+      "DeviceDefinition": {
+        "type": "object",
+        "properties": {
+          "device":  { "type": "integer", "description": "Device index (0 = the REMOTE node itself, 1-4 = SoftAP sensors)" },
+          "name":    { "type": "string",  "description": "Device name, e.g. Sensor A (max 12 chars)" },
+          "metrics": { "type": "array",   "items": { "$ref": "#/components/schemas/MetricDefinition" } }
+        }
+      },
+      "DeviceListResponse": {
+        "type": "object",
+        "properties": {
+          "addr":          { "type": "integer" },
+          "registry_rev":  { "type": "integer" },
+          "crawl_pending": { "type": "boolean" },
+          "devices":       { "type": "array", "items": { "$ref": "#/components/schemas/DeviceDefinition" } }
+        }
+      },
+      "MeasurementValue": {
+        "type": "object",
+        "properties": {
+          "metric_id": { "type": "integer", "description": "Matches MetricDefinition.id" },
+          "value":     { "type": "integer", "description": "Scaled integer value. Divide by scale for real value" },
+          "name":      { "type": "string",  "description": "Metric name (from definition, if available)" },
+          "unit":      { "type": "string",  "description": "Unit string (from definition, if available)" },
+          "scale":     { "type": "integer", "description": "Scale divisor (from definition, if available)" }
+        }
+      },
+      "MetricsResponse": {
+        "type": "object",
+        "properties": {
+          "addr":     { "type": "integer" },
+          "device":   { "type": "integer" },
+          "name":     { "type": "string" },
+          "has_data": { "type": "boolean", "description": "false if no measurement has ever been received for this device" },
+          "age_ms":   { "type": "integer", "description": "Milliseconds since the data was last updated (0 = just now)" },
+          "alert":    { "type": "boolean", "description": "true if the last frame carried an alert flag" },
+          "live":     { "type": "boolean", "description": "true if this response came from a live REQUEST(Read)" },
+          "values":   { "type": "array",   "items": { "$ref": "#/components/schemas/MeasurementValue" } }
+        }
+      },
+      "LoRaStatsResponse": {
+        "type": "object",
+        "properties": {
+          "tx_frames":  { "type": "integer", "description": "Frames successfully written to UART2 since boot" },
+          "rx_frames":  { "type": "integer", "description": "Complete frames delivered to the receive callback since boot" },
+          "crc_errors": { "type": "integer", "description": "Frames discarded due to CRC mismatch (wired in Phase 3)" },
+          "ack_loss":   { "type": "integer", "description": "ACK timeouts / unacknowledged DATA_ACK frames (wired in Phase 3)" }
+        }
+      },
+      "EchoRequest": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string", "maxLength": 175, "description": "Text to send; REMOTE reverses it in the RESPONSE to prove end-to-end processing" }
+        }
+      },
+      "EchoResponse": {
+        "type": "object",
+        "properties": {
+          "addr":   { "type": "integer" },
+          "seq":    { "type": "integer", "description": "REQUEST SEQ number assigned to this exchange" },
+          "status": { "type": "string",  "enum": ["ok", "error"] },
+          "echo":   { "type": "string",  "description": "The reversed text returned by the remote node" }
+        }
+      },
+      "PingResponse": {
+        "type": "object",
+        "properties": {
+          "addr":    { "type": "integer", "description": "Node address that replied" },
+          "boot_id": { "type": "integer", "description": "boot_id of the responding node; changes on reboot" },
+          "rtt_ms":  { "type": "integer", "description": "Round-trip time in milliseconds" }
+        }
+      },
+      "BeaconResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "queued", "description": "Always queued - frame is sent asynchronously" }
+        }
+      },
+      "DataPayload": {
+        "type": "object",
+        "required": ["device", "values"],
+        "properties": {
+          "device": { "type": "integer", "description": "Device index (0 = node itself, 1-4 = SoftAP sensor)" },
+          "values": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "required": ["metric_id", "value"],
+              "properties": {
+                "metric_id": { "type": "integer" },
+                "value":     { "type": "integer", "description": "Scaled integer (divide by MetricDefinition.scale for real value)" }
+              }
+            }
+          }
+        }
+      },
+      "DataDispatchResponse": {
+        "type": "object",
+        "properties": {
+          "addr":  { "type": "integer" },
+          "ack":   { "type": "boolean", "description": "true = DATA_ACK (reliable), false = DATA (unreliable)" },
+          "bytes": { "type": "integer", "description": "Encoded nanopb payload length in bytes" }
+        }
+      },
+      "SensorDataPayload": {
+        "type": "object",
+        "required": ["device", "metrics"],
+        "properties": {
+          "device": { "type": "string", "maxLength": 12, "description": "Device name, e.g. SensorA" },
+          "metrics": {
+            "type": "object",
+            "description": "Map of metric name to measurement. Each value is an object with value (required), unit (optional), scale (optional).",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["value"],
+              "properties": {
+                "value": { "type": "integer", "description": "Scaled integer measurement" },
+                "unit":  { "type": "string",  "maxLength": 5 },
+                "scale": { "type": "integer", "description": "Divisor for real value reconstruction. Default 1." }
+              }
+            }
+          }
+        },
+        "example": { "device": "SensorA", "metrics": { "Voltage": { "value": 335, "unit": "V", "scale": 100 }, "Temp": { "value": 215, "unit": "C", "scale": 10 } } }
+      },
+      "SensorDataResponse": {
+        "type": "object",
+        "properties": {
+          "accepted":      { "type": "array",   "items": { "type": "object", "properties": { "metric": { "type": "string" }, "device_idx": { "type": "integer" }, "metric_id": { "type": "integer" } } } },
+          "rejected":      { "type": "array",   "items": { "type": "string" }, "description": "Metric names that were rejected (payload limit, table full)" },
+          "registry_rev":  { "type": "integer", "description": "Current registry revision after this request" }
         }
       }
     }

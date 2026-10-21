@@ -536,24 +536,43 @@ This is a deterrent, not security. The key is stored in NVS and must not be hard
 
 ---
 
-## 17. REST mapping (indicative)
+## 17. REST mapping (implemented - Phase 2/3 of RestPlan.md)
 
-The final contract is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`, which must be updated in
-the same change that registers an endpoint.
+The final contract is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
 
-| LOCAL endpoint | LoRa action |
-|---|---|
-| `GET /api/lora/nodes` | Registry (no LoRa) |
-| `GET /api/lora/nodes/{addr}/ping` | PING |
-| `GET /api/lora/nodes/{addr}/devices` | Cached device definitions; `?refresh=true` re-runs the `Describe` crawl (§12) |
-| `GET /api/lora/nodes/{addr}/devices/{device}/metrics` | Cached values with age |
-| `GET /api/lora/nodes/{addr}/devices/{device}/metrics?live=true&timeout=ms` | `REQUEST(Read)` |
-| `POST /api/lora/nodes/{addr}/data?ack=true\|false` | DATA or DATA_ACK |
+URLs use query parameters (not path parameters) - rationale in `doc/TechDebt.md §2`.
+Blocking calls use `LoRaBroker` (`src/LoRaIoT/src/LoRaBroker.h`); frame encoding is a
+Phase 2 stub pending the frame protocol layer.
 
-- `{device}` accepts the name or the index.
-- Live calls return 200, 404 for an unknown or purged node, 504 on a LoRa timeout.
-- Handlers never touch Serial2; they post to the `loraTask` queue and wait.
-- Unsolicited DATA and DATA_ACK update the LOCAL cache and may be pushed over WebSocket.
+### LOCAL endpoints
+
+| Method | Endpoint | LoRa action |
+|---|---|---|
+| `GET` | `/api/lora/nodes` | Registry read (no LoRa) |
+| `GET` | `/api/lora/nodes/devices?addr=` | Cached device definitions (no LoRa); `?refresh=true` re-runs the Describe crawl (§12) |
+| `GET` | `/api/lora/nodes/devices?addr=&device=` | Single device lookup by index or name (no LoRa) |
+| `GET` | `/api/lora/nodes/metrics?addr=&device=` | Cached measurements with age (no LoRa) |
+| `GET` | `/api/lora/nodes/metrics?addr=&device=&live=true&timeout=ms` | `REQUEST(Read)` -> wait for `RESPONSE(Data)` via LoRaBroker |
+| `GET,POST` | `/api/lora/nodes/ping?addr=` | `PING` -> wait for `ACK`; returns RTT and `boot_id` |
+| `GET` | `/api/lora/ping` | Broadcast `PING` (dst=0xFF) -> first `ACK` |
+| `POST` | `/api/lora/nodes/echo?addr=` | `REQUEST(Echo)` -> wait for `RESPONSE(Echo)`; REMOTE reverses the text |
+| `POST` | `/api/lora/nodes/data?addr=&ack=true\|false` | `DATA` or `DATA_ACK` (fire and forget) |
+| `POST` | `/api/lora/beacon` | Broadcast `BEACON` (fire and forget) |
+| `GET` | `/api/lora/stats` | TX/RX/CRC/ACK counters from `LoRaTransport` (no LoRa) |
+
+### REMOTE endpoint
+
+| Method | Endpoint | Action |
+|---|---|---|
+| `POST` | `/api/sensor/data` | SoftAP sensor ingestion; updates `SensorRegistry`; increments `registry_rev` on schema change |
+
+### Behaviour notes
+
+- All blocking calls return `503` when the broker is busy (one request already in flight).
+- All blocking calls return `504` when no response arrives within the timeout (default 3 s).
+- `{device}` accepts the index (integer) or the device name string.
+- Handlers never touch Serial2 directly; blocking ones post to LoRaBroker and wait on a semaphore.
+- Unsolicited DATA and DATA_ACK frames update the LOCAL cache via `DeviceRegistry.storeData()` and may be pushed over WebSocket (not yet wired).
 
 ---
 

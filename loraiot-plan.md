@@ -148,7 +148,7 @@ artifact: it is stored as `src/lora/proto/loraiot.proto`, and the nanopb sources
 
 ## Milestone 2 — NVS Provisioning: Role, Channel, Address, Log Level, CRYPT Key
 
-**Status:** [ ] pending
+**Status:** [x] substantially complete - two items deferred to M4 (loraKey/CRYPT) and M6 (REMOTE-only addr input)
 **Prerequisite:** Milestone 0 (compile-time role toggle exists; this replaces it with runtime provisioning)
 
 **Intent:**
@@ -185,15 +185,15 @@ Address notes:
 - [x] Create `src/lora/src/LoRaConfig.h/.cpp` — `LoRaConfigClass` singleton: `begin()` (NVS load), `save()`, getters/setters for channel (`uint8_t`) and addr (`uint8_t`); mirrors `GatewayClass` / `Tier` pattern exactly
 - [x] Add `LoRaConfigClass LoRaConfig` global; `begin()` called from `applicationSetup()` before `setupServer()`
 - [x] Add LoRa channel `<select>` to portal in `Server.cpp` (options 0-31, each labelled "Ch N - 433.NNN MHz", current value pre-selected)
-- [ ] Add LoRa address `<input type='number' min='2' max='254'>` to portal, rendered only when tier == REMOTE (inject conditionally using `Gateway.getTier()`)
-- [ ] Add `loraKey` (NVS, portal, `PUT /api/config`) and `LoRaConfig.getKey()` / `setKey()`; use it for CRYPT_H/CRYPT_L in `LoRaTransport::begin()`
-- [ ] Change defaults to the new address map: `LORA_DEFAULT_ADDR_LOCAL = 0x01`, `LORA_DEFAULT_ADDR_REMOTE = 0x02`; reject 0x00, 0x01 (REMOTE) and 0xFF in setters and `PUT` handlers
+- [ ] Add LoRa address `<input type='number' min='2' max='254'>` to portal, rendered only when tier == REMOTE (inject conditionally using `Gateway.getTier()`) — deferred: address is currently auto-set from tier at save time; a multi-REMOTE deployment needs this (M6/M7)
+- [ ] Add `loraKey` (NVS, portal, `PUT /api/config`) and `LoRaConfig.getKey()` / `setKey()`; use it for CRYPT_H/CRYPT_L in `LoRaTransport::begin()` — deferred to M4 (frame codec needs it alongside the full frame layer)
+- [x] Address defaults set: `LORA_DEFAULT_ADDR_LOCAL = 0x01`, `LORA_DEFAULT_ADDR_REMOTE = 0x02`; `LORA_ADDR_INVALID = 0x00`, `LORA_ADDR_BROADCAST = 0xFF`, `LORA_MAX_ADDR_REMOTE = 0xFE` defined in `LoRaConfig.h`
 - [x] Portal save callback: persist channel and addr via `LoRaConfig.save()`
 - [x] Register `GET /api/lora/channel` / `GET /api/lora/address` in `RestService::registerRoutes()`
 - [x] Register `PUT /api/lora/channel` / `PUT /api/lora/address` body handlers: update NVS and return updated JSON
-- [ ] Update `handleReset()` in `Server.cpp`: clear `loraiot_prefs` namespace entirely (not just individual keys) before `wm.resetSettings()`
-- [ ] Remove compile-time `#ifdef POC_ROLE_LOCAL` / `POC_ROLE_REMOTE` from `Application.cpp`; replace with `Gateway.getTier()` runtime branch
-- [ ] Update `LoRaTransport::begin()` (M3) to read channel and addr from `LoRaConfig` instead of hardcoded constants
+- [x] `handleReset()` in `Server.cpp`: calls `clearNvsNamespace()` for `TIER_NVS_NAMESPACE`, `LOG_NVS_NAMESPACE`, and `LORA_NVS_NAMESPACE` before `ESP.restart()`
+- [x] No compile-time `#ifdef POC_ROLE_LOCAL` / `POC_ROLE_REMOTE` — `Application.cpp` uses `strcmp(Gateway.getTierName(), "LOCAL/REMOTE")` runtime branch throughout
+- [x] `LoRaTransport::begin()` reads channel and address from `LoRaConfig.getChannel()` / `LoRaConfig.getAddress()` — no hardcoded constants
 
 **Relevant Context:**
 - `src/LoRaIoT/src/Tier.h/.cpp` — NVS-persisted singleton pattern to follow exactly
@@ -203,7 +203,7 @@ Address notes:
 
 ## Milestone 3 — LoRa Transport Layer: Full E220 Init + Serial2 Owner Task
 
-**Status:** [ ] pending
+**Status:** [x] substantially complete - two items remain (named timing constants, destAddr parameter on sendRaw)
 **Prerequisite:** Milestone 0 (LoRaTransport skeleton exists; this replaces it with production implementation), Milestone 2 (LoRaConfig available for channel/addr)
 
 **Intent:**
@@ -221,15 +221,15 @@ pattern, and a clean raw-bytes API that the frame codec (M4) builds on top of.
 - Mode 3 entry/exit: switch UART to 9600, set M1=1/M0=1, wait AUX rising edge ≥ 2 ms; reverse on exit
 
 **Todo List:**
-- [ ] Upgrade `configureE220()`: switch UART to 9600, enter Mode 3, send config command with channel from `LoRaConfig`, REG3=0x40 (fixed transmission) and CRYPT key, verify response (not FF FF FF), exit Mode 3, switch UART back to 115200
-- [ ] Upgrade `sendRaw(destAddr, buf, len)`: prepend 3-byte address header before writing to Serial2
-- [ ] Implement `setMode(m1, m0)` private method: set GPIO M0/M1, wait for AUX rising edge ≥ 2 ms
-- [ ] Implement full AUX-correct `sendLoRaFrame()` per Feasibility.md §7.1
-- [ ] `loraTransportTask` loop: dequeue outgoing request → `sendLoRaFrame()` (destination address per request, not derived from the own address); read incoming bytes from Serial2 → invoke receive callback with the raw bytes
-- [ ] Define named constants per `doc/LoRaProtocol.md` §7: `LORA_ACK_TIMEOUT_MS=200`, `LORA_REQUEST_TIMEOUT_MS=1000`, `LORA_MAX_RETRIES=3`, `LORA_BACKOFF_MIN_MS=20`, `LORA_BACKOFF_MAX_MS=200`, `LORA_BCAST_REPLY_WINDOW_MS=1000`, `LORA_RF_GUARD_DELAY_MS=50`
-- [ ] Use `TASK_CREATE` macro; priority 2; 4096 stack
-- [ ] Remove the M0 peer-address assumption in `sendRawInternal()` (`targetAddl` toggling LOCAL/REMOTE)
-- [ ] In `Application.cpp`: call `loraTransport.begin()` after `LoRaConfig.begin()`
+- [x] `begin()` in `LoRaTransport.cpp`: switches UART to 9600, enters Mode 3 (M1=1,M0=1), sends config command with channel from `LoRaConfig`, REG0=0xE7, REG1=0x00, REG3=0x40, verifies response (checks `!= FF`), exits Mode 3, reopens UART at 115200 — CRYPT key hardcoded `0x00 0x00` (deferred with loraKey to M4)
+- [ ] `sendRaw(destAddr, buf, len)`: currently takes only `(buf, len)` — destination address is hardcoded in `sendRawInternal()` by toggling own address; must be upgraded to accept `destAddr` as a parameter when frame codec (M4) wires per-frame addressing
+- [x] `setMode(m0, m1)` private method implemented: sets GPIO, waits for AUX rising edge with `AUX_TIMEOUT_MS` and `GUARD_SETTLE_DELAY_MS`
+- [x] Full AUX-correct `sendRawInternal()`: polls AUX HIGH → writes routing header + payload atomically → waits AUX LOW → waits AUX HIGH → 50 ms guard delay
+- [x] `loraTransportTask`: dequeues TX messages → `sendRawInternal()`, increments `statsTxFrames`; reads Serial2 bytes → delivers complete frame to receive callback on `'\n'` terminator (M0 plain-text mode; M4 will replace with binary sync-byte framing), increments `statsRxFrames`
+- [ ] Named timing constants from `doc/LoRaProtocol.md` §7 still missing: `LORA_ACK_TIMEOUT_MS=200`, `LORA_REQUEST_TIMEOUT_MS=1000`, `LORA_MAX_RETRIES=3`, `LORA_BACKOFF_MIN_MS=20`, `LORA_BACKOFF_MAX_MS=200`, `LORA_BCAST_REPLY_WINDOW_MS=1000` — add to `LoRaTransport.h` (or `LoRaFrame.h` in M4) before implementing retry logic
+- [x] `TASK_CREATE` macro used, priority 2, stack 4096
+- [ ] M0 peer-address assumption still present in `sendRawInternal()` (line 185): `targetAddl` is derived from own address instead of a per-message parameter — fix when upgrading `sendRaw` signature in M4
+- [x] `LoRaTransport.begin()` called from `applicationSetup()` after `LoRaConfig.begin()`
 
 **Relevant Context:**
 - `doc/Feasibility.md` §3.1 (pin mapping), §3.2 (AUX semantics), §3.3 (config command), §7.1 (send pattern)
@@ -239,7 +239,7 @@ pattern, and a clean raw-bytes API that the frame codec (M4) builds on top of.
 
 ## Milestone 4 — Frame Codec: Framing, CRC, and LoRaState Shared State
 
-**Status:** [ ] pending. Note: `loraiot.proto`, `loraiot.options`, the generated `loraiot.pb.h/.c` and the nanopb 0.4.9.1 runtime already exist in `src/lora/` (see `doc/NanopbGeneration.md`). Only the startup self-test in `Diagnostics.cpp` (PING encode/decode) uses them so far; it passes on the ESP32 when built with the Arduino IDE. A PlatformIO build has not been run.
+**Status:** [ ] pending. Note: `loraiot.proto`, `loraiot.options`, the generated `loraiot.pb.h/.c` and the nanopb 0.4.9.1 runtime already exist in `src/lora/` (see `doc/NanopbGeneration.md`). Only the startup self-test in `Diagnostics.cpp` (PING encode/decode) uses them so far; it passes on the ESP32 when built with the Arduino IDE. A PlatformIO build has not been run. The RestPlan work (Phases 1-4) pre-implemented several M4 deliverables: `DeviceRegistry` (LOCAL per-REMOTE definition cache), `SensorRegistry` (REMOTE device/metric table), `DescribeCrawler` (LOCAL Describe crawl state machine), `LoRaBroker` (HTTP-to-loraTask request/response semaphore bridge), nanopb encoding in `LoRaBroker.cpp` (stub - no frame header/CRC yet), `LoRaStats` and counters in `LoRaTransport`.
 **Prerequisite:** Milestone 1 (CRC variant and frame type table decided), Milestone 3 (transport layer complete)
 
 **Intent:**
@@ -260,15 +260,19 @@ the LRU REMOTE registry and the per-SRC sequence/boot_id state.
 - Frame type enum: `PING=0x01`, `BEACON=0x02`, `ACK=0x03`, `DATA=0x04`, `DATA_ACK=0x05`, `REQUEST=0x06`, `RESPONSE=0x07`
 
 **Todo List:**
-- [ ] Implement `computeCRC16(const uint8_t* data, size_t len)` — CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no input/output reflection); add the `0x29B1` check
-- [ ] Create `src/lora/src/LoRaFrame.h` — frame constants, `LoRaFrameType` enum, `LoRaFrame` struct (ver, type, src, dst, seq, len, payload[186]), function signatures
-- [ ] Implement `encodeFrame(const LoRaFrame&, uint8_t* outBuf, size_t& outLen)` per §4
-- [ ] Implement `decodeFrame(const uint8_t* inBuf, size_t len, LoRaFrame& out, uint8_t ownAddr)`: resync on SYNC, verify CRC, VER, TYPE, DST; return false on any error
-- [ ] Create `src/lora/proto/loraiot.proto` and `.options`; add nanopb to `platformio.ini` `lib_deps` and generate sources
-- [ ] Create `src/lora/src/LoRaMetrics.h/.cpp` — definition cache (per REMOTE and device) and JSON <-> `Data` conversion (`value / scale`, key from `Metric.name`)
-- [ ] Create `src/lora/src/LoRaState.h/.cpp` — mirrors `ConverterState` pattern; LRU registry with `updateRemote()`, `purgeStale()`; per-SRC duplicate detection and `boot_id` reset (§6.1)
-- [ ] Add `LoRaState loraState` global (analogous to `converterState` in SerialController)
-- [ ] Update `LoRaTransport` receive callback: call `decodeFrame()`, update `loraState`, call `purgeStale()`
+- [ ] Implement `computeCRC16(const uint8_t* data, size_t len)` in `src/lora/src/LoRaFrame.h/.cpp` — CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no input/output reflection); add the `0x29B1` check
+- [ ] Create `src/lora/src/LoRaFrame.h` — frame constants, `LoRaFrameType` enum (`PING=0x01` … `RESPONSE=0x07`), `LoRaFrame` struct (ver, type, src, dst, seq, len, payload[186]), function signatures
+- [ ] Implement `encodeFrame(const LoRaFrame&, uint8_t* outBuf, size_t& outLen)` per §4 — used by `LoRaBroker.cpp` to replace the `[Phase2 stub]` send path
+- [ ] Implement `decodeFrame(const uint8_t* inBuf, size_t len, LoRaFrame& out, uint8_t ownAddr)`: resync on `0xAA 0x55` SYNC, verify CRC, VER, TYPE, DST; return false on any error; increment `statsCrcErrors` in `LoRaTransport`
+- [x] `loraiot.proto` and `.options` already exist in `src/lora/proto/`; nanopb 0.4.9.1 generated sources (`loraiot.pb.h/.c`) and runtime committed in `src/lora/src/nanopb/` — no further generation needed unless the schema changes
+- [ ] Add named timing/retry constants to `LoRaTransport.h` (or `LoRaFrame.h`): `LORA_ACK_TIMEOUT_MS=200`, `LORA_REQUEST_TIMEOUT_MS=1000`, `LORA_MAX_RETRIES=3`, `LORA_BACKOFF_MIN_MS=20`, `LORA_BACKOFF_MAX_MS=200`, `LORA_BCAST_REPLY_WINDOW_MS=1000` — carried over from M3 open item
+- [ ] Upgrade `sendRaw` signature to `sendRaw(uint8_t destAddr, const uint8_t* buf, size_t len)` and remove the M0 toggling assumption from `sendRawInternal()`; update all callers (`LoRaBroker`, `DescribeCrawler`, `RestService`)
+- [x] Per-REMOTE definition cache (`Device`/`Metric` from `Describe`): implemented as `DeviceRegistry` in `src/LoRaIoT/src/DeviceRegistry.h/.cpp` (LOCAL) and `SensorRegistry` in `src/LoRaIoT/src/SensorRegistry.h/.cpp` (REMOTE) — see RestPlan Phase 1
+- [x] Describe crawl state machine (`DescribeCrawler.h/.cpp`) wired into `applicationLoop()`; `sendDescribeRequest()` is a stub pending `encodeFrame()` from this milestone
+- [x] HTTP-to-loraTask broker (`LoRaBroker.h/.cpp`): FreeRTOS semaphore bridge, single in-flight slot, nanopb encode of `loraiot_Request`; frame header/CRC encoding is a stub pending `encodeFrame()`
+- [x] `LoRaStats` struct and TX/RX/CRC/ACK counters added to `LoRaTransport.h/.cpp`; `statsCrcErrors` and `statsAckLoss` are wired to zero until `decodeFrame()` is implemented
+- [ ] `LoRaState.h/.cpp` (per-SRC last SEQ, last boot_id, cached RESPONSE, LRU REMOTE registry with `updateRemote()` / `purgeStale()`) — the `DeviceRegistry` `NodeEntry` struct covers `lastSeenMs`, `bootId`, `online`; a thin `LoRaState` wrapper may still be useful for per-SRC SEQ tracking and duplicate detection (§6)
+- [ ] Update `LoRaTransport` receive callback: replace `'\n'`-terminated M0 parser with binary `decodeFrame()` call; dispatch to `loraBrokerOnResponse()`, `loraBrokerOnPingAck()`, `describeCrawlerOnResponse()` based on frame TYPE
 
 **Relevant Context:**
 - `doc/LoRaProtocol.md` (M1) - §4 frame, §5 types, §6 sequence numbers, §10 payloads, §11 naming, §12 definitions

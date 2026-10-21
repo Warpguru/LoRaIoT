@@ -37,7 +37,9 @@
  */
 
 // Ring buffer dimensions.
-// 128 lines × 160 chars = ~20 KB - well within the ~300 KB free heap budget.
+// 128 lines × 160 chars = ~20 KB static BSS.
+// The fixed-width row layout wastes ~110 B/line on average (typical lines are ~50 chars).
+// Improvement alternatives are documented in doc/TechDebt.md §1.
 static constexpr int LOG_BUFFER_LINES = 128;
 static constexpr int LOG_BUFFER_LINE_LEN = 160;
 
