@@ -284,19 +284,29 @@ Since serial monitors can typically only focus on a single COM port at a time, L
 ### The 6-Step Hardware Diagnostics Check
 The diagnostics run automatically at boot and can be re-triggered at any time via REST:
 
-1. **Trigger the Check:**
-   ```bash
-   curl -s http://<node_ip>/api/diag/e220
-   ```
-   *Note: This safely calls `LoRaTransport.pause()` to suspend the background transceiver task before touching UART2, and `LoRaTransport.resume()` when done.*
-2. **Fetch the Diagnostics Log:**
-   ```bash
-   curl -s http://<node_ip>/api/log
-   ```
-3. **Interpret the Output:** Look for `E220 diag:` lines:
-   - **Step 1 Fail (AUX is LOW):** No power to E220 (check VCC/GND) or AUX wire loose/stuck.
-   - **Step 2 Fail (AUX did not return HIGH):** M0 or M1 lines disconnected.
-   - **Step 3 Fail (FF FF FF reply):** RXD/TXD lines loose, swapped, or another task is using UART2 during the check.
+**Trigger the check on demand:**
+```bash
+curl -s http://<node_ip>/api/diag/e220
+```
+*This safely calls `LoRaTransport.pause()` to suspend the background transceiver task before touching UART2, and `LoRaTransport.resume()` when done.*
+
+**Fetch the results:**
+```bash
+curl -s http://<node_ip>/api/log
+```
+
+Look for `E220 diag:` lines in the log. The six steps and their failure interpretations:
+
+| Step | What is tested | Fail diagnosis |
+|---|---|---|
+| 1 | AUX reads HIGH in Mode 0 (idle) | No power to E220 (check VCC/GND) or AUX wire loose/stuck |
+| 2 | AUX returns HIGH after entering Mode 3 (M1=1, M0=1) | M0 or M1 control line disconnected |
+| 3 | Read all 8 registers (`C1 00 08`) — response is not `FF FF FF` | RXD/TXD lines loose, swapped, or another task is holding UART2 |
+| 4 | Temp-write a different channel (`C2`), read back, compare | Register write path broken — E220 flash worn or SPI conflict |
+| 5 | Temp-write original values back (`C2`), read back, compare | Values did not round-trip — likely a UART noise or timing issue |
+| 6 | Return to Mode 0 — AUX rises HIGH again | M0/M1 lines intermittent or AUX stuck LOW after mode switch |
+
+Steps 4 and 5 use the **temporary write command `0xC2`** — nothing is stored in the E220's flash, so a power cycle always restores the previous configuration.
 
 ### Multi-Node Log Comparison
 ```bash
