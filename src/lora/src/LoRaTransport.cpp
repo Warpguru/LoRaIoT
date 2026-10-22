@@ -9,7 +9,7 @@
 #include "../../LoRaIoT/src/LoRaConfig.h"
 
 // Hardware Serial object mapped to UART2
-static HardwareSerial LoRaSerial(2);
+HardwareSerial LoRaSerial(2);
 
 // The actual global memory allocation for the LoRa transport layer singleton.
 // All application-level files include "LoRaTransport.h" and interact with this object.

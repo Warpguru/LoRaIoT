@@ -245,3 +245,8 @@ class LoRaTransportClass {
 
 // Global singleton instance exported for direct use across the application
 extern LoRaTransportClass LoRaTransport;
+
+/** The single UART2 serial instance shared by LoRaTransport and Diagnostics.
+ *  Diagnostics borrows it (after calling LoRaTransport.pause()) by switching
+ *  the baud rate; LoRaTransport.resume() restores it to NORMAL_BAUD. */
+extern HardwareSerial LoRaSerial;

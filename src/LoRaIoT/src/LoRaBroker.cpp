@@ -39,22 +39,35 @@ static PingResult        lastPingResult   = {0, 0};
 // Carried in every outgoing PING Beacon payload so REMOTE can log it.
 static uint32_t bootId = 0;
 
-// ---- Phase 2 stub frame sender (REQUEST frames only) -----------------------
+// ---- REQUEST frame sender ---------------------------------------------------
 
 /**
- * Encode a loraiot_Request into raw protobuf bytes and queue for transmission.
- * No frame header or CRC yet - Phase 2 stub pending M4 full integration.
+ * Encode a loraiot_Request protobuf into a full LoRaFrame and enqueue for TX.
+ * Uses encodeFrame() + LoRaTransport.sendFrame() — same path as PING.
  */
 static BrokerResult encodeAndSend(const loraiot_Request& req, uint8_t dstAddr, uint16_t seq) {
-  uint8_t buf[LORA_MAX_PAYLOAD_LEN];
-  pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+  uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
+  pb_ostream_t stream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&stream, loraiot_Request_fields, &req)) {
-    Log_error("LoRaBroker: nanopb encode failed: %s", PB_GET_ERROR(&stream));
+    Log_error("LoRaBroker: REQUEST nanopb encode failed: %s", PB_GET_ERROR(&stream));
     return BrokerResult::ENCODE_ERR;
   }
-  Log_info("LoRaBroker: sending REQUEST seq=%u type=%u dst=0x%02X encoded=%u bytes [Phase2 stub - no frame header yet]",
+
+  LoRaFrame frame;
+  frame.ver  = LORA_PROTOCOL_VER;
+  frame.type = LoRaFrameType::REQUEST;
+  frame.src  = LoRaConfig.getAddress();
+  frame.dst  = dstAddr;
+  frame.seq  = seq;
+  frame.len  = static_cast<uint8_t>(stream.bytes_written);
+  memcpy(frame.payload, payloadBuf, frame.len);
+
+  if (!LoRaTransport.sendFrame(frame)) {
+    Log_error("LoRaBroker: REQUEST sendFrame failed seq=%u dst=0x%02X", seq, dstAddr);
+    return BrokerResult::ENCODE_ERR;
+  }
+  Log_info("LoRaBroker: sent REQUEST seq=%u cmd=%u dst=0x%02X payload=%u bytes",
            seq, req.which_command, dstAddr, (unsigned)stream.bytes_written);
-  LoRaTransport.sendRaw(dstAddr, buf, stream.bytes_written);
   return BrokerResult::OK;
 }
 
@@ -192,7 +205,7 @@ BrokerResult loraBrokerWait(uint32_t timeoutMs) {
     pendingActive = false;
     xSemaphoreGive(brokerMutex);
   }
-  Log_warn("LoRaBroker::wait - timeout after %u ms (seq=%u)", timeoutMs, (unsigned)pendingSeq);
+  Log_warn("LoRaBroker::wait - timeout after %ums (seq=%u)", timeoutMs, (unsigned)pendingSeq);
   return BrokerResult::TIMEOUT;
 }
 

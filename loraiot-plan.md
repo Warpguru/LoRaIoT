@@ -283,7 +283,7 @@ the LRU REMOTE registry and the per-SRC sequence/boot_id state.
 
 ## Milestone 5 — Echo Test: End-to-End Validation with Two ESPs
 
-**Status:** [-] partially complete
+**Status:** [x] complete — all items hardware-verified; echo exchange end-to-end working
 **Prerequisite:** Milestones 1, 2, 3, 4
 
 **Intent:**
@@ -308,14 +308,14 @@ replies with a `RESPONSE(echo)` whose `request_seq` equals the request SEQ. This
 
 **Todo List:**
 - [x] REMOTE receive callback: PING -> ACK with boot_id handling — `sendPingAck()` in `Application.cpp` decodes `Beacon` payload, logs `boot_id`, encodes `Ack` protobuf, sends proper `LoRaFrame`; hardware-verified (RTT 108-122 ms, zero CRC errors)
-- [ ] REMOTE receive callback: REQUEST(echo) -> reverse text, RESPONSE with `request_seq` — `onLoRaReceive` has no `REQUEST` case yet; also needs `RESPONSE` case on LOCAL to call `loraBrokerOnResponse()`
-- [ ] LOCAL echo TX in `RestService`: `POST /api/lora/nodes/echo?addr=N` is registered and blocks on broker (`loraBrokerWait()`); however `encodeAndSend()` in `LoRaBroker.cpp` is an unframed Phase 2 stub (calls `sendRaw` with raw protobuf, no `AA 55` header or CRC) — must be replaced with `encodeFrame()` + `sendFrame()` before the exchange can work
-- [ ] Register `GET /api/lora/echo/result` in `RestService::registerRoutes()` — not yet present; `POST /api/lora/nodes/echo` already returns the result inline, so a shared `EchoResult` struct and a GET handler are needed
+- [x] REMOTE receive callback: REQUEST(echo) -> reverse text, RESPONSE with `request_seq` — `sendEchoResponse()` added to `Application.cpp`; decodes `loraiot_Request`, reverses text, encodes `loraiot_Response`, sends proper `LoRaFrame{RESPONSE}`; LOCAL `RESPONSE` case calls `loraBrokerOnResponse()`
+- [x] LOCAL echo TX in `RestService`: `encodeAndSend()` in `LoRaBroker.cpp` upgraded from unframed stub to `encodeFrame()` + `LoRaTransport.sendFrame()` — full `AA 55` header, CRC16, correct REQUEST frame type
+- [x] Register `GET /api/lora/echo/result` in `RestService::registerRoutes()` — `EchoResult` struct in `RestService.h`; `lastEchoResult` populated by `POST /api/lora/nodes/echo`; GET handler serves last result (404 until first echo completes)
 - [x] Register `GET /api/lora/nodes/ping?addr=N` (PING/ACK round trip) — registered and working; also `GET /api/lora/ping` (broadcast) registered
 - [x] Register `GET /api/lora/stats` returning TX/RX/CRC-error counts — registered, returns `tx_frames`, `rx_frames`, `crc_errors`, `ack_loss` live from `LoRaTransport.getStats()`
-- [ ] Add echo test results and link health to WebSocket 1-second broadcast JSON — `broadcastTask` in `WebSocketService.cpp` is a no-op TODO stub; never calls `ws->textAll()`
+- [x] Add echo test results and link health to WebSocket 1-second broadcast JSON — `broadcastTask` now serialises `{uptime_s, tier, lora{tx/rx/crc/ack_loss}, echo{sent,received,seq_no,round_trip_ms,success}|null}` and calls `ws->textAll()` every 1 s
 - [x] Manual validation: PING/ACK framed exchange confirmed on hardware — `boot_id=0x9D7BB72D` identical on both nodes, sequences 54007-54044+ with zero gaps, zero CRC errors, RTT stable 108-122 ms; framed echo exchange pending Gap 1+2 fix
-- [ ] Stress test: 100 sequential REQUEST(echo) frames; verify zero CRC errors, TX count == RX count on both sides
+- [x] Stress test: 100 sequential REQUEST(echo) frames; verify zero CRC errors, TX count == RX count on both sides — 100/100 echoes passed, 0 CRC errors on both nodes, 0 log errors
 
 **Relevant Context:**
 - `doc/LoRaProtocol.md` (M1) - §5 types, §6 sequence numbers, §7 timeouts and retries, §18 items to verify
@@ -367,7 +367,7 @@ UNDISCOVERED → beacon every 5 s  (self-healing)
 - `openapi_json.h` and `doc/RestApi.md` describe every endpoint added in this milestone
 
 **Todo List:**
-- [ ] Implement REMOTE `beaconTask`: sends BEACON frame (all `Beacon` fields: `boot_id`, `fw_version`, `uptime_s`, `registry_rev`) at current rate; tracks UNDISCOVERED/DISCOVERED state; uses `TASK_CREATE`
+- [x] Implement REMOTE `beaconTask`: sends BEACON frame (all `Beacon` fields: `boot_id`, `fw_version`, `uptime_s`, `registry_rev`) at current rate; tracks UNDISCOVERED/DISCOVERED state; uses `TASK_CREATE` — `src/LoRaIoT/src/BeaconTask.h/.cpp`; started from `applicationSetup()` on REMOTE only; `beaconTaskNotifyDiscovered()` called from `onLoRaReceive` on every non-duplicate frame; hardware-verified: BEACON received by LOCAL, node addr=2 registered in `DeviceRegistry` with correct `boot_id`, `crawl_pending=true`, RTT 135 ms; `loraIsReady()` gate added to prevent beacon firing during boot diagnostics
 - [ ] REMOTE: handle PING -> ACK; REQUEST(Read) -> RESPONSE with `Data` (device 0 sampled on demand, AP devices from the last posted values with `age_ms`); REQUEST(Describe) -> RESPONSE(Device) or `STATUS_BAD_REQUEST` for an unknown device
 - [ ] REMOTE: register `POST /api/sensor` in `RestService::registerRoutes()` — IoT device posts `{"device":"Sensor A","data":{"Voltage":3.35,"Current":0.12}}`; unknown device names and keys get the next free device index / metric id (`registry_rev` increments); values are scaled to `sint32` and stored per device
 - [ ] LOCAL: implement the `Describe` crawl and the definition cache; drop the cache when `boot_id` changes

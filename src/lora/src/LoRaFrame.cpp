@@ -116,7 +116,7 @@ bool encodeFrame(const LoRaFrame& frame, uint8_t* outBuf, size_t& outLen) {
 LoRaDecodeResult decodeFrame(const uint8_t* inBuf, size_t len, LoRaFrame& out, uint8_t ownAddr) {
   // 1a. Minimum size: header plus CRC, an empty payload is legal.
   if (inBuf == nullptr || len < LORA_FRAME_HEADER_LEN + LORA_FRAME_CRC_LEN) {
-    Log_debug("decodeFrame: too short (%u B)", static_cast<unsigned>(len));
+    Log_debug("decodeFrame: too short (%uB)", static_cast<unsigned>(len));
     return LoRaDecodeResult::BAD_LEN;
   }
   // 1b. SYNC. The framer already scans for it; this is a second line of defence for other callers.
@@ -130,7 +130,7 @@ LoRaDecodeResult decodeFrame(const uint8_t* inBuf, size_t len, LoRaFrame& out, u
   const uint8_t payloadLen = inBuf[LORA_OFFSET_LEN];
   if (payloadLen > LORA_MAX_PAYLOAD_LEN ||
       len != LORA_FRAME_HEADER_LEN + static_cast<size_t>(payloadLen) + LORA_FRAME_CRC_LEN) {
-    Log_debug("decodeFrame: LEN %u does not match buffer of %u B", payloadLen, static_cast<unsigned>(len));
+    Log_debug("decodeFrame: LEN %u does not match buffer of %uB", payloadLen, static_cast<unsigned>(len));
     return LoRaDecodeResult::BAD_LEN;
   }
 

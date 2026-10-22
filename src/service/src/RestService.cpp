@@ -27,7 +27,16 @@
  * HTTP status code constants are defined in Server.h.
  */
 
-static constexpr size_t ERROR_BODY_SIZE = 128;  // Buffer for a formatted JSON error response
+static constexpr size_t ERROR_BODY_SIZE = 128;   // Buffer for a formatted JSON error response
+static constexpr size_t ECHO_TEXT_MAX   = sizeof(loraiot_Echo::text) - 1;  // Max user text (175 chars, null excluded)
+
+// ---- Last echo result (set by POST /api/lora/nodes/echo, read by GET /api/lora/echo/result) ----
+// EchoResult struct is declared in RestService.h; defined here as the single owner.
+static EchoResult lastEchoResult = {{}, {}, 0, 0, false, false};
+
+const EchoResult& restServiceGetLastEcho() {
+  return lastEchoResult;
+}
 
 RestService::RestService(AsyncWebServer* webServer) : server(webServer) {}
 
@@ -200,30 +209,6 @@ void RestService::registerRoutes() {
   // All require tier=LOCAL. Parameters are query strings (see doc/TechDebt.md §2).
   // -------------------------------------------------------------------------
 
-  // GET /api/lora/nodes - list all known remote node addresses.
-  server->on("/api/lora/nodes", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/nodes");
-    uint8_t addrs[DEVICE_REGISTRY_MAX_NODES];
-    uint8_t count = DeviceRegistry.listNodes(addrs, DEVICE_REGISTRY_MAX_NODES);
-    JsonDocument doc;
-    JsonArray arr = doc["nodes"].to<JsonArray>();
-    for (uint8_t i = 0; i < count; i++) {
-      NodeEntry node;
-      if (DeviceRegistry.getNode(addrs[i], node)) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["addr"]         = node.addr;
-        obj["boot_id"]      = node.bootId;
-        obj["registry_rev"] = node.registryRev;
-        obj["last_seen_ms"] = node.lastSeenMs;
-        obj["devices"]      = node.deviceCount;
-        obj["crawl_pending"]= node.crawlPending;
-      }
-    }
-    String json;
-    serializeJson(doc, json);
-    request->send(HTTP_STATUS_OK, "application/json", json);
-  });
-
   // GET /api/lora/nodes/devices?addr=2[&device=1][&refresh=true]
   // Without 'device': returns all devices on the node.
   // With 'device': returns the single named/indexed device.
@@ -326,13 +311,15 @@ void RestService::registerRoutes() {
         return;
       }
       const char* text = bodyDoc["text"].as<const char*>();
-      static constexpr size_t ECHO_MAX_LEN = 175;
-      if (strlen(text) > ECHO_MAX_LEN) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"text exceeds 175 characters\"}");
+      if (strlen(text) > ECHO_TEXT_MAX) {
+        char errMsg[ERROR_BODY_SIZE];
+        snprintf(errMsg, sizeof(errMsg), "{\"error\":\"text exceeds %u characters\"}", (unsigned)ECHO_TEXT_MAX);
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);
         return;
       }
       loraiot_Echo echo = loraiot_Echo_init_zero;
       strncpy(echo.text, text, sizeof(echo.text) - 1);
+      const uint32_t sendMs = millis();
       uint32_t seq = 0;
       BrokerResult res = loraBrokerSend(BrokerRequestType::ECHO, addr, &echo, seq);
       if (res == BrokerResult::BUSY) {
@@ -343,20 +330,51 @@ void RestService::registerRoutes() {
         request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"encode failed\"}");
         return;
       }
-      if (loraBrokerWait() != BrokerResult::OK) {
+      const bool ok = (loraBrokerWait() == BrokerResult::OK);
+      const uint32_t rttMs = millis() - sendMs;
+      const loraiot_Response& resp = loraBrokerGetResponse();
+      const bool hasEcho = ok && (resp.which_result == loraiot_Response_echo_tag);
+
+      // Store result so GET /api/lora/echo/result can serve it without blocking.
+      strncpy(lastEchoResult.sent,     echo.text,                          sizeof(lastEchoResult.sent) - 1);
+      strncpy(lastEchoResult.received, hasEcho ? resp.result.echo.text : "", sizeof(lastEchoResult.received) - 1);
+      lastEchoResult.seqNo       = seq;
+      lastEchoResult.roundTripMs = rttMs;
+      lastEchoResult.success     = ok;
+      lastEchoResult.valid       = true;
+
+      if (!ok) {
         request->send(HTTP_STATUS_GATEWAY_TIMEOUT, "application/json", "{\"error\":\"no response from node\"}");
         return;
       }
-      const loraiot_Response& resp = loraBrokerGetResponse();
       JsonDocument doc;
-      doc["addr"]    = addr;
-      doc["seq"]     = seq;
-      doc["status"]  = (resp.status == loraiot_Status_STATUS_OK) ? "ok" : "error";
-      doc["echo"]    = (resp.which_result == loraiot_Response_echo_tag) ? resp.result.echo.text : "";
+      doc["addr"]          = addr;
+      doc["seq"]           = seq;
+      doc["status"]        = (resp.status == loraiot_Status_STATUS_OK) ? "ok" : "error";
+      doc["echo"]          = hasEcho ? resp.result.echo.text : "";
+      doc["round_trip_ms"] = rttMs;
       String json;
       serializeJson(doc, json);
       request->send(HTTP_STATUS_OK, "application/json", json);
     });
+
+  // GET /api/lora/echo/result - return the result of the last POST /api/lora/nodes/echo.
+  server->on("/api/lora/echo/result", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/lora/echo/result");
+    if (!lastEchoResult.valid) {
+      request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"no echo result yet\"}");
+      return;
+    }
+    JsonDocument doc;
+    doc["sent"]           = lastEchoResult.sent;
+    doc["received"]       = lastEchoResult.received;
+    doc["seqNo"]          = lastEchoResult.seqNo;
+    doc["roundTripMs"]    = lastEchoResult.roundTripMs;
+    doc["success"]        = lastEchoResult.success;
+    String json;
+    serializeJson(doc, json);
+    request->send(HTTP_STATUS_OK, "application/json", json);
+  });
 
   // GET /api/lora/nodes/ping?addr=2  (also accepts POST for symmetry)
   auto pingHandler = [](AsyncWebServerRequest* request) {
@@ -605,6 +623,32 @@ void RestService::registerRoutes() {
       serializeJson(respDoc, json);
       request->send(HTTP_STATUS_ACCEPTED, "application/json", json);
     });
+
+  // GET /api/lora/nodes - list all known remote node addresses.
+  // Registered LAST among all /api/lora/nodes/* routes because ESPAsyncWebServer
+  // uses first-match-wins and this bare path would otherwise swallow all sub-paths.
+  server->on("/api/lora/nodes", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/lora/nodes");
+    uint8_t addrs[DEVICE_REGISTRY_MAX_NODES];
+    uint8_t count = DeviceRegistry.listNodes(addrs, DEVICE_REGISTRY_MAX_NODES);
+    JsonDocument doc;
+    JsonArray arr = doc["nodes"].to<JsonArray>();
+    for (uint8_t i = 0; i < count; i++) {
+      NodeEntry node;
+      if (DeviceRegistry.getNode(addrs[i], node)) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["addr"]         = node.addr;
+        obj["boot_id"]      = node.bootId;
+        obj["registry_rev"] = node.registryRev;
+        obj["last_seen_ms"] = node.lastSeenMs;
+        obj["devices"]      = node.deviceCount;
+        obj["crawl_pending"]= node.crawlPending;
+      }
+    }
+    String json;
+    serializeJson(doc, json);
+    request->send(HTTP_STATUS_OK, "application/json", json);
+  });
 
   Log_info("RestService: routes registered.");
 }

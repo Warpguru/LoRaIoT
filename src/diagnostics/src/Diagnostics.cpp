@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <atomic>
-#include <HardwareSerial.h>
+// HardwareSerial.h not needed: LoRaSerial is declared extern in LoRaTransport.h
 
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
@@ -109,7 +109,9 @@ static constexpr size_t FRAME_EXPECTED_LEN = sizeof(FRAME_EXPECTED);   // 17
 
 // UART2 object private to this file. It is closed (end()) before returning so
 // the future LoRa transport task can claim UART2 without conflict.
-static HardwareSerial loraSerial(2);
+// Use the single shared UART2 instance from LoRaTransport.cpp.
+// Diagnostics borrows it between pause() and resume(); never constructs its own.
+#define loraSerial LoRaSerial
 
 // ---- Helpers ---------------------------------------------------------------
 
@@ -358,7 +360,7 @@ static bool runPingEncodeCheck() {
 
   char hex[LoRaTransportClass::HEX_ENTRY_SIZE * sizeof(payload)];
   toHex(payload, out.bytes_written, hex, sizeof(hex));
-  Log_info("Protobuf diag:   encoded PING payload (%u B): %s", static_cast<unsigned>(out.bytes_written), hex);
+  Log_info("Protobuf diag:   encoded PING payload (%uB): %s", static_cast<unsigned>(out.bytes_written), hex);
 
   if (out.bytes_written != sizeof(PING_EXPECTED_PAYLOAD) ||
       memcmp(payload, PING_EXPECTED_PAYLOAD, sizeof(PING_EXPECTED_PAYLOAD)) != 0) {

@@ -9,3 +9,11 @@
 
 void applicationSetup();
 void applicationLoop();
+
+/**
+ * Returns true once the boot diagnostics have completed and the LoRa radio
+ * is fully initialised. Radio tasks (beaconTask, future tasks) must poll
+ * this before transmitting anything. Set once by applicationLoop() after
+ * the first diagnosticsLoop() run; never reset.
+ */
+bool loraIsReady();

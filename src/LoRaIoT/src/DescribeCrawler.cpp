@@ -60,29 +60,12 @@ static uint32_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
 // ---- Public API -------------------------------------------------------------
 
 void describeCrawlerSchedule(uint8_t addr) {
-  // DeviceRegistry.updateNodeMeta() already sets crawlPending; this function
-  // provides an explicit external trigger (e.g. from REST ?refresh=true).
-  if (crawlerMutex == nullptr) {
-    crawlerMutex = xSemaphoreCreateMutex();
-    if (crawlerMutex == nullptr) {
-      Log_error("DescribeCrawler: failed to create mutex");
-      return;
-    }
-  }
-
-  // Mark crawlPending in the registry; describeCrawlerLoop() will pick it up.
-  NodeEntry node;
-  if (DeviceRegistry.getNode(addr, node)) {
-    // Force a fresh crawl by calling updateNodeMeta with the same boot_id/rev
-    // but with hasRegistryRev=false so it still sets crawlPending.
-    xSemaphoreTake(crawlerMutex, portMAX_DELAY);
-    // Direct flag set: obtain the node and mark it pending without triggering
-    // a cache clear (boot_id has not changed).
-    Log_info("DescribeCrawler: manual crawl scheduled for node 0x%02X", addr);
-    xSemaphoreGive(crawlerMutex);
-  } else {
-    Log_warn("DescribeCrawler: schedule called for unknown node 0x%02X", addr);
-  }
+  // DeviceRegistry.updateNodeMeta() already set crawlPending before this is called.
+  // describeCrawlerLoop() picks it up on the next applicationLoop tick.
+  // This function must NOT touch any mutex: it is called from loraTransportTask
+  // (the receive callback), and crawlerMutex is owned by describeCrawlerLoop()
+  // which runs on the applicationLoop task — taking it here would deadlock.
+  Log_info("DescribeCrawler: crawl scheduled for node 0x%02X", addr);
 }
 
 void describeCrawlerLoop() {
