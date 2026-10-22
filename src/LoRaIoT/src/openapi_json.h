@@ -38,16 +38,16 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
   "tags": [
     { "name": "Gateway",     "description": "Gateway role and link status" },
     { "name": "Diagnostics", "description": "Logging, hardware status, and E220 wiring check" },
-    { "name": "LoRa-Nodes",  "description": "Remote node registry and telemetry (LOCAL only)" },
-    { "name": "LoRa-Control","description": "Ping, echo, beacon and data dispatch (LOCAL only)" },
-    { "name": "Sensor",      "description": "SoftAP sensor data ingestion (REMOTE only)" }
+    { "name": "LoRa-Nodes",  "description": "Remote node registry and telemetry" },
+    { "name": "LoRa-Control","description": "Ping, echo, beacon and data dispatch" },
+    { "name": "Sensor",      "description": "SoftAP sensor data ingestion" }
   ],
   "paths": {
     "/api/tier": {
       "get": {
         "tags": ["Gateway"],
         "summary": "Active gateway tier",
-        "description": "Returns the currently configured gateway tier (LOCAL or REMOTE). The tier is selected once in the WiFiManager captive portal and persisted in NVS. It survives reboots and is cleared by GET /reset.",
+        "description": "Configured gateway tier (LOCAL or REMOTE). Persisted in NVS; cleared by GET /reset.",
         "responses": {
           "200": {
             "description": "OK",
@@ -64,7 +64,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Gateway"],
         "summary": "Get active LoRa channel",
-        "description": "Returns the currently configured LoRa channel. This endpoint is available on both LOCAL and REMOTE instances.",
+        "description": "Returns the active LoRa channel (0-31). Available on both tiers.",
         "responses": {
           "200": {
             "description": "OK",
@@ -84,7 +84,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "put": {
         "tags": ["Gateway"],
         "summary": "Set active LoRa channel",
-        "description": "Sets the active LoRa channel. The new channel is persisted in NVS and survives reboots. This endpoint is available on both LOCAL and REMOTE instances.",
+        "description": "Sets the LoRa channel (0-31). Persisted in NVS; takes effect on next reboot. Available on both tiers.",
         "requestBody": {
           "required": true,
           "content": {
@@ -124,7 +124,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Gateway"],
         "summary": "Get active LoRa node address",
-        "description": "Returns the currently configured LoRa node address. This endpoint is available on all nodes (`1` for LOCAL, `2-254` for REMOTE). `0` is invalid and `255` is the broadcast address.",
+        "description": "Returns the node address. LOCAL is always 1; REMOTE is 2-254. 0 is invalid, 255 is broadcast.",
         "responses": {
           "200": {
             "description": "OK",
@@ -144,7 +144,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "put": {
         "tags": ["Gateway"],
         "summary": "Set active LoRa node address",
-        "description": "Sets the active LoRa node address. The new address (`2-254`, because `1` is reserved for LOCAL) is persisted in NVS and survives reboots. The E220 module is programmed at boot, so the new address takes effect after the next reboot. This endpoint is only available on REMOTE instances; accessing it on a LOCAL instance returns a bad request.",
+        "description": "Sets the REMOTE node address (2-254). Persisted in NVS; takes effect on next reboot. REMOTE only.",
         "requestBody": {
           "required": true,
           "content": {
@@ -204,7 +204,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "put": {
         "tags": ["System"],
         "summary": "Set active CPU frequency",
-        "description": "Dynamically scales the ESP32's CPU clock frequency (80, 160, or 240). Frequencies below 80 MHz are rejected because the ESP32 WiFi radio PLL requires at least 80 MHz to function. The value is persisted in NVS and automatically applied on boot.",
+        "description": "Sets CPU frequency (80, 160, or 240 MHz). Below 80 MHz is rejected (WiFi PLL minimum). Persisted in NVS.",
         "requestBody": {
           "required": true,
           "content": {
@@ -244,7 +244,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Diagnostics"],
         "summary": "Recent log entries",
-        "description": "Returns the last 128 log lines from the in-RAM ring buffer as a JSON array. Add ?clear=1 to flush the buffer after reading.",
+        "description": "Last 128 log lines from the ring buffer. Add ?clear=1 to flush after reading.",
         "parameters": [
           {
             "name": "clear",
@@ -270,7 +270,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "put": {
         "tags": ["Diagnostics"],
         "summary": "Change log level at runtime",
-        "description": "Sets the active log level. The new level is persisted in NVS and survives reboots. Valid values: TRACE, DEBUG, INFO, WARN, ERROR.",
+        "description": "Sets log level (TRACE/DEBUG/INFO/WARN/ERROR). Persisted in NVS.",
         "requestBody": {
           "required": true,
           "content": {
@@ -309,7 +309,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Diagnostics"],
         "summary": "Request E220 wiring and register check",
-        "description": "Schedules a hardware check of the E220 LoRa module (UART TX/RX, M0, M1, AUX pins, and register read/write round-trip). The check runs on the next pass of applicationLoop() - this endpoint returns immediately. Read the outcome from GET /api/log a few seconds later; look for lines starting with 'E220 diag:'. Uses only the temporary write command (0xC2) so nothing is stored in the module's flash. The same run then performs a software-only nanopb check (encode a PING payload, compare it with the documented bytes 08 F8 AC D1 91 01, decode it again); its log lines start with 'Protobuf diag:'. Removed once Milestone 3 (LoRaTransport) takes over UART2.",
+        "description": "Schedules an E220 wiring check (UART, M0/M1/AUX pins, register round-trip) and a nanopb encode/decode self-test. Runs on next applicationLoop() pass; returns immediately. Check results appear in GET /api/log (prefix 'E220 diag:' and 'Protobuf diag:').",
         "responses": {
           "202": {
             "description": "Check scheduled - read result from GET /api/log",
@@ -339,7 +339,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Diagnostics"],
         "summary": "Clear WiFi credentials and all NVS settings, then reboot",
-        "description": "Erases the stored WiFi SSID/password and every application setting persisted in NVS (gateway tier, log level, LoRa channel, LoRa address, CPU frequency), then reboots into the WiFiManager captive portal. The device will be unreachable until credentials and tier are re-entered via the portal.",
+        "description": "Erases WiFi credentials and all NVS settings (tier, log level, channel, address, CPU freq), then reboots into the captive portal.",
         "responses": {
           "200": {
             "description": "Settings cleared; ESP32 is rebooting",
@@ -353,7 +353,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "List all known remote nodes",
-        "description": "Returns every remote node address that LOCAL has observed via PING or BEACON, together with their cached boot_id, registry_rev and device count. LOCAL only.",
+        "description": "Lists all known remote nodes with their cached boot_id, registry_rev and device count.",
         "responses": {
           "200": {
             "description": "OK",
@@ -367,7 +367,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "List or lookup devices on a remote node",
-        "description": "Without the `device` parameter returns all cached device definitions for the node. With `device` (index or name) returns only that entry. Add `refresh=true` to schedule a fresh Describe crawl before returning (the crawl runs asynchronously; poll again after ~3 s to see results). LOCAL only.",
+        "description": "Returns cached device definitions for the node. Filter by `device` (index or name). Add `refresh=true` to trigger a Describe crawl (async; poll again after ~3 s).",
         "parameters": [
           { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
           { "name": "device",  "in": "query", "required": false, "schema": { "type": "string" }, "description": "Device index (integer) or device name to filter by" },
@@ -388,7 +388,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "Get cached or live metric readings for a device",
-        "description": "Returns the most recently received measurement values for the specified device. Add `live=true` to send a REQUEST(Read) to the node and wait for a fresh response (blocks until `timeout` ms or 504). LOCAL only.",
+        "description": "Returns cached measurements for the device. Add `live=true` to send a REQUEST(Read) and wait for a fresh response (blocks up to `timeout` ms, 504 on no reply).",
         "parameters": [
           { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
           { "name": "device",  "in": "query", "required": true,  "schema": { "type": "integer" }, "description": "Device index" },
@@ -412,7 +412,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "LoRa transport statistics",
-        "description": "Returns cumulative TX/RX frame counts and error counters since the last reboot or resetStats() call. CRC error and ACK loss counters are wired in Phase 3 (frame protocol layer); they return 0 until then.",
+        "description": "Cumulative TX/RX frame counts and error counters since last reboot. CRC and ACK loss counters are 0 until the frame codec is wired.",
         "responses": {
           "200": {
             "description": "OK",
@@ -426,7 +426,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Echo test to a remote node",
-        "description": "Sends a REQUEST(Echo) to the node. REMOTE reverses the text and returns it in the RESPONSE, proving the frame was processed end-to-end. Blocks until the RESPONSE arrives or timeout. LOCAL only.",
+        "description": "Sends REQUEST(Echo) to the node; REMOTE returns the text reversed. Blocks until RESPONSE arrives or timeout.",
         "parameters": [
           { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
         ],
@@ -447,7 +447,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Ping a remote node (unicast)",
-        "description": "Sends a PING frame to the specified remote node and waits for an ACK. Returns round-trip time and boot_id. Also available as POST (identical behaviour). LOCAL only.",
+        "description": "Sends a PING to the specified node and waits for an ACK. Returns RTT and boot_id. Also available as POST.",
         "parameters": [
           { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
         ],
@@ -479,7 +479,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Broadcast PING",
-        "description": "Sends a PING to the broadcast address (0xFF). Returns the first ACK received. Useful for discovering which nodes are reachable. LOCAL only.",
+        "description": "Sends a broadcast PING (0xFF) and returns the first ACK received.",
         "responses": {
           "200": { "description": "At least one ACK received", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PingResponse" } } } },
           "503": { "description": "LoRa broker busy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
@@ -492,7 +492,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Trigger an immediate manual BEACON",
-        "description": "Queues a BEACON frame for transmission to the broadcast address. BEACON carries boot_id, fw_version, uptime_s, and registry_rev. Returns 202 Accepted immediately; the frame is sent asynchronously by loraTransportTask. LOCAL only.",
+        "description": "Queues a BEACON (boot_id, fw_version, uptime_s, registry_rev) for broadcast. Returns 202 immediately; sent asynchronously.",
         "responses": {
           "202": { "description": "BEACON queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BeaconResponse" } } } }
         }
@@ -503,7 +503,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Send a Data frame to a remote node",
-        "description": "Encodes a loraiot_Data payload and queues it for transmission. Use `ack=true` for DATA_ACK (reliable, waits for ACK from REMOTE) or `ack=false` for unreliable DATA. Returns 202 Accepted immediately. LOCAL only.",
+        "description": "Queues a Data frame to the node. `ack=true` for reliable DATA_ACK, `ack=false` for fire-and-forget DATA. Returns 202 immediately.",
         "parameters": [
           { "name": "addr", "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
           { "name": "ack",  "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true = reliable DATA_ACK, false = unreliable DATA" }
@@ -523,7 +523,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "REMOTE",
         "tags": ["Sensor"],
         "summary": "Ingest sensor data from a SoftAP-connected IoT device",
-        "description": "REMOTE only. Accepts a JSON payload from a sensor node connected to REMOTE's WiFi SoftAP. Auto-assigns a stable device index and metric_id for each new key. Increments registry_rev when the schema changes. Rejects metrics that would cause the encoded loraiot_Device proto to exceed 186 bytes.",
+        "description": "Accepts sensor data from a SoftAP-connected device. Auto-assigns device index and metric_id; increments registry_rev on schema changes. Rejects metrics that would cause the Device proto to exceed 186 bytes.",
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataPayload" } } }
@@ -760,7 +760,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
  * Stored in flash (PROGMEM); never occupies DRAM at idle.
  *
  * Placeholders (positional, consumed by snprintf in handleGetOpenApiUi):
- *   %s  SSID of the connected network            (banner)
+ *   %s  SSID of the connected network             (banner)
  *   %s  Gateway tier name for display             (banner)
  *   %s  Build timestamp __DATE__ " " __TIME__     (banner)
  *   %s  Gateway tier name for JS TIER variable    (x-tier filter)
@@ -781,17 +781,12 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
   "<meta charset='utf-8'/>"
   "<title>LoRaIoT API</title>"
   "<link rel='stylesheet' href='https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui.css'/>"
-  "<style>"
-  ".banner{background:#f8f9fa;border-bottom:1px solid #e9ecef;padding:8px 16px;"
-  "font-family:sans-serif;font-size:13px;color:#495057}"
-  ".banner strong{color:#212529}"
-  "</style>"
   "</head><body>"
-  "<div class='banner'>"
-  "IP: <strong><span id='ip'></span></strong>"
-  " | SSID: <strong>%s</strong>"
-  " | Tier: <strong>%s</strong>"
-  " | Built: <strong>%s</strong>"
+  "<div style='padding:6px 14px;font:13px sans-serif;border-bottom:1px solid #e5e7eb'>"
+  "IP: <b><span id='ip'></span></b>"
+  " | SSID: <b>%s</b>"
+  " | Tier: <b>%s</b>"
+  " | Built: <b>%s</b>"
   "</div>"
   "<div id='swagger-ui'></div>"
   "<script src='https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui-bundle.js'></script>"
@@ -807,7 +802,7 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
               "return function(spec){"
                 "Object.keys(spec.paths||{}).forEach(function(path){"
                   "var item=spec.paths[path];"
-                  "['get','post','put','delete','patch','head','options'].forEach(function(m){"
+                  "['get','post'].forEach(function(m){"
                     "if(item[m]&&item[m]['x-tier']&&item[m]['x-tier']!==TIER)"
                       "delete item[m];"
                   "});"
@@ -825,7 +820,7 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
     "window.ui=SwaggerUIBundle({"
       "url:'/openapi',"
       "dom_id:'#swagger-ui',"
-      "presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],"
+      "presets:[SwaggerUIBundle.presets.apis],"
       "plugins:[tierPlugin],"
       "layout:'BaseLayout'"
     "});"

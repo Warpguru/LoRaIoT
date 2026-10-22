@@ -144,7 +144,7 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   Log_info("GET /openapi/ui");
   String ssid = WiFi.SSID();   // extracted to named local so .c_str() is safe
-  char buf[1500];  // template ~1378 B static + up to ~64 B dynamic = ~1434 B worst-case
+  char buf[1250];  // template ~1147 B static + up to ~64 B dynamic = ~1203 B worst-case
   snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
            ssid.c_str(),           // %s SSID in banner
            Gateway.getTierName(),  // %s tier in banner
