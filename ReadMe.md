@@ -2,9 +2,9 @@
 
 ## 1. Executive Summary
 
-LoRaIoT is an enterprise-grade, half-duplex, point-to-point (P2P) RF bridge designed to transparently extend local IP networks and link remote physical layers across high-attenuation boundaries (such as reinforced concrete floors, steel-grid structures, or long distances). 
+LoRaIoT is an enterprise-grade, half-duplex, point-to-point (P2P) RF bridge designed to transparently extend local IP networks and link remote physical layers across high-attenuation boundaries (such as reinforced concrete floors, steel-grid structures, or long distances).
 
-By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi Access Point (SoftAP) directly to a local LAN and downstream Home Automation/MQTT systems. To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, and an on-demand 6-step physical wiring diagnostics suite.
+By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi SoftAP directly to a local LAN and downstream Home Automation/MQTT systems. To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, a framed binary protocol (protobuf/nanopb over a CRC-16 frame layer), and an on-demand 6-step physical wiring diagnostics suite.
 
 > Abbreviations and technical terms used in this document are explained in [Appendix A: Glossary](#appendix-a-glossary-of-abbreviations).
 
@@ -13,7 +13,7 @@ By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semte
   +-------------------------------+                +-------------------------------+
   |  ESP32 WiFi AP (192.168.4.1)  |                |  ESP32 WiFi STA               |
   |  - IoT Sensor Endpoints       |                |  - Local LAN Connection       |
-  |  - Payload Compressor         |                |  - Home Automation Uplink     |
+  |  - BEACON / PING / DATA       |                |  - Home Automation Uplink     |
   +-------------------------------+                +-------------------------------+
                  | (UART2)                                        | (UART2)
   +-------------------------------+                +-------------------------------+
@@ -28,7 +28,7 @@ By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semte
 
 To construct and successfully run the LoRaIoT gateway bridge, the following hardware components are strictly required:
 
-1. **Microcontroller (2 Units):** Dual-core ESP32 (e.g. ESP32-WROOM-32 or ESP32-S3). Single-core ESP32 variants are not recommended due to the strict separation of real-time LoRa transactions on Core 1 and concurrent WiFi/Web stack routines on Core 0.
+1. **Microcontroller (2 Units):** ESP32 (dual-core ESP32-WROOM-32 or ESP32-S3 recommended; single-core variants such as ESP32-C3, C6, S2, H2 are also supported via the `TASK_CREATE` portability macro — see `src/util/src/TaskUtils.h`).
 2. **LoRa Radio Module (2 Units):** Ebyte E220-400T22D (incorporating the Semtech LLCC68 RF chip operating in the 433 MHz UHF ISM band, delivering up to 22 dBm transmission power).
 3. **Antennas (2 Units):** High-quality 433 MHz SMA whip antennas (such as $18\text{ cm}$ dipole whips) tuned to the 433 MHz frequency range.
 4. **Decoupling Capacitor (2 Units):** A $100\mu\text{F}$ (or larger) low-ESR electrolytic capacitor connected in parallel directly across each E220's `VCC` and `GND` lines. This buffers high-current RF transmission bursts ($\approx 110\text{mA}$ peak) and prevents voltage sags that can cause ESP32 kernel brownout reboots.
@@ -73,21 +73,140 @@ To ensure that real-time RF communication never blocks the TCP/IP stack or HTTP/
             Core 0 (System Core)                   Core 1 (Application Core)
      +---------------------------------+      +---------------------------------+
      | - WiFi Stack & LwIP             |      | - Main Arduino loop()           |
-     | - ESPAsyncWebServer (Callbacks) |      | - Device Polling Task           |
-     | - WebSocket Broadcast Task      |      | - loraTransportTask (Priority 2)|
-     +---------------------------------+      +---------------------------------+
-                      |                                       |
-                      +======== [ txQueue (Serialized) ] =====+ ==> UART2 -> E220
+     | - ESPAsyncWebServer (Callbacks) |      |   applicationSetup/Loop()       |
+     +---------------------------------+      | - loraTransportTask (Priority 2)|
+                      |                       | - WebSocketService broadcastTask|
+                      |                       |   (Priority 1)                  |
+                      |                       | - BeaconTask [REMOTE only]      |
+                      |                       |   (Priority 1)                  |
+                      |                       +---------------------------------+
+                      |                                        |
+                      +======= [ txQueue (Serialized) ] =======+
+                                         |
+                                      UART2 -> E220
 ```
+
+> On single-core builds all tasks run on the only available core with no affinity pinning. The `TASK_CREATE` macro in `src/util/src/TaskUtils.h` handles this automatically.
 
 ### Core Assignments
 - **Core 0 (System Core):** Handles the high-frequency WiFi stack, TCP/IP processing, and non-blocking asynchronous web callbacks from `ESPAsyncWebServer` (such as REST API and WebSocket events).
-- **Core 1 (Application Core):** Pinpoints application-level task logic, including the primary loop, hardware polling, and the low-level **`loraTransportTask`**.
+- **Core 1 (Application Core):** Runs the primary application loop, the low-level `loraTransportTask`, WebSocket broadcast, and (on REMOTE) the beacon task.
 
 ### Concurrency Rules
-1. **Single UART2 Ownership:** The `loraTransportTask` running on Core 1 is the **sole owner** of the `Serial2` interface. Web server callbacks on Core 0 must never write directly to `Serial2`.
-2. **The `txQueue` Bridge:** Any thread intending to transmit data must call `LoRaTransport.sendRaw()`. This method copies the packet into a `LoRaTxMessage` struct and posts it onto the FreeRTOS `txQueue`. The background `loraTransportTask` then drains the queue, executes the physical hardware handshakes, and writes the bytes atomically to UART2.
-3. **Shared State Mutexes:** Any shared variables (such as link diagnostic counters or packet statistics) are protected by a FreeRTOS Mutex (`SemaphoreHandle_t`) to prevent race conditions.
+1. **Single UART2 Ownership:** The `loraTransportTask` is the **sole owner** of `LoRaSerial` (UART2). Web server callbacks on Core 0 must never write directly to UART2. The diagnostics engine borrows UART2 via `LoRaTransport.pause()` / `LoRaTransport.resume()`.
+2. **The `txQueue` Bridge:** Any task intending to transmit calls `LoRaTransport.sendFrame()` or `LoRaTransport.sendRaw()`, which copies the packet into a `LoRaTxMessage` and posts it onto the FreeRTOS `txQueue`. The `loraTransportTask` drains the queue, executes the AUX handshake, and writes bytes atomically to UART2.
+3. **LoRa Readiness Gate:** The `loraIsReady()` function (declared in `Application.h`) returns `true` only after the boot diagnostics have completed on the first `applicationLoop()` tick. Radio tasks (e.g. `BeaconTask`) must poll this before transmitting to avoid corrupting the E220 UART state during the diagnostics Mode 3 sequence.
+4. **Shared State Mutexes:** All shared state structs (`LoRaState`, `DeviceRegistry`, `SensorRegistry`, `LogBuffer`) are protected by FreeRTOS mutexes.
+
+### LoRa Message Transmission and Reception Lifecycle
+
+The diagram below details how requests from REST callbacks or background tasks are dispatched across FreeRTOS queues to the single UART2 driver task, how AUX hardware flow control is enforced, and how incoming frames are parsed, validated, and routed to application handlers.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as Caller Task / REST Handler
+    participant Broker as LoRaBroker
+    participant TxQ as txQueue (FreeRTOS Queue)
+    participant Task as loraTransportTask (Core 1)
+    participant E220 as Ebyte E220 Module (UART2)
+    participant RxCB as onLoRaReceive Callback
+
+    Note over Caller, E220: Outgoing Transmission Flow TX
+    Caller->>Broker: loraBrokerSend(type, dstAddr, payload)
+    Broker->>Broker: encodeFrame(LoRaFrame)
+    Broker->>TxQ: xQueueSend(txQueue, LoRaTxMessage)
+    Broker->>Broker: Block on responseSem (if waiting for reply)
+    
+    Task->>TxQ: xQueueReceive(txQueue, msg)
+    Task->>E220: Poll AUX pin (wait until AUX is HIGH)
+    Task->>E220: Atomic UART2 write: ADDH + ADDL + CHAN + Payload
+    E220-->>Task: AUX drops LOW (transmission in flight)
+    E220-->>Task: AUX rises HIGH (buffer empty)
+    Task->>Task: Wait 50 ms RF guard delay (GUARD_DELAY_MS)
+    Task->>Task: Increment statsTxFrames
+
+    Note over E220, Caller: Incoming Reception Flow RX
+    E220->>Task: UART2 RX bytes stream in
+    Task->>Task: Sync scanner matches 0xAA 0x55
+    Task->>Task: Accumulate header, payload, and CRC16
+    Task->>Task: decodeFrame(rxBuffer) verifies CRC and DST
+    Task->>Task: Increment statsRxFrames
+    Task->>RxCB: onLoRaReceive(rxFrame)
+    RxCB->>Broker: loraBrokerOnResponse(response) / sendPingAck(frame)
+    Broker-->>Caller: Give responseSem and unblock caller
+```
+
+### Boot Initialisation Sequence
+
+The diagram below traces the exact sequence of steps from power-on (or reset after reflash) until the node is fully ready to send and receive LoRa frames.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant HW   as Hardware / Reset
+    participant App  as applicationSetup
+    participant Cfg  as LoRaConfig / Gateway / LogBuffer
+    participant WM   as WiFiManager captive portal
+    participant E220 as E220 Module UART2
+    participant Task as loraTransportTask
+    participant Diag as diagnosticsLoop
+    participant Radio as Radio Tasks BeaconTask
+
+    HW->>App: Power-on / reset
+
+    Note over App,Cfg: Phase 1 - Singletons and NVS
+    App->>App: statusLed.begin() — LED enters BOOTING state
+    App->>Cfg: DeviceRegistry.begin() / SensorRegistry.begin()
+    App->>Cfg: LogBuffer.begin() — load persisted log level from NVS
+    App->>Cfg: Gateway.begin() — load tier LOCAL / REMOTE from NVS
+    App->>Cfg: LoRaConfig.begin() — load channel, address, cpuFreq from NVS
+    App->>App: setCpuFrequencyMhz — apply saved CPU frequency
+
+    Note over App,WM: Phase 2 - WiFi and Provisioning
+    App->>WM: wm.autoConnect — start WiFiManager
+    alt Node is unprovisioned
+        WM-->>App: Blocks — captive portal served on 192.168.4.1
+        Note over WM: User selects Tier and Channel in browser
+        WM->>Cfg: saveCallback — Gateway.save and LoRaConfig.save
+    else Credentials already in NVS
+        WM-->>App: Connects immediately, portal skipped
+    end
+    App->>App: RestService.registerRoutes — all /api/* routes wired
+    App->>App: WebSocketService.begin — /ws/data handler active
+    App->>App: server.begin — HTTP + WS live on port 80
+
+    Note over App,E220: Phase 3 - E220 Hardware Init at 9600 baud Mode 3
+    alt Gateway tier is configured
+        App->>App: LoRaState.begin
+        App->>App: LoRaTransport.setReceiveCallback
+        App->>E220: LoRaTransport.begin
+        E220-->>App: setMode M1=1 M0=1 — enter Config mode
+        E220-->>App: Write C0 00 08 ADDH ADDL REG0 REG1 CH REG3 CRYPT_H CRYPT_L
+        E220-->>App: Verify response != FF FF FF — retry up to 3x, FAULT on failure
+        E220-->>App: setMode M1=0 M0=0 — Normal mode at 115200 baud
+        App->>Task: TASK_CREATE loraTransportTask priority 2 — UART2 now owned
+        App->>App: loraBrokerBegin — semaphore bridge initialised
+        alt Tier is REMOTE
+            App->>Radio: beaconTaskBegin — task created, polls loraIsReady before first TX
+        end
+        App->>App: statusLed setState READY
+    else Tier not configured
+        App->>App: statusLed setState NO_DEVICE — REST API still reachable
+    end
+
+    Note over App,Diag: Phase 4 - Boot Diagnostics and LoRa Gate
+    App->>Diag: diagnosticsLoop — 6-step E220 wiring check + nanopb self-test
+    Note over Diag: pause suspends loraTransportTask then resume restores it
+    Diag-->>App: All steps logged to /api/log
+    App->>App: loraReady = true — loraIsReady gate opens
+
+    Note over Radio,Task: Phase 5 - Normal Operation
+    Radio->>Radio: BeaconTask unblocks — loraIsReady returns true
+    Radio->>Task: Enqueue BEACON frame onto txQueue
+    Task->>E220: AUX handshake + atomic UART2 write
+    Note over Task,E220: Node is fully operational - TX and RX active
+```
 
 ---
 
@@ -95,33 +214,37 @@ To ensure that real-time RF communication never blocks the TCP/IP stack or HTTP/
 
 The codebase is built around the **Arduino Singleton Pattern** to prevent global variable name-shadowing collisions in C++ while presenting a clean, intuitive API. Every hardware controller or configuration subsystem defines an underlying class with a `-Class` suffix and exports a single global instance with a clean name:
 
-- **`LoRaTransportClass` $\to$ `LoRaTransport`**: Manages low-level UART2 transceiving, the FreeRTOS background task, and the `txQueue`.
-- **`LoRaConfigClass` $\to$ `LoRaConfig`**: Manages persistent NVS parameters (such as `loraChannel` and `loraAddr`).
-- **`GatewayClass` $\to$ `Gateway`**: Manages the persistent gateway role (`LOCAL` or `REMOTE`).
-- **`LogBufferClass` $\to$ `LogBuffer`**: Manages the multi-level (`INFO`/`DEBUG`/etc.) log ring buffer in RAM and provides JSON serialization.
-- **`StatusLed` $\to$ `statusLed`**: Manages the asynchronous status LED state machine.
+- **`LoRaTransportClass` → `LoRaTransport`**: Manages low-level UART2 transceiving, the FreeRTOS background task, and the `txQueue`.
+- **`LoRaConfigClass` → `LoRaConfig`**: Manages persistent NVS parameters (channel, address, CPU frequency).
+- **`GatewayClass` → `Gateway`**: Manages the persistent gateway role (`LOCAL` or `REMOTE`).
+- **`LogBufferClass` → `LogBuffer`**: Manages the multi-level (`INFO`/`DEBUG`/etc.) log ring buffer in RAM and provides JSON serialization.
+- **`StatusLed` → `statusLed`**: Manages the asynchronous status LED state machine.
+- **`LoRaStateClass` → `LoRaState`**: Mutex-protected per-SRC link state (duplicate detection, reboot detection via `boot_id`, LRU registry with 180s stale purge). Used on both LOCAL and REMOTE.
+- **`DeviceRegistryClass` → `DeviceRegistry`**: LOCAL-only cache of remote node entries and their device/metric definitions (populated by Describe crawl).
+- **`SensorRegistryClass` → `SensorRegistry`**: REMOTE-only registry of IoT devices posting sensor data via the SoftAP.
 
 ---
 
-## 6. Milestone 0 PoC Waterfall Lifecycle
+## 6. Boot & Communication Lifecycle
 
-Milestone 0 validates that both ESP32 boards and their E220 transceivers are physically wired correctly and can establish bidirectional, over-the-air communication.
+Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE`) happens once via the WiFiManager captive portal and is persisted in NVS.
 
 ```
   [ PHASE 1: BUILD ]           [ PHASE 2: DEPLOY ]          [ PHASE 3: RUN ]
 +--------------------+      +----------------------+      +------------------+
-| - Arduino IDE      |      | - WiFi Captive Portal|      | - Boot & Load    |
-| - platformio.ini   | ===> | - Pre-select Tier    | ===> | - Fixed Routing  |
-| - lib_deps check   |      | - Commit NVS Params  |      | - Ping-Pong Loop |
-+--------------------+      +----------------------+      +------------------+
+| - Arduino IDE      |      | - WiFi Captive Portal|      | - Boot & Diag    |
+| - platformio.ini   | ===> | - Select Tier        | ===> | - Framed LoRa    |
+| - lib_deps check   |      | - Set Channel / Addr |      | - BEACON / PING  |
++--------------------+      +----------------------+      | - REST / WS API  |
+                                                          +------------------+
 ```
 
 ### Phase 1: Build & Compile
 - **Dependencies:** The compiler expects the following libraries (downloaded automatically in PlatformIO via `lib_deps`):
-  - `WiFiManager` (v2.0.17)
-  - `ArduinoJson` (v7.4.3)
-  - `ESPAsyncWebServer` (v3.12.1)
-  - `AsyncTCP` (v3.5.0)
+  - `WiFiManager` (>= 2.0.17)
+  - `ArduinoJson` (>= 7.4.3)
+  - `ESPAsyncWebServer` (>= 3.12.1)
+  - `AsyncTCP` (>= 3.5.0)
 - **Compilation:**
   - **PlatformIO:** Run `pio run -e esp32dev` from the root directory.
   - **Arduino IDE:** Load the `LoRaIoT.ino` sketch stub, open Library Manager, install the four required dependencies, and click Compile.
@@ -129,27 +252,28 @@ Milestone 0 validates that both ESP32 boards and their E220 transceivers are phy
 ### Phase 2: Deploy & Provision
 1. **Flash Firmware:** Flash the compiled binary onto both ESP32 boards.
 2. **WiFi Provisioning:**
-   - Turn on the node. Connect your phone or laptop to the captive WiFi portal access point (e.g. `AutoConnectAP`).
+   - Power on the node. Connect your phone or laptop to the captive WiFi portal (`AutoConnectAP`).
    - Open your browser to `http://192.168.4.1`.
-   - In the configuration form, select the node's **Gateway Tier** (`LOCAL` or `REMOTE`) and select the desired **LoRa Channel** (0-31, defaults to Channel 23 / `0x17`).
-3. **Automatic Address Assignment:**
-   - Selecting `LOCAL` automatically configures the node's address to `0x01` in NVS.
-   - Selecting `REMOTE` automatically configures the node's address to `0x02` in NVS.
-   - `0x00` is invalid and `0xFF` is the broadcast address (the E220 treats module addresses `0x0000` and `0xFFFF` as monitor/broadcast, see manual §5.3/5.4).
-   - Nodes provisioned earlier keep their stored address: call `GET /reset` and provision again.
+   - In the configuration form, select the node's **Gateway Tier** (`LOCAL` or `REMOTE`) and the desired **LoRa Channel** (0-31, default Channel 25 / `0x19`).
+3. **Address Assignment:**
+   - `LOCAL` is assigned address `0x01`; `REMOTE` is assigned address `0x02`.
+   - `0x00` is invalid; `0xFF` is broadcast.
+   - To re-provision, call `GET /reset` which clears WiFi credentials and all NVS settings.
 
 ### Phase 3: Run & Communicate
-1. **E220 Initialization:** On boot, the ESP32 switches UART2 to 9600 baud, pulls `M0=1`/`M1=1` (Mode 3), and writes the persistent register configuration (`C0 00 08 ...`). It then switches `M0=0`/`M1=0` (Mode 0) and re-opens UART2 at 115200 baud.
-2. **Fixed Mode Routing:**
-   - Both modules are configured in **Fixed Transmission Mode** (`REG3_MODE_FIXED = 0x40`).
-   - When the `LOCAL` node transmits, the transport layer prepends a 3-byte routing header: `[0x00][0x02][CH]`. The E220 transmits the airframe targeting `0x02` (REMOTE).
-   - The `REMOTE` node's E220 matches address `0x02`, strips the 3 routing bytes, and outputs the raw text over UART.
-   - When the `REMOTE` node replies, the transport layer prepends `[0x00][0x01][CH]`. The `LOCAL` node matches address `0x01` and outputs the raw reply over UART.
-   - The E220 never tells the receiver who sent a frame; the production protocol (`doc/LoRaProtocol.md`) therefore carries SRC and DST in its own frame header.
-3. **Ping-Pong Execution:**
-   - `LOCAL` transmits plain-text `"Local send: N\n"` (incrementing N) every 2 seconds.
-   - `REMOTE` receives it, logs `Received ping: Local send: N`, and immediately replies back with `"Remote reply: N\n"`.
-   - `LOCAL` receives the echo and logs `Received reply: Remote reply: N`.
+1. **E220 Initialisation:** On boot, the ESP32 configures the E220 in Mode 3 (9600 baud) writing the persistent register block (`REG0=0xE7`, `REG1=0x00`, `REG3=0x40`), then returns to Mode 0 (115200 baud). The `loraTransportTask` starts and owns UART2 exclusively from this point.
+2. **Boot Diagnostics:** On the first `applicationLoop()` tick, the 6-step E220 wiring check runs automatically (Mode 3 register read/write/verify + nanopb + frame codec self-tests). The `loraIsReady()` gate opens only after this completes, allowing `BeaconTask` and other radio tasks to start transmitting.
+3. **BEACON / Discovery (REMOTE):**
+   - REMOTE broadcasts a `BEACON` frame every 5s (UNDISCOVERED state) until it receives any frame from LOCAL, then beacons every 60s (DISCOVERED state).
+   - After 2 minutes of silence from LOCAL, REMOTE reverts to 5s fast beaconing (self-healing).
+   - LOCAL registers the REMOTE node in `DeviceRegistry` on the first received BEACON and schedules a Describe crawl.
+4. **PING / ACK (LOCAL):**
+   - LOCAL sends a framed `PING` (nanopb `Beacon{boot_id}` payload) to REMOTE every 2s.
+   - REMOTE replies with a framed `ACK`; LOCAL logs the RTT.
+5. **Fixed Mode Routing:**
+   - Both modules use Fixed Transmission Mode (`REG3=0x40`). The transport layer prepends the 3-byte E220 routing header `[ADDH][ADDL][CH]` before every write. Broadcast uses `[0xFF][0xFF][CH]`.
+   - The E220 never delivers the sender address; SRC and DST are carried in the LoRaIoT frame header (`doc/LoRaProtocol.md` §4).
+6. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`) and a WebSocket endpoint (`/ws/data`) that broadcasts a JSON state snapshot every 1s: `{uptime_s, tier, lora{tx_frames, rx_frames, crc_errors, ack_loss}, echo{...}|null}`.
 
 ---
 
@@ -157,22 +281,28 @@ Milestone 0 validates that both ESP32 boards and their E220 transceivers are phy
 
 Since serial monitors can typically only focus on a single COM port at a time, LoRaIoT integrates tools to trace and isolate physical wiring faults or airframe issues over the local network.
 
-### 🛠️ The 6-Step Hardware Diagnostics Check
-If the E220 configuration write fails on boot (logging an `invalid response received` error), it points to a physical wiring or power fault. You can trigger a comprehensive, isolated hardware diagnostic test over the network at any time:
+### The 6-Step Hardware Diagnostics Check
+The diagnostics run automatically at boot and can be re-triggered at any time via REST:
 
-1. **Trigger the Check:** Open your terminal and trigger the diagnostics via a GET request:
+1. **Trigger the Check:**
    ```bash
    curl -s http://<node_ip>/api/diag/e220
    ```
-   *Note: This command safely calls `LoRaTransport.pause()` to suspend the background transceiver task and close its UART2 handle, preventing resource contention.*
+   *Note: This safely calls `LoRaTransport.pause()` to suspend the background transceiver task before touching UART2, and `LoRaTransport.resume()` when done.*
 2. **Fetch the Diagnostics Log:**
    ```bash
    curl -s http://<node_ip>/api/log
    ```
-3. **Interpret the Output:** Look at the bottom of the log lines starting with `E220 diag:`:
-   - **Step 1 Fail (AUX is LOW):** The E220 has no power (check VCC/GND wires) or the AUX wire is loose/stuck.
-   - **Step 2 Fail (AUX did not return HIGH):** The M0 or M1 lines are disconnected, preventing the module from transitioning modes.
-   - **Step 3 Fail (Read reply (0 bytes) / FAIL no reply):** The RXD (GPIO 17) or TXD (GPIO 16) serial lines are loose, disconnected, or swapped.
+3. **Interpret the Output:** Look for `E220 diag:` lines:
+   - **Step 1 Fail (AUX is LOW):** No power to E220 (check VCC/GND) or AUX wire loose/stuck.
+   - **Step 2 Fail (AUX did not return HIGH):** M0 or M1 lines disconnected.
+   - **Step 3 Fail (FF FF FF reply):** RXD/TXD lines loose, swapped, or another task is using UART2 during the check.
+
+### Multi-Node Log Comparison
+```bash
+curl -s http://<local_ip>/api/log
+curl -s http://<remote_ip>/api/log
+```
 
 ---
 

@@ -148,7 +148,7 @@ artifact: it is stored as `src/lora/proto/loraiot.proto`, and the nanopb sources
 
 ## Milestone 2 — NVS Provisioning: Role, Channel, Address, Log Level, CRYPT Key
 
-**Status:** [x] substantially complete - two items deferred to M4 (loraKey/CRYPT) and M6 (REMOTE-only addr input)
+**Status:** [x] substantially complete - two items deferred: loraKey/CRYPT and REMOTE-only addr portal input
 **Prerequisite:** Milestone 0 (compile-time role toggle exists; this replaces it with runtime provisioning)
 
 **Intent:**
@@ -203,7 +203,7 @@ Address notes:
 
 ## Milestone 3 — LoRa Transport Layer: Full E220 Init + Serial2 Owner Task
 
-**Status:** [x] complete
+**Status:** [x] complete (Note: CRYPT_H/L key uses default 0x00 0x00 pending loraKey provisioning)
 **Prerequisite:** Milestone 0 (LoRaTransport skeleton exists; this replaces it with production implementation), Milestone 2 (LoRaConfig available for channel/addr)
 
 **Intent:**
@@ -324,7 +324,7 @@ replies with a `RESPONSE(echo)` whose `request_seq` equals the request SEQ. This
 
 ## Milestone 6 — Dual-Role Application Logic: Beacon, Requests, and Sensor Data
 
-**Status:** [ ] pending
+**Status:** [-] in progress (core infrastructure, endpoints, registries, and beacon task completed; crawl dispatch and softAP pending)
 **Prerequisite:** Milestone 5 (framed LoRa link confirmed working end-to-end)
 
 **Intent:**
@@ -342,11 +342,11 @@ default 5 s per REMOTE).
 
 **REMOTE beacon state machine (`doc/LoRaProtocol.md` §8):**
 ```
-UNDISCOVERED → beacon every 5 s (+ 0-1 s jitter)
+UNDISCOVERED -> beacon every 5 s (+ 0-1 s jitter)
     first frame from LOCAL addressed to this REMOTE
-DISCOVERED   → beacon every 60 s
+DISCOVERED   -> beacon every 60 s
     no frame from LOCAL for 2 min
-UNDISCOVERED → beacon every 5 s  (self-healing)
+UNDISCOVERED -> beacon every 5 s  (self-healing)
 ```
 
 **LOCAL LRU registry:**
@@ -357,29 +357,32 @@ UNDISCOVERED → beacon every 5 s  (self-healing)
 
 **Expected Outcomes:**
 - REMOTE `beaconTask`: beacons at 5 s rate until the first frame from LOCAL; then 60 s; reverts to 5 s after 2 min of silence
-- LOCAL `GET /api/lora/nodes` returns the live registry: `[{"addr":2,"lastSeen":1234567,"online":true,"bootId":…}]`
-- Live read: `GET /api/lora/nodes/{addr}/devices/{device}/metrics?live=true&timeout=ms` sends `REQUEST(Read)` and returns 200, 404 (unknown/purged node) or 504 (LoRa timeout); the cached variant (without `live`) returns the last values with their age
+- LOCAL `GET /api/lora/nodes` returns the live registry: `[{"addr":2,"lastSeen":1234567,"online":true,"bootId":...}]`
+- Live read: `GET /api/lora/nodes/metrics?addr=2&device=1&live=true&timeout=ms` sends `REQUEST(Read)` and returns 200, 404 (unknown/purged node) or 504 (LoRa timeout); the cached variant (without `live`) returns the last values with their age
 - LOCAL fills its definition cache with the `Describe` crawl (device 0, 1, 2, ... until `STATUS_BAD_REQUEST`) when a BEACON shows a new `boot_id` or `registry_rev`
-- REMOTE WiFi SoftAP (`LoRaIoT-Remote`, 192.168.4.1) starts after provisioning; IoT devices POST sensor data to `POST /api/sensor` on REMOTE, which keeps the latest values per device name (device and metric tables, `Beacon.registry_rev`); a registration that would make a `Device` exceed one frame is rejected with HTTP 400
+- REMOTE WiFi SoftAP (`LoRaIoT-Remote`, 192.168.4.1) starts after provisioning; IoT devices POST sensor data to `POST /api/sensor/data` on REMOTE, which keeps the latest values per device name (device and metric tables, `Beacon.registry_rev`); a registration that would make a `Device` exceed one frame is rejected with HTTP 400
 - REMOTE may send an unsolicited `DATA_ACK` alert when a configured threshold is exceeded; LOCAL ACKs it and updates its cache
-- StatusLed READY on LOCAL once ≥ 1 REMOTE is online; READY on REMOTE once it has received its first frame from LOCAL
-- WebSocket broadcast on LOCAL includes: tier, node registry, last sensor values per REMOTE, link stats (TX/RX/error counts)
+- StatusLed READY on LOCAL once >= 1 REMOTE is online; READY on REMOTE once it has received its first frame from LOCAL
+- WebSocket broadcast on LOCAL includes: tier, link stats (TX/RX/error counts), echo results
 - `openapi_json.h` and `doc/RestApi.md` describe every endpoint added in this milestone
 
 **Todo List:**
-- [x] Implement REMOTE `beaconTask`: sends BEACON frame (all `Beacon` fields: `boot_id`, `fw_version`, `uptime_s`, `registry_rev`) at current rate; tracks UNDISCOVERED/DISCOVERED state; uses `TASK_CREATE` — `src/LoRaIoT/src/BeaconTask.h/.cpp`; started from `applicationSetup()` on REMOTE only; `beaconTaskNotifyDiscovered()` called from `onLoRaReceive` on every non-duplicate frame; hardware-verified: BEACON received by LOCAL, node addr=2 registered in `DeviceRegistry` with correct `boot_id`, `crawl_pending=true`, RTT 135 ms; `loraIsReady()` gate added to prevent beacon firing during boot diagnostics
-- [ ] REMOTE: handle PING -> ACK; REQUEST(Read) -> RESPONSE with `Data` (device 0 sampled on demand, AP devices from the last posted values with `age_ms`); REQUEST(Describe) -> RESPONSE(Device) or `STATUS_BAD_REQUEST` for an unknown device
-- [ ] REMOTE: register `POST /api/sensor` in `RestService::registerRoutes()` — IoT device posts `{"device":"Sensor A","data":{"Voltage":3.35,"Current":0.12}}`; unknown device names and keys get the next free device index / metric id (`registry_rev` increments); values are scaled to `sint32` and stored per device
-- [ ] LOCAL: implement the `Describe` crawl and the definition cache; drop the cache when `boot_id` changes
+- [x] Implement REMOTE `beaconTask`: sends BEACON frame (all `Beacon` fields: `boot_id`, `fw_version`, `uptime_s`, `registry_rev`) at current rate; tracks UNDISCOVERED/DISCOVERED state; uses `TASK_CREATE` - `src/LoRaIoT/src/BeaconTask.h/.cpp`; started from `applicationSetup()` on REMOTE only; `beaconTaskNotifyDiscovered()` called from `onLoRaReceive` on every non-duplicate frame; hardware-verified: BEACON received by LOCAL, node addr=2 registered in `DeviceRegistry` with correct `boot_id`, `crawl_pending=true`, RTT 135 ms; `loraIsReady()` gate added to prevent beacon firing during boot diagnostics
+- [x] REMOTE: register `POST /api/sensor/data` in `RestService::registerRoutes()` - IoT device posts `{"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100}}}`; handled in `src/service/src/RestService.cpp` via `SensorRegistry`
+- [x] REMOTE: implement sensor registry (`SensorRegistryClass` in `src/LoRaIoT/src/SensorRegistry.h/.cpp`) - stores schemas and readings, validates 186B payload capacity, assigns stable metric IDs and increments `registry_rev`
+- [x] LOCAL: implement definition cache (`DeviceRegistryClass` in `src/LoRaIoT/src/DeviceRegistry.h/.cpp`) - caches device definitions and measurements per node; clears cache on `boot_id` changes
+- [x] LOCAL: implement the request/response broker towards `loraTask` (`src/LoRaIoT/src/LoRaBroker.h/.cpp`) - REST handlers post requests, wait on semaphore with configurable timeout, never touch Serial2 directly
+- [x] LOCAL: register `GET /api/lora/nodes`, `.../nodes/devices`, `.../nodes/metrics` (cached and `live=true`), `POST .../nodes/data` in `RestService.cpp`
+- [x] Update `openapi_json.h` and `doc/RestApi.md` for all registered endpoints (source of truth)
+- [x] LOCAL: handle BEACON reception in `Application.cpp` `onLoRaReceive` - decodes `Beacon`, updates node metadata in `DeviceRegistry`, flags pending crawl
+- [ ] REMOTE: handle `REQUEST(Read)` -> `RESPONSE(Data)` and `REQUEST(Describe)` -> `RESPONSE(Device)` / `STATUS_BAD_REQUEST` (PING -> ACK and REQUEST(echo) are already implemented)
+- [ ] LOCAL: complete Describe crawl request dispatch (`sendDescribeRequest` in `DescribeCrawler.cpp`) and wire incoming RESPONSE frames in `Application.cpp` to `describeCrawlerOnResponse()`
 - [ ] REMOTE: optional alert threshold -> unsolicited `DATA_ACK` with `alert=true` (retry with random backoff)
-- [ ] LOCAL: handle BEACON (registry, PING reply), DATA, DATA_ACK (ACK reply, cache update)
+- [ ] LOCAL: handle unsolicited DATA and DATA_ACK frames (ACK reply, cache update)
 - [ ] LOCAL: implement optional cyclic read task (`readTask`): iterate registry, send `REQUEST(Read)`, update `loraState`; uses `TASK_CREATE`
-- [ ] LOCAL: implement the request/response queue towards `loraTask` (REST handlers post and block with timeout; never touch Serial2)
-- [ ] LOCAL: register `GET /api/lora/nodes`, `.../nodes/{addr}/devices`, `.../devices/{device}/metrics` (cached and `live=true`), `POST .../nodes/{addr}/data`
-- [ ] Update `openapi_json.h` and `doc/RestApi.md` for every endpoint above (same change)
-- [ ] In `applicationSetup()`: branch on `Gateway.getTier()` — LOCAL: WiFi STA only; REMOTE: call `WiFi.softAP("LoRaIoT-Remote")` after WiFiManager provisioning completes; disconnect STA after provisioning (AP mode only, frees WiFi resources)
-- [ ] Update WebSocket broadcast JSON: tier, node registry, last sensor values, link stats
-- [ ] Update `index_html.h` placeholder with a real UI: tier badge, node registry table, per-REMOTE sensor values, link stats panel; adapt SerialController HTML pattern (single self-contained HTML with inline JS WebSocket client)
+- [ ] In `applicationSetup()`: branch on `Gateway.getTier()` - LOCAL: WiFi STA only; REMOTE: call `WiFi.softAP("LoRaIoT-Remote")` after WiFiManager provisioning completes; disconnect STA after provisioning (AP mode only, frees WiFi resources)
+- [ ] Update WebSocket broadcast JSON: extend to include full node registry table and live sensor cache alongside link stats
+- [ ] Update `index_html.h` placeholder with a real UI: tier badge, node registry table, per-REMOTE sensor values, link stats panel
 
 **Relevant Context:**
 - `doc/LoRaProtocol.md` (M1) - §8 beacon state machine, §5 frame types, §10 to §13 payloads, definitions and mapping, §17 REST mapping
