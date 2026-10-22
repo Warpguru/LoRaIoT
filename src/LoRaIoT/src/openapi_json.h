@@ -2,12 +2,20 @@
 #include <pgmspace.h>
 
 /**
- * openapi_json.h - OpenAPI 3.0.0 specification for the LoRaIoT REST API.
+ * openapi_json.h - OpenAPI 3.0.0 specification and Swagger UI template.
  *
- * Stored in flash (PROGMEM) and served at GET /openapi via send_P().
- * The Swagger UI at GET /openapi/ui fetches this to render the interactive
- * explorer. The browser needs internet access to load Swagger UI from unpkg;
- * the ESP32 itself does not.
+ * Two PROGMEM symbols are defined here; both are served by Server.cpp:
+ *
+ *   OPENAPI_JSON        - Full OpenAPI 3.0 spec in JSON, served at GET /openapi
+ *                         via send_P(). Any HTTP or tooling consumer (curl,
+ *                         Home Assistant, ...) receives the complete spec
+ *                         including x-tier extension fields.
+ *
+ *   OPENAPI_UI_TEMPLATE - HTML/JS template for GET /openapi/ui, expanded
+ *                         into a stack buffer at request time (see Server.cpp
+ *                         handleGetOpenApiUi). Contains the Swagger UI CDN
+ *                         loader and the tierPlugin that hides operations
+ *                         whose x-tier does not match the running tier.
  *
  * Covers all endpoints registered in RestService.cpp and Server.cpp.
  * Field names, types, and descriptions match doc/RestApi.md exactly.
@@ -342,6 +350,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "List all known remote nodes",
         "description": "Returns every remote node address that LOCAL has observed via PING or BEACON, together with their cached boot_id, registry_rev and device count. LOCAL only.",
@@ -355,6 +364,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/devices": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "List or lookup devices on a remote node",
         "description": "Without the `device` parameter returns all cached device definitions for the node. With `device` (index or name) returns only that entry. Add `refresh=true` to schedule a fresh Describe crawl before returning (the crawl runs asynchronously; poll again after ~3 s to see results). LOCAL only.",
@@ -375,6 +385,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/metrics": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "Get cached or live metric readings for a device",
         "description": "Returns the most recently received measurement values for the specified device. Add `live=true` to send a REQUEST(Read) to the node and wait for a fresh response (blocks until `timeout` ms or 504). LOCAL only.",
@@ -398,6 +409,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/stats": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
         "summary": "LoRa transport statistics",
         "description": "Returns cumulative TX/RX frame counts and error counters since the last reboot or resetStats() call. CRC error and ACK loss counters are wired in Phase 3 (frame protocol layer); they return 0 until then.",
@@ -411,6 +423,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/echo": {
       "post": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Echo test to a remote node",
         "description": "Sends a REQUEST(Echo) to the node. REMOTE reverses the text and returns it in the RESPONSE, proving the frame was processed end-to-end. Blocks until the RESPONSE arrives or timeout. LOCAL only.",
@@ -431,6 +444,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/ping": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Ping a remote node (unicast)",
         "description": "Sends a PING frame to the specified remote node and waits for an ACK. Returns round-trip time and boot_id. Also available as POST (identical behaviour). LOCAL only.",
@@ -445,6 +459,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       },
       "post": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Ping a remote node (unicast, POST form)",
         "description": "Identical to GET /api/lora/nodes/ping. POST form provided for clients that prefer POST for actions.",
@@ -461,6 +476,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/ping": {
       "get": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Broadcast PING",
         "description": "Sends a PING to the broadcast address (0xFF). Returns the first ACK received. Useful for discovering which nodes are reachable. LOCAL only.",
@@ -473,6 +489,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/beacon": {
       "post": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Trigger an immediate manual BEACON",
         "description": "Queues a BEACON frame for transmission to the broadcast address. BEACON carries boot_id, fw_version, uptime_s, and registry_rev. Returns 202 Accepted immediately; the frame is sent asynchronously by loraTransportTask. LOCAL only.",
@@ -483,6 +500,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/data": {
       "post": {
+        "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Send a Data frame to a remote node",
         "description": "Encodes a loraiot_Data payload and queues it for transmission. Use `ack=true` for DATA_ACK (reliable, waits for ACK from REMOTE) or `ack=false` for unreliable DATA. Returns 202 Accepted immediately. LOCAL only.",
@@ -502,6 +520,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/sensor/data": {
       "post": {
+        "x-tier": "REMOTE",
         "tags": ["Sensor"],
         "summary": "Ingest sensor data from a SoftAP-connected IoT device",
         "description": "REMOTE only. Accepts a JSON payload from a sensor node connected to REMOTE's WiFi SoftAP. Auto-assigns a stable device index and metric_id for each new key. Increments registry_rev when the schema changes. Rejects metrics that would cause the encoded loraiot_Device proto to exceed 186 bytes.",
@@ -735,3 +754,81 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
   }
 }
 )rawjson";
+
+/**
+ * OPENAPI_UI_TEMPLATE - HTML template for GET /openapi/ui.
+ * Stored in flash (PROGMEM); never occupies DRAM at idle.
+ *
+ * Placeholders (positional, consumed by snprintf in handleGetOpenApiUi):
+ *   %s  SSID of the connected network            (banner)
+ *   %s  Gateway tier name for display             (banner)
+ *   %s  Build timestamp __DATE__ " " __TIME__     (banner)
+ *   %s  Gateway tier name for JS TIER variable    (x-tier filter)
+ *
+ * IP address is not injected server-side. A one-line JS snippet reads
+ * location.hostname so the displayed address is always the interface the
+ * browser actually used - correct for both STA mode (LAN DHCP IP) and
+ * future SoftAP mode (192.168.4.1).
+ *
+ * The tierPlugin wrapComponents hook inspects the x-tier OpenAPI extension
+ * on each operation and returns null (hides the row) when the operation's
+ * required tier does not match the running tier. Operations with no x-tier
+ * field are always shown on both tiers.
+ */
+static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
+  "<!DOCTYPE html>"
+  "<html lang='en'><head>"
+  "<meta charset='utf-8'/>"
+  "<title>LoRaIoT API</title>"
+  "<link rel='stylesheet' href='https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui.css'/>"
+  "<style>"
+  ".banner{background:#f8f9fa;border-bottom:1px solid #e9ecef;padding:8px 16px;"
+  "font-family:sans-serif;font-size:13px;color:#495057}"
+  ".banner strong{color:#212529}"
+  "</style>"
+  "</head><body>"
+  "<div class='banner'>"
+  "IP: <strong><span id='ip'></span></strong>"
+  " | SSID: <strong>%s</strong>"
+  " | Tier: <strong>%s</strong>"
+  " | Built: <strong>%s</strong>"
+  "</div>"
+  "<div id='swagger-ui'></div>"
+  "<script src='https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui-bundle.js'></script>"
+  "<script>"
+  "document.getElementById('ip').textContent=location.hostname;"
+  "var TIER='%s';"
+  "function tierPlugin(){"
+    "return{"
+      "statePlugins:{"
+        "spec:{"
+          "wrapActions:{"
+            "updateJsonSpec:function(oriAction){"
+              "return function(spec){"
+                "Object.keys(spec.paths||{}).forEach(function(path){"
+                  "var item=spec.paths[path];"
+                  "['get','post','put','delete','patch','head','options'].forEach(function(m){"
+                    "if(item[m]&&item[m]['x-tier']&&item[m]['x-tier']!==TIER)"
+                      "delete item[m];"
+                  "});"
+                  "if(Object.keys(item).length===0)delete spec.paths[path];"
+                "});"
+                "return oriAction(spec);"
+              "};"
+            "}"
+          "}"
+        "}"
+      "}"
+    "};"
+  "}"
+  "window.onload=function(){"
+    "window.ui=SwaggerUIBundle({"
+      "url:'/openapi',"
+      "dom_id:'#swagger-ui',"
+      "presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],"
+      "plugins:[tierPlugin],"
+      "layout:'BaseLayout'"
+    "});"
+  "};"
+  "</script>"
+  "</body></html>";

