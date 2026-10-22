@@ -6,6 +6,7 @@
 
 #include "../../lora/src/nanopb/loraiot.pb.h"
 #include "../../lora/src/LoRaTransport.h"
+#include "../../lora/src/LoRaFrame.h"
 
 /**
  * LoRaBroker.h - Request/response broker between HTTP handlers and loraTask.
@@ -16,7 +17,7 @@
  *
  *   HTTP handler (Core 0)          loraTask (Core 1 / single writer of UART2)
  *   ─────────────────────          ──────────────────────────────────────────
- *   1. loraBrokerSend(req, addr)   3. encodes + calls LoRaTransport.sendRaw()
+ *   1. loraBrokerSend(req, addr)   3. encodes + calls LoRaTransport.sendFrame()
  *   2. loraBrokerWait(timeout)     4. receive callback calls loraBrokerOnResponse()
  *      blocks on semaphore    <───    gives the semaphore, stores loraiot_Response
  *   5. reads loraBrokerGetResponse()
@@ -25,9 +26,9 @@
  * A mutex guards the pending slot. If a second request arrives while one is
  * in flight it receives BROKER_ERR_BUSY immediately.
  *
- * Phase 2 note: loraBrokerSend() stubs the actual nanopb encode + sendRaw()
- * call (same pattern as sendDescribeRequest() in DescribeCrawler). The frame
- * protocol layer will replace the stub in Phase 3.
+ * PING frames use LoRaTransport.sendFrame() with a proper LoRaFrame header and
+ * nanopb-encoded Beacon payload. REQUEST frames (ECHO, READ, DESCRIBE) still use
+ * the unframed Phase 2 stub pending the full M4 frame codec integration.
  */
 
 // Maximum time an HTTP handler will block waiting for a RESPONSE (ms).
@@ -58,10 +59,23 @@ enum class BrokerRequestType : uint8_t {
 };
 
 /**
- * Initialise the broker mutex and semaphore. Call once from applicationSetup()
+ * Initialise the broker mutex, semaphore and boot_id. Call once from applicationSetup()
  * after LoRaTransport.begin().
  */
 void loraBrokerBegin();
+
+/**
+ * Return the boot_id generated at loraBrokerBegin(). Non-zero random value that changes
+ * every boot. Travels in every outgoing PING frame as the Beacon payload boot_id field.
+ */
+uint32_t loraBrokerBootId();
+
+/**
+ * Read the pending PING slot (seq and send time) without modifying it.
+ * Returns true and fills seq/sentMs only when a PING is currently in flight.
+ * Thread-safe (taken under brokerMutex).
+ */
+bool loraBrokerPendingPing(uint16_t& seq, uint32_t& sentMs);
 
 /**
  * Encode and enqueue a typed REQUEST frame to the given node address.

@@ -552,7 +552,7 @@ void RestService::registerRoutes() {
       // Build a minimal Beacon and send it broadcast. Phase 3 will wrap this
       // in a proper BEACON-type frame header.
       const char beaconMsg[] = "BEACON\n";
-      LoRaTransport.sendRaw(reinterpret_cast<const uint8_t*>(beaconMsg), sizeof(beaconMsg) - 1);
+      LoRaTransport.sendRaw(LORA_ADDR_BROADCAST, reinterpret_cast<const uint8_t*>(beaconMsg), sizeof(beaconMsg) - 1);
       Log_info("POST /api/lora/beacon: manual BEACON queued [Phase2 stub]");
       request->send(HTTP_STATUS_ACCEPTED, "application/json", "{\"status\":\"queued\"}");
     });
@@ -594,7 +594,7 @@ void RestService::registerRoutes() {
         request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"encode failed\"}");
         return;
       }
-      LoRaTransport.sendRaw(buf, stream.bytes_written);
+      LoRaTransport.sendRaw(addr, buf, stream.bytes_written);
       Log_info("POST /api/lora/nodes/data?addr=%u&ack=%s: %u bytes queued [Phase2 stub]",
                addr, ack ? "true" : "false", (unsigned)stream.bytes_written);
       JsonDocument respDoc;

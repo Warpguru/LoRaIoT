@@ -8,6 +8,11 @@
 #include "Tier.h"
 #include "LoRaConfig.h"
 #include "../../lora/src/LoRaTransport.h"
+#include "../../lora/src/LoRaFrame.h"
+#include "../../lora/src/LoRaState.h"
+#include "../../lora/src/nanopb/pb_encode.h"
+#include "../../lora/src/nanopb/pb_decode.h"
+#include "../../lora/src/nanopb/loraiot.pb.h"
 #include "../../diagnostics/src/Diagnostics.h"
 #include "DeviceRegistry.h"
 #include "SensorRegistry.h"
@@ -23,35 +28,133 @@
  */
 
 // ---- Application Constants -------------------------------------------------
-static constexpr uint32_t PING_INTERVAL_MS = 2000; // Ping every 2 seconds on LOCAL
-static constexpr size_t   MSG_BUFFER_LEN   = 40;   // Buffer size for outgoing ping/reply strings
-static constexpr uint32_t BOOT_DELAY_MS    = 1000; // Safe boot startup delay
+static constexpr uint32_t PING_INTERVAL_MS = 2000;  // Periodic PING interval on LOCAL
+static constexpr uint32_t BOOT_DELAY_MS    = 1000;  // Safe boot startup delay
+
+// ---- PING/ACK helpers ------------------------------------------------------
+
+/**
+ * Called by REMOTE when it receives a PING frame.
+ * Decodes the Beacon payload (logs the sender's boot_id), then sends an ACK back.
+ * Runs on loraTransportTask - only queue operations, no UART I/O.
+ */
+static void sendPingAck(const LoRaFrame& ping) {
+  // Decode the Beacon payload to log LOCAL's boot_id (proves the protobuf round-trip).
+  loraiot_Beacon beacon = loraiot_Beacon_init_zero;
+  pb_istream_t pbIn = pb_istream_from_buffer(ping.payload, ping.len);
+  if (pb_decode(&pbIn, loraiot_Beacon_fields, &beacon)) {
+    Log_info("PING from 0x%02X seq=%u boot_id=0x%08X",
+             ping.src, ping.seq, beacon.boot_id);
+  } else {
+    Log_warn("PING from 0x%02X seq=%u - Beacon decode failed: %s",
+             ping.src, ping.seq, PB_GET_ERROR(&pbIn));
+  }
+
+  // Build the ACK payload: Ack{acked_type=PING, acked_seq=ping.seq, status=OK}
+  loraiot_Ack ack = loraiot_Ack_init_zero;
+  ack.acked_type = static_cast<uint32_t>(LoRaFrameType::PING);
+  ack.acked_seq  = ping.seq;
+  ack.status     = loraiot_Status_STATUS_OK;
+
+  uint8_t payloadBuf[loraiot_Ack_size];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Ack_fields, &ack)) {
+    Log_error("ACK encode failed for PING seq=%u: %s", ping.seq, PB_GET_ERROR(&pbOut));
+    return;
+  }
+
+  LoRaFrame ackFrame;
+  ackFrame.ver  = LORA_PROTOCOL_VER;
+  ackFrame.type = LoRaFrameType::ACK;
+  ackFrame.src  = LoRaConfig.getAddress();
+  ackFrame.dst  = ping.src;
+  ackFrame.seq  = loraNextSeq();
+  ackFrame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(ackFrame.payload, payloadBuf, ackFrame.len);
+
+  if (LoRaTransport.sendFrame(ackFrame)) {
+    Log_info("ACK sent to 0x%02X acked_seq=%u", ping.src, ping.seq);
+  } else {
+    Log_error("ACK sendFrame failed for PING seq=%u", ping.seq);
+  }
+}
 
 // ---- LoRa Receive Callback -------------------------------------------------
 
-static void onLoRaReceive(const uint8_t* data, size_t len) {
-  if (data == nullptr || len == 0) return;
+/**
+ * Called from loraTransportTask whenever a CRC-valid, addressed frame arrives.
+ * Dispatch is role-gated: REMOTE handles PING; LOCAL handles ACK.
+ * All other frame types are logged at DEBUG and ignored until M4/M6 wire them.
+ */
+static void onLoRaReceive(const LoRaFrame& frame) {
+  const bool isLocal = (strcmp(Gateway.getTierName(), "LOCAL") == 0);
 
-  // Convert received payload to safe null-terminated string for logging and scanning
-  String str = String((const char*)data);
-  str.trim();
-
-  if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
-    // REMOTE Node: Logs receipt of ping, then immediately replies back with the same index
-    Log_info("Received ping: %s", str.c_str());
-
-    int pingIndex = 0;
-    if (sscanf(str.c_str(), "Local send: %d", &pingIndex) == 1) {
-      char replyMsg[MSG_BUFFER_LEN];
-      snprintf(replyMsg, sizeof(replyMsg), "Remote reply: %d\n", pingIndex);
-      
-      // Asynchronously queue the reply frame
-      LoRaTransport.sendRaw(reinterpret_cast<const uint8_t*>(replyMsg), strlen(replyMsg));
-      Log_info("Sent reply: %d", pingIndex);
+  // Extract boot_id for duplicate/reboot detection.
+  // PING and BEACON carry a Beacon payload; all other types pass 0.
+  uint32_t bootId = 0;
+  if (frame.type == LoRaFrameType::PING || frame.type == LoRaFrameType::BEACON) {
+    loraiot_Beacon beacon = loraiot_Beacon_init_zero;
+    pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
+    if (pb_decode(&pbIn, loraiot_Beacon_fields, &beacon)) {
+      bootId = beacon.boot_id;
     }
-  } else {
-    // LOCAL Node: Simply logs the received ping-echo reply
-    Log_info("Received reply: %s", str.c_str());
+  }
+
+  // Duplicate detection and reboot detection (doc/LoRaProtocol.md §6, §6.1).
+  // Drop duplicate frames silently; LoRaState handles the state update.
+  if (!LoRaState.updateAndCheckDuplicate(frame.src, frame.seq,
+                                          static_cast<uint8_t>(frame.type), bootId)) {
+    return;  // duplicate - already logged at DEBUG inside LoRaState
+  }
+
+  switch (frame.type) {
+
+    case LoRaFrameType::PING:
+      if (!isLocal) {
+        // REMOTE: send an ACK back to the originator
+        sendPingAck(frame);
+      } else {
+        Log_debug("onLoRaReceive: LOCAL received unexpected PING from 0x%02X", frame.src);
+      }
+      break;
+
+    case LoRaFrameType::ACK:
+      if (isLocal) {
+        // LOCAL: match the ACK to the pending PING, compute RTT, wake the broker
+        loraiot_Ack ack = loraiot_Ack_init_zero;
+        pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
+        if (!pb_decode(&pbIn, loraiot_Ack_fields, &ack)) {
+          Log_warn("ACK from 0x%02X seq=%u - Ack decode failed: %s",
+                   frame.src, frame.seq, PB_GET_ERROR(&pbIn));
+          break;
+        }
+        if (ack.acked_type != static_cast<uint32_t>(LoRaFrameType::PING)) {
+          Log_debug("ACK from 0x%02X: acked_type=%u (not PING), ignoring", frame.src, ack.acked_type);
+          break;
+        }
+        uint16_t pendingSeq = 0;
+        uint32_t sentMs     = 0;
+        if (!loraBrokerPendingPing(pendingSeq, sentMs)) {
+          Log_debug("ACK from 0x%02X acked_seq=%u: no PING pending, discarding", frame.src, ack.acked_seq);
+          break;
+        }
+        if (ack.acked_seq != pendingSeq) {
+          Log_debug("ACK from 0x%02X: acked_seq=%u != pending seq=%u, discarding",
+                    frame.src, ack.acked_seq, pendingSeq);
+          break;
+        }
+        const uint32_t rttMs = millis() - sentMs;
+        Log_info("PING ACK from 0x%02X seq=%u rtt=%u ms", frame.src, ack.acked_seq, rttMs);
+        loraBrokerOnPingAck(DEVICE_REGISTRY_BOOT_ID_NONE, rttMs);
+      } else {
+        Log_debug("onLoRaReceive: REMOTE received unexpected ACK from 0x%02X", frame.src);
+      }
+      break;
+
+    default:
+      Log_debug("onLoRaReceive: unhandled frame type=0x%02X from 0x%02X seq=%u",
+                static_cast<uint8_t>(frame.type), frame.src, frame.seq);
+      break;
   }
 }
 
@@ -100,6 +203,7 @@ void applicationSetup() {
   // tier, address and channel. Without a tier the node has no LoRa role, so the
   // transport stays off (the REST API remains reachable to provision the node).
   if (Gateway.isConfigured()) {
+    LoRaState.begin();
     LoRaTransport.setReceiveCallback(onLoRaReceive);
     LoRaTransport.begin();
     loraBrokerBegin();
@@ -119,27 +223,35 @@ void applicationLoop() {
   // Service any pending on-demand hardware wiring checks
   diagnosticsLoop();
 
+  // Purge stale LoRaState entries (both tiers; cheap when no entries are stale)
+  LoRaState.purgeStale();
+
   // Drive the Describe crawl state machine (LOCAL only; no-op cost on REMOTE)
   if (strcmp(Gateway.getTierName(), "LOCAL") == 0) {
     describeCrawlerLoop();
   }
 
   static unsigned long lastSendTime = 0;
-  static int pingCounter = 0;
 
-  // LOCAL Node: Periodically transmit pings to REMOTE
+  // LOCAL Node: Periodically send a PING to REMOTE via the broker.
+  // loraBrokerSend() returns BUSY if a REST ping is already in flight - skip that tick silently.
   if (strcmp(Gateway.getTierName(), "LOCAL") == 0) {
     unsigned long now = millis();
     if (now - lastSendTime >= PING_INTERVAL_MS) {
       lastSendTime = now;
 
-      char pingMsg[MSG_BUFFER_LEN];
-      snprintf(pingMsg, sizeof(pingMsg), "Local send: %d\n", pingCounter);
-      
-      // Asynchronously queue the ping frame
-      LoRaTransport.sendRaw(reinterpret_cast<const uint8_t*>(pingMsg), strlen(pingMsg));
-      Log_info("Sent: %d", pingCounter);
-      pingCounter++;
+      uint32_t seq = 0;
+      const BrokerResult res = loraBrokerSend(BrokerRequestType::PING, LORA_DEFAULT_ADDR_REMOTE, nullptr, seq);
+      if (res == BrokerResult::OK) {
+        // Block up to LORA_REQUEST_TIMEOUT_MS for the ACK (onLoRaReceive calls loraBrokerOnPingAck).
+        const BrokerResult waitRes = loraBrokerWait(LoRaTransportClass::LORA_REQUEST_TIMEOUT_MS);
+        if (waitRes == BrokerResult::TIMEOUT) {
+          Log_warn("PING seq=%u: no ACK within %u ms", seq, (unsigned)LoRaTransportClass::LORA_REQUEST_TIMEOUT_MS);
+        }
+        // On OK, PING ACK was already logged by onLoRaReceive.
+      } else if (res == BrokerResult::BUSY) {
+        Log_debug("applicationLoop: PING skipped - broker busy (REST ping in flight)");
+      }
     }
   }
 

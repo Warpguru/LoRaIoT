@@ -7,6 +7,8 @@
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
 #include "../../lora/src/LoRaTransport.h"
+#include "../../lora/src/LoRaFrame.h"
+#include "../../LoRaIoT/src/LoRaConfig.h"
 #include "../../lora/src/nanopb/pb_decode.h"
 #include "../../lora/src/nanopb/pb_encode.h"
 #include "../../lora/src/nanopb/loraiot.pb.h"
@@ -76,6 +78,34 @@ static constexpr uint32_t TASK_PAUSE_DELAY_MS = 50;     // Let the suspended tra
 static constexpr uint32_t PING_TEST_BOOT_ID = 0x12345678;
 // Expected encoding of Beacon{boot_id = 0x12345678}: tag 0x08 (field 1, varint) + varint of the value.
 static constexpr uint8_t PING_EXPECTED_PAYLOAD[] = {0x08, 0xF8, 0xAC, 0xD1, 0x91, 0x01};
+
+// ---- Frame codec self-test constants (doc/LoRaProtocol.md section 4.2) ------
+
+// Worked-example PING frame (src=0x01, dst=0x02, seq=1, payload=PING_EXPECTED_PAYLOAD).
+// All header bytes use named constants; no magic numbers.
+static constexpr uint8_t  FRAME_TEST_SRC  = LORA_DEFAULT_ADDR_LOCAL;   // 0x01
+static constexpr uint8_t  FRAME_TEST_DST  = LORA_DEFAULT_ADDR_REMOTE;  // 0x02
+static constexpr uint16_t FRAME_TEST_SEQ  = 0x0001;
+// CRC of the header+payload scope (VER..PAYLOAD) for this worked example.
+// Documented result: 0x720D. Named here so any future change is visible as a constant update.
+static constexpr uint16_t FRAME_TEST_CRC  = 0x720D;
+static constexpr uint8_t FRAME_EXPECTED[] = {
+    LORA_SYNC_0,                                              // 0xAA
+    LORA_SYNC_1,                                              // 0x55
+    LORA_PROTOCOL_VER,                                        // 0x01
+    static_cast<uint8_t>(LoRaFrameType::PING),                // 0x01
+    FRAME_TEST_SRC,                                           // 0x01
+    FRAME_TEST_DST,                                           // 0x02
+    static_cast<uint8_t>(FRAME_TEST_SEQ >> 8),                // 0x00  SEQ hi
+    static_cast<uint8_t>(FRAME_TEST_SEQ & 0xFF),              // 0x01  SEQ lo
+    static_cast<uint8_t>(sizeof(PING_EXPECTED_PAYLOAD)),      // 0x06  LEN
+    // payload: Beacon{boot_id=PING_TEST_BOOT_ID}
+    0x08, 0xF8, 0xAC, 0xD1, 0x91, 0x01,
+    // CRC16 big-endian
+    static_cast<uint8_t>(FRAME_TEST_CRC >> 8),                // 0x72
+    static_cast<uint8_t>(FRAME_TEST_CRC & 0xFF),              // 0x0D
+};
+static constexpr size_t FRAME_EXPECTED_LEN = sizeof(FRAME_EXPECTED);   // 17
 
 // UART2 object private to this file. It is closed (end()) before returning so
 // the future LoRa transport task can claim UART2 without conflict.
@@ -360,6 +390,93 @@ static bool runPingEncodeCheck() {
   return true;
 }
 
+// ---- Frame codec self-test -------------------------------------------------
+
+/**
+ * Verifies computeCRC16, encodeFrame, decodeFrame and the CRC-error path using the worked
+ * example from doc/LoRaProtocol.md section 4.2. Pure software: no UART, no radio.
+ * Returns true only if every check passed.
+ */
+static bool runFrameCodecCheck() {
+  Log_info("Frame diag: ===== frame codec check =====");
+
+  // Check 1: CRC check value for the ASCII string "123456789".
+  {
+    const uint8_t check[] = {'1','2','3','4','5','6','7','8','9'};
+    const uint16_t crc = computeCRC16(check, sizeof(check));
+    if (crc != LORA_CRC_CHECK_VALUE) {
+      Log_error("Frame diag:   FAIL CRC check value: got 0x%04X, expected 0x%04X", crc, LORA_CRC_CHECK_VALUE);
+      return false;
+    }
+    Log_info("Frame diag:   PASS CRC of \"123456789\" = 0x%04X", crc);
+  }
+
+  // Check 2: encodeFrame produces the 17-byte worked example exactly.
+  {
+    LoRaFrame frame;
+    frame.ver  = LORA_PROTOCOL_VER;
+    frame.type = LoRaFrameType::PING;
+    frame.src  = FRAME_TEST_SRC;
+    frame.dst  = FRAME_TEST_DST;
+    frame.seq  = FRAME_TEST_SEQ;
+    frame.len  = static_cast<uint8_t>(sizeof(PING_EXPECTED_PAYLOAD));
+    memcpy(frame.payload, PING_EXPECTED_PAYLOAD, frame.len);
+
+    uint8_t encoded[LORA_MAX_ENCODED_LEN];
+    size_t  encodedLen = 0;
+    if (!encodeFrame(frame, encoded, encodedLen)) {
+      Log_error("Frame diag:   FAIL encodeFrame returned false");
+      return false;
+    }
+    if (encodedLen != FRAME_EXPECTED_LEN || memcmp(encoded, FRAME_EXPECTED, FRAME_EXPECTED_LEN) != 0) {
+      char got[LoRaTransportClass::HEX_ENTRY_SIZE * FRAME_EXPECTED_LEN + 1];
+      char exp[LoRaTransportClass::HEX_ENTRY_SIZE * FRAME_EXPECTED_LEN + 1];
+      toHex(encoded, encodedLen, got, sizeof(got));
+      toHex(FRAME_EXPECTED, FRAME_EXPECTED_LEN, exp, sizeof(exp));
+      Log_error("Frame diag:   FAIL encoded bytes differ");
+      Log_error("Frame diag:     got: %s", got);
+      Log_error("Frame diag:     exp: %s", exp);
+      return false;
+    }
+    Log_info("Frame diag:   PASS worked example encodes to %u documented bytes", (unsigned)encodedLen);
+
+    // Check 3: decodeFrame round-trip (ownAddr = FRAME_TEST_DST so the DST filter passes).
+    LoRaFrame decoded;
+    const LoRaDecodeResult result = decodeFrame(encoded, encodedLen, decoded, FRAME_TEST_DST);
+    if (result != LoRaDecodeResult::OK) {
+      Log_error("Frame diag:   FAIL decodeFrame returned %u (expected OK=0)", (unsigned)result);
+      return false;
+    }
+    if (decoded.type != LoRaFrameType::PING ||
+        decoded.src  != FRAME_TEST_SRC      ||
+        decoded.dst  != FRAME_TEST_DST      ||
+        decoded.seq  != FRAME_TEST_SEQ      ||
+        decoded.len  != sizeof(PING_EXPECTED_PAYLOAD) ||
+        memcmp(decoded.payload, PING_EXPECTED_PAYLOAD, decoded.len) != 0) {
+      Log_error("Frame diag:   FAIL decoded fields do not match the original frame");
+      return false;
+    }
+    Log_info("Frame diag:   PASS decode round-trip: type=%u src=0x%02X dst=0x%02X seq=%u len=%u",
+             (unsigned)decoded.type, decoded.src, decoded.dst, decoded.seq, decoded.len);
+
+    // Check 4: a single flipped payload bit must be caught and reported as BAD_CRC.
+    uint8_t corrupted[FRAME_EXPECTED_LEN];
+    memcpy(corrupted, FRAME_EXPECTED, FRAME_EXPECTED_LEN);
+    corrupted[LORA_OFFSET_PAYLOAD] ^= 0x01;   // flip LSB of the first payload byte
+    LoRaFrame dummy;
+    const LoRaDecodeResult badResult = decodeFrame(corrupted, sizeof(corrupted), dummy, FRAME_TEST_DST);
+    if (badResult != LoRaDecodeResult::BAD_CRC) {
+      Log_error("Frame diag:   FAIL corrupted frame returned %u, expected BAD_CRC (%u)",
+                (unsigned)badResult, (unsigned)LoRaDecodeResult::BAD_CRC);
+      return false;
+    }
+    Log_info("Frame diag:   PASS corrupted frame correctly rejected as BAD_CRC");
+  }
+
+  Log_info("Frame diag: ===== RESULT: PASS. CRC, encode, decode and error detection verified =====");
+  return true;
+}
+
 // ---- Public entry points ---------------------------------------------------
 
 // Set at boot so the first diagnosticsLoop() call runs the check. Atomic because
@@ -380,8 +497,11 @@ void diagnosticsLoop() {
     // NO_DEVICE = slow blink: server is up but the LoRa module is not responding.
     statusLed.setState(LedState::NO_DEVICE);
   }
-  // Software-only check, independent of the radio, so it runs even if the E220 check failed.
+  // Software-only checks: independent of the radio, run even if the E220 check failed.
   if (!runPingEncodeCheck()) {
     Log_error("Protobuf diag: ===== RESULT: FAIL. See the FAIL line above =====");
+  }
+  if (!runFrameCodecCheck()) {
+    Log_error("Frame diag: ===== RESULT: FAIL. See the FAIL line above =====");
   }
 }

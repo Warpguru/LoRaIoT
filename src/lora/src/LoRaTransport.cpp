@@ -4,6 +4,7 @@
 #include <HardwareSerial.h>
 
 #include "../../util/src/LogBuffer.h"
+#include "../../util/src/StatusLed.h"
 #include "../../util/src/TaskUtils.h"
 #include "../../LoRaIoT/src/LoRaConfig.h"
 
@@ -61,31 +62,49 @@ void LoRaTransportClass::begin() {
 
   logHex("LoRaTransport::begin - Sent config cmd:", configCmd, CONFIG_CMD_LEN);
 
-  // AUX must be HIGH and stable before we write config data
-  unsigned long settleStart = millis();
-  while (digitalRead(PIN_AUX) == LOW) {
-    if (millis() - settleStart > AUX_TIMEOUT_MS) {
-      Log_error("LoRaTransport::begin - Timeout waiting for AUX HIGH before writing config");
+  // Write config and verify response; retry up to LORA_MAX_RETRIES times on
+  // FF FF FF error reply or short read. On persistent failure set FAULT LED
+  // and suspend this task forever (same pattern as WiFi failure in AGENTS.md).
+  bool configOk = false;
+  for (uint8_t attempt = 0; attempt < LORA_MAX_RETRIES; attempt++) {
+    // AUX must be HIGH and stable before writing config data
+    unsigned long settleStart = millis();
+    while (digitalRead(PIN_AUX) == LOW) {
+      if (millis() - settleStart > AUX_TIMEOUT_MS) {
+        Log_error("LoRaTransport::begin - Timeout waiting for AUX HIGH before config write (attempt %u/%u)",
+                  attempt + 1, (uint8_t)LORA_MAX_RETRIES);
+        break;
+      }
+      delay(POLL_INTERVAL_MS);
+    }
+    delay(GUARD_SETTLE_DELAY_MS);
+
+    // Write configuration command
+    LoRaSerial.write(configCmd, CONFIG_CMD_LEN);
+    delay(TRANSMIT_SETTLE_DELAY_MS);
+
+    // Read response (should echo C1 00 08 ...)
+    uint8_t response[CONFIG_RESPONSE_LEN] = {0};
+    size_t bytesRead = LoRaSerial.readBytes(response, CONFIG_RESPONSE_LEN);
+
+    logHex("LoRaTransport::begin - Config response:", response, bytesRead);
+
+    if (bytesRead >= CONFIG_RESPONSE_LEN && response[0] != ERROR_REPLY_BYTE) {
+      Log_info("LoRaTransport::begin - E220 configuration applied successfully (attempt %u/%u).",
+               attempt + 1, (uint8_t)LORA_MAX_RETRIES);
+      configOk = true;
       break;
     }
-    delay(POLL_INTERVAL_MS);
+
+    Log_error("LoRaTransport::begin - Invalid config response (attempt %u/%u); retrying...",
+              attempt + 1, (uint8_t)LORA_MAX_RETRIES);
+    delay(GUARD_SETTLE_DELAY_MS);
   }
-  delay(GUARD_SETTLE_DELAY_MS);
 
-  // Write configuration command
-  LoRaSerial.write(configCmd, CONFIG_CMD_LEN);
-  delay(TRANSMIT_SETTLE_DELAY_MS);
-
-  // Read response (should echo C1 00 08 ...)
-  uint8_t response[CONFIG_RESPONSE_LEN] = {0};
-  size_t bytesRead = LoRaSerial.readBytes(response, CONFIG_RESPONSE_LEN);
-  
-  logHex("LoRaTransport::begin - Read config response:", response, bytesRead);
-
-  if (bytesRead < CONFIG_RESPONSE_LEN || response[0] == ERROR_REPLY_BYTE) {
-    Log_error("LoRaTransport::begin - Error writing configuration to E220 (invalid response received)");
-  } else {
-    Log_info("LoRaTransport::begin - E220 configuration applied successfully.");
+  if (!configOk) {
+    Log_error("LoRaTransport::begin - E220 config failed after %u attempts. Halting.", (uint8_t)LORA_MAX_RETRIES);
+    statusLed.setState(LedState::FAULT);
+    vTaskSuspend(NULL);
   }
 
   // 3. Return to Mode 0 (Normal operation: M1=0, M0=0) and configure normal baud rate
@@ -113,13 +132,14 @@ void LoRaTransportClass::begin() {
   Log_info("LoRa transport layer task started.");
 }
 
-void LoRaTransportClass::sendRaw(const uint8_t* data, size_t len) {
+void LoRaTransportClass::sendRaw(uint8_t destAddr, const uint8_t* data, size_t len) {
   if (data == nullptr || len == 0 || txQueue == nullptr) return;
 
   // Truncate to maximum sub-packet frame capacity
   size_t transmitLen = (len > LORA_MAX_FRAME_LEN) ? LORA_MAX_FRAME_LEN : len;
 
   LoRaTxMessage msg;
+  msg.destAddr = destAddr;
   memcpy(msg.data, data, transmitLen);
   msg.len = transmitLen;
 
@@ -127,6 +147,17 @@ void LoRaTransportClass::sendRaw(const uint8_t* data, size_t len) {
   if (xQueueSend(txQueue, &msg, pdMS_TO_TICKS(TASK_DELAY_MS)) != pdPASS) {
     Log_warn("LoRaTransport::sendRaw - Outgoing queue full! Frame dropped.");
   }
+}
+
+bool LoRaTransportClass::sendFrame(const LoRaFrame& frame) {
+  uint8_t encoded[LORA_MAX_ENCODED_LEN];
+  size_t  encodedLen = 0;
+  if (!encodeFrame(frame, encoded, encodedLen)) {
+    Log_error("LoRaTransport::sendFrame - encodeFrame failed (payload len=%u)", frame.len);
+    return false;
+  }
+  sendRaw(frame.dst, encoded, encodedLen);
+  return true;
 }
 
 void LoRaTransportClass::setReceiveCallback(LoRaReceiveCallback cb) {
@@ -169,7 +200,7 @@ void LoRaTransportClass::resume() {
   }
 }
 
-void LoRaTransportClass::sendRawInternal(const uint8_t* data, size_t len) {
+void LoRaTransportClass::sendRawInternal(uint8_t destAddr, const uint8_t* data, size_t len) {
   // 1. Mandatory AUX pin check: poll AUX HIGH (wait until E220 is idle)
   unsigned long timeoutStart = millis();
   while (digitalRead(PIN_AUX) == LOW) {
@@ -181,8 +212,10 @@ void LoRaTransportClass::sendRawInternal(const uint8_t* data, size_t len) {
   }
 
   // 2. Prepend the Fixed Mode routing header: [ADDH][ADDL][CHAN]
-  const uint8_t targetAddh = ADDH;
-  const uint8_t targetAddl = (LoRaConfig.getAddress() == LORA_DEFAULT_ADDR_LOCAL) ? LORA_DEFAULT_ADDR_REMOTE : LORA_DEFAULT_ADDR_LOCAL;
+  // For broadcast (0xFF), E220 fixed-transmission uses ADDH=0xFF, ADDL=0xFF.
+  // For unicast, ADDH is always 0x00 (all nodes share the same high byte).
+  const uint8_t targetAddh = (destAddr == LORA_ADDR_BROADCAST) ? LORA_ADDR_BROADCAST : ADDH;
+  const uint8_t targetAddl = destAddr;
   const uint8_t targetChan = LoRaConfig.getChannel();
 
   // Print diagnostics for transmission routing
@@ -240,41 +273,100 @@ void LoRaTransportClass::loraTransportTask(void* param) {
   LoRaTransportClass* self = static_cast<LoRaTransportClass*>(param);
   Log_info("LoRa background transport task loop initialized.");
 
-  static uint8_t rxBuffer[RX_BUFFER_SIZE];
-  static size_t rxIndex = 0;
+  // Binary sync-byte framer state (static = lives on the heap, not the 4 kB task stack).
+  // The framer scans for 0xAA 0x55, accumulates exactly one frame worth of bytes, then
+  // hands the complete buffer to decodeFrame(). A stall timeout resets it on noise.
+  static uint8_t  rxBuffer[RX_BUFFER_SIZE];
+  static size_t   rxIndex      = 0;
+  static uint32_t rxLastByteMs = 0;   // millis() of last received byte, for stall detection
 
   while (true) {
     // 1. Process RX (read incoming bytes on UART2)
     while (LoRaSerial.available() > 0) {
-      int c = LoRaSerial.read();
-      if (c >= 0) {
-        Log_debug("LoRa RX: byte 0x%02X (%c)", c, (c >= CHAR_PRINTABLE_MIN && c <= CHAR_PRINTABLE_MAX) ? static_cast<char>(c) : RX_NON_PRINTABLE_PLACEHOLDER);
-        if (rxIndex < sizeof(rxBuffer) - 1) {
-          rxBuffer[rxIndex++] = static_cast<uint8_t>(c);
-          // For Milestone 0 raw transceiving: frames are plain-text ending with '\n'
-          if (c == RX_FRAME_TERMINATOR) {
-            rxBuffer[rxIndex] = '\0';
-            if (self->receiveCallback != nullptr) {
-              self->receiveCallback(rxBuffer, rxIndex);
-            }
-            // Count every complete frame delivered to the callback
-            xSemaphoreTake(self->statsMutex, portMAX_DELAY);
-            self->statsRxFrames++;
-            xSemaphoreGive(self->statsMutex);
-            rxIndex = 0;
-          }
+      const uint8_t b = static_cast<uint8_t>(LoRaSerial.read());
+      rxLastByteMs = millis();
+
+      // --- Sync-byte scanner (positions 0 and 1) ---
+      if (rxIndex == 0) {
+        // Only 0xAA is accepted as the start byte; anything else is silently discarded.
+        if (b == LORA_SYNC_0) {
+          rxBuffer[rxIndex++] = b;
+        }
+        continue;
+      }
+      if (rxIndex == 1) {
+        if (b == LORA_SYNC_1) {
+          rxBuffer[rxIndex++] = b;
+        } else if (b == LORA_SYNC_0) {
+          // 0xAA immediately after 0xAA: keep the new one as the candidate start.
+          rxBuffer[0] = b;
+          rxIndex = 1;
         } else {
-          // Prevent overflow: reset index on full buffer with no marker
           rxIndex = 0;
         }
+        continue;
       }
+
+      // --- Header and payload accumulation (positions 2 onwards) ---
+      if (rxIndex < RX_BUFFER_SIZE) {
+        rxBuffer[rxIndex++] = b;
+      } else {
+        // Buffer full with no complete frame: something went wrong. Reset.
+        Log_debug("LoRa RX: buffer full without a complete frame, resetting framer");
+        rxIndex = 0;
+        continue;
+      }
+
+      // Once we have the full header (LORA_FRAME_HEADER_LEN bytes) the LEN field is known.
+      if (rxIndex < LORA_FRAME_HEADER_LEN) {
+        continue;
+      }
+
+      const uint8_t payloadLen = rxBuffer[LORA_OFFSET_LEN];
+      if (payloadLen > LORA_MAX_PAYLOAD_LEN) {
+        Log_debug("LoRa RX: LEN=%u exceeds max, resetting framer", payloadLen);
+        rxIndex = 0;
+        continue;
+      }
+
+      const size_t expectedTotal = LORA_FRAME_HEADER_LEN + payloadLen + LORA_FRAME_CRC_LEN;
+      if (rxIndex < expectedTotal) {
+        continue;   // still collecting payload / CRC bytes
+      }
+
+      // --- Complete frame candidate: validate and dispatch ---
+      static LoRaFrame rxFrame;   // static to avoid touching the task stack
+      const LoRaDecodeResult result = decodeFrame(rxBuffer, expectedTotal, rxFrame,
+                                                  LoRaConfig.getAddress());
+      if (result == LoRaDecodeResult::OK) {
+        if (self->receiveCallback != nullptr) {
+          self->receiveCallback(rxFrame);
+        }
+        xSemaphoreTake(self->statsMutex, portMAX_DELAY);
+        self->statsRxFrames++;
+        xSemaphoreGive(self->statsMutex);
+        logHex("LoRa RX frame:", rxBuffer, (expectedTotal < 17 ? expectedTotal : 17));
+      } else if (result == LoRaDecodeResult::BAD_CRC) {
+        xSemaphoreTake(self->statsMutex, portMAX_DELAY);
+        self->statsCrcErrors++;
+        xSemaphoreGive(self->statsMutex);
+      }
+      // All other failure codes (BAD_VER, BAD_TYPE, FOREIGN_DST) are logged inside
+      // decodeFrame() at DEBUG and silently discarded here (no reply, per protocol §4.3).
+      rxIndex = 0;
+    }
+
+    // Stall protection: reset a half-received frame that stopped arriving mid-stream.
+    if (rxIndex > 0 && (millis() - rxLastByteMs) > RX_FRAME_TIMEOUT_MS) {
+      Log_debug("LoRa RX: framer stall timeout (%u bytes buffered), resetting", (unsigned)rxIndex);
+      rxIndex = 0;
     }
 
     // 2. Process TX (drain outgoing queue and transmit)
     if (self->txQueue != nullptr) {
       LoRaTxMessage txMsg;
       if (xQueueReceive(self->txQueue, &txMsg, 0) == pdPASS) {
-        self->sendRawInternal(txMsg.data, txMsg.len);
+        self->sendRawInternal(txMsg.destAddr, txMsg.data, txMsg.len);
         // Count every frame that completes the full AUX handshake sequence
         xSemaphoreTake(self->statsMutex, portMAX_DELAY);
         self->statsTxFrames++;

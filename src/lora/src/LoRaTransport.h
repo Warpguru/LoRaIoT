@@ -5,6 +5,8 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+#include "LoRaFrame.h"   // Frame size constants (LORA_MAX_FRAME_LEN, LORA_MAX_PAYLOAD_LEN, ...) live there
+
 /**
  * LoRaTransport.h - Minimal E220 raw transport layer interface.
  *
@@ -20,13 +22,11 @@
  * and timing rules are encapsulated inside this library.
  */
 
-typedef void (*LoRaReceiveCallback)(const uint8_t* data, size_t len);
+typedef void (*LoRaReceiveCallback)(const LoRaFrame& frame);
 
 /**
  * LoRaStats - snapshot of transport-layer counters.
  * Returned by LoRaTransport.getStats(). All fields are reset by resetStats().
- * CRC error and ACK loss counters are wired in Phase 3 when the frame
- * protocol layer is added; they read zero until then.
  */
 struct LoRaStats {
   uint32_t txFrames;   // frames successfully written to UART2
@@ -35,25 +35,12 @@ struct LoRaStats {
   uint32_t ackLoss;    // ACK timeouts / unacknowledged DATA_ACK frames
 };
 
-// Max E220 sub-packet / UART write size (REG1_SUB_PACKET_200B)
-static constexpr size_t LORA_MAX_FRAME_LEN    = 200;
-
-// Fixed-transmission routing prefix prepended by the MCU before every frame:
-// [ADDH 1B][ADDL 1B][CH 1B] (doc/LoRaProtocol.md §2)
-static constexpr size_t LORA_ROUTING_HDR_LEN  = 3;
-
-// LoRaIoT frame header bytes that follow the routing prefix:
-// [0xAA 0x55][VER 1B][TYPE 1B][SRC 1B][DST 1B][SEQ 2B][LEN 1B] (doc/LoRaProtocol.md §4)
-// CRC16 [2B] trails the payload and is also counted against the sub-packet budget.
-static constexpr size_t LORA_FRAME_HEADER_LEN = 9;   // preamble(2)+VER+TYPE+SRC+DST+SEQ(2)+LEN
-static constexpr size_t LORA_FRAME_CRC_LEN    = 2;
-static constexpr size_t LORA_FRAME_OVERHEAD   = LORA_ROUTING_HDR_LEN + LORA_FRAME_HEADER_LEN + LORA_FRAME_CRC_LEN;
-
-// Maximum protobuf payload bytes that fit inside one LoRa frame.
-// 200 - 3 (routing) - 9 (header) - 2 (CRC) = 186 B  (doc/LoRaProtocol.md §4)
-static constexpr size_t LORA_MAX_PAYLOAD_LEN  = LORA_MAX_FRAME_LEN - LORA_FRAME_OVERHEAD;
+// The frame size constants (LORA_MAX_FRAME_LEN, LORA_ROUTING_HDR_LEN, LORA_FRAME_HEADER_LEN,
+// LORA_FRAME_CRC_LEN, LORA_FRAME_OVERHEAD, LORA_MAX_PAYLOAD_LEN) moved to LoRaFrame.h so the
+// codec does not depend on the transport. They are still visible here through the include above.
 
 struct LoRaTxMessage {
+  uint8_t destAddr;
   uint8_t data[LORA_MAX_FRAME_LEN];
   size_t len;
 };
@@ -81,9 +68,6 @@ class LoRaTransportClass {
   static constexpr size_t  CONFIG_HEADER_LEN                 = 3;      // C0/C1/C2 + StartAddr + Length prefix of a config command or reply
   static constexpr size_t  HEX_CHARS_PER_BYTE                = 3;      // "%02X " per byte in hex log output
   static constexpr size_t  HEX_ENTRY_SIZE                    = HEX_CHARS_PER_BYTE + 1; // One hex entry plus string terminator
-  static constexpr uint8_t CHAR_PRINTABLE_MIN                = 32;     // ASCII printable space boundary
-  static constexpr uint8_t CHAR_PRINTABLE_MAX                = 126;    // ASCII printable tilde boundary
-
   // --- E220 Register 0 (REG0) Bitfield Definitions ---
   // UART Baud Rate (Bits 7-5)
   static constexpr uint8_t REG0_UART_BAUD_1200               = 0x00;   // Binary: 00000000
@@ -146,6 +130,14 @@ class LoRaTransportClass {
   static constexpr uint32_t AUX_TRANSMIT_DETECT_TIMEOUT_MS     = 50;
   static constexpr uint32_t AUX_TRANSMIT_COMPLETE_TIMEOUT_MS   = 1000;
   static constexpr uint32_t GUARD_DELAY_MS                    = 50;     // 50ms air time guard delay
+
+  // LoRa Link Timing & Retry Constants (from doc/LoRaProtocol.md §7)
+  static constexpr uint32_t LORA_ACK_TIMEOUT_MS        = 200;    // ACK wait for DATA_ACK frames
+  static constexpr uint32_t LORA_REQUEST_TIMEOUT_MS    = 1000;   // Response wait for REQUEST frames
+  static constexpr uint8_t  LORA_MAX_RETRIES           = 3;      // Max retries for DATA_ACK / PING / config writes
+  static constexpr uint32_t LORA_BACKOFF_MIN_MS        = 20;     // Random backoff lower bound
+  static constexpr uint32_t LORA_BACKOFF_MAX_MS        = 200;    // Random backoff upper bound
+  static constexpr uint32_t LORA_BCAST_REPLY_WINDOW_MS = 1000;   // Window to collect broadcast replies
   
   // Settle, Sizing and Poll Timing Constants
   static constexpr uint32_t GUARD_SETTLE_DELAY_MS            = 5;      // Settle delay after mode changes / AUX rising edge
@@ -155,9 +147,8 @@ class LoRaTransportClass {
   static constexpr size_t   CONFIG_RESPONSE_LEN              = 11;     // Size of the E220 config write response
   
   static constexpr size_t   DEBUG_PREFIX_SIZE                = 64;     // Buffer for the "LoRa TX: target=..." log prefix
-  static constexpr size_t   RX_BUFFER_SIZE                   = 256;    // Receive line buffer in loraTransportTask
-  static constexpr char     RX_FRAME_TERMINATOR              = '\n';   // Milestone 0 plain-text frames end with a newline
-  static constexpr char     RX_NON_PRINTABLE_PLACEHOLDER     = '.';    // Shown in the debug log for non-printable bytes
+  static constexpr size_t   RX_BUFFER_SIZE                   = 256;    // Receive buffer for the binary framer
+  static constexpr uint32_t RX_FRAME_TIMEOUT_MS              = 500;    // Reset a half-received frame after this many ms of silence
 
   // FreeRTOS Task Configuration Constants
   static constexpr uint32_t TASK_STACK_SIZE = 4096;
@@ -174,11 +165,25 @@ class LoRaTransportClass {
   /**
    * Pushes raw data onto the FreeRTOS TX queue to be transmitted asynchronously
    * by the background loraTransportTask. This method is thread-safe.
+   *
+   * Parameters:
+   *   destAddr - E220 destination ADDL byte (0x01..0xFE unicast, 0xFF broadcast).
+   *   data     - Payload bytes (frame body; routing header is prepended internally).
+   *   len      - Number of bytes in data; must be <= LORA_MAX_FRAME_LEN - LORA_ROUTING_HDR_LEN.
    */
-  void sendRaw(const uint8_t* data, size_t len);
+  void sendRaw(uint8_t destAddr, const uint8_t* data, size_t len);
 
   /**
-   * Registers the function to call when a raw data frame is received.
+   * Encodes frame into wire bytes and enqueues it for transmission.
+   * Equivalent to encodeFrame() followed by sendRaw(frame.dst, ...).
+   * Returns false if encoding fails (payload too large).
+   * Thread-safe.
+   */
+  bool sendFrame(const LoRaFrame& frame);
+
+  /**
+   * Registers the function to call when a complete, CRC-valid frame addressed
+   * to this node (or broadcast) is received. Called from loraTransportTask.
    */
   void setReceiveCallback(LoRaReceiveCallback cb);
 
@@ -211,16 +216,21 @@ class LoRaTransportClass {
   // Statistics counters - incremented only inside loraTransportTask (single writer).
   // Read under statsMutex from other tasks/cores.
   uint32_t statsTxFrames  = 0;   // frames successfully written to UART2
-  uint32_t statsRxFrames  = 0;   // complete frames delivered to receiveCallback
-  uint32_t statsCrcErrors = 0;   // frames discarded due to CRC mismatch (Phase 3+)
-  uint32_t statsAckLoss   = 0;   // ACK timeouts / unacknowledged DATA_ACK frames (Phase 3+)
+  uint32_t statsRxFrames  = 0;   // complete CRC-valid frames delivered to receiveCallback
+  uint32_t statsCrcErrors = 0;   // frames discarded due to CRC mismatch
+  uint32_t statsAckLoss   = 0;   // ACK timeouts / unacknowledged DATA_ACK frames
   SemaphoreHandle_t statsMutex = nullptr;
 
   /**
-   * Physically writes a raw frame over the UART2 interface, executing all mandatory E220 
+   * Physically writes a raw frame over the UART2 interface, executing all mandatory E220
    * AUX line handshakes, polling, and guard delays. Must be called inside loraTransportTask only.
+   *
+   * Parameters:
+   *   destAddr - E220 destination ADDL byte placed in the routing header.
+   *   data     - Payload bytes.
+   *   len      - Number of payload bytes.
    */
-  void sendRawInternal(const uint8_t* data, size_t len);
+  void sendRawInternal(uint8_t destAddr, const uint8_t* data, size_t len);
 
   /**
    * Safely transitions the M0 and M1 lines and waits for AUX to settle.

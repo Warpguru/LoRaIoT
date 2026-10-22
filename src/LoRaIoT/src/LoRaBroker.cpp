@@ -1,6 +1,10 @@
 #include "LoRaBroker.h"
 
+#include <esp_system.h>
+
 #include "../../util/src/LogBuffer.h"
+#include "../../LoRaIoT/src/LoRaConfig.h"
+#include "../../lora/src/LoRaFrame.h"
 #include "../../lora/src/nanopb/pb_encode.h"
 
 /**
@@ -13,60 +17,77 @@
  * The HTTP handler blocks on responseSem, which is given by the receive
  * callback path when the matching RESPONSE (or PING ACK) arrives.
  *
- * Phase 2 stub: encodeAndSend() logs the intent and calls LoRaTransport.sendRaw()
- * with a zeroed buffer as a placeholder. Phase 3 replaces this with real nanopb
- * frame encoding once the full frame header/CRC layer is wired.
+ * PING frames are fully framed: Beacon{boot_id} -> pb_encode -> LoRaFrame ->
+ * LoRaTransport.sendFrame(). REQUEST frames (ECHO, READ, DESCRIBE) keep the
+ * Phase 2 unframed stub pending full M4 integration.
  */
 
 // ---- Broker state -----------------------------------------------------------
 
-static SemaphoreHandle_t brokerMutex   = nullptr;
-static SemaphoreHandle_t responseSem   = nullptr;
+static SemaphoreHandle_t brokerMutex      = nullptr;
+static SemaphoreHandle_t responseSem      = nullptr;
 
-static volatile bool     pendingActive = false;
-static volatile uint32_t pendingSeq    = 0;
-static volatile bool     pendingIsPing = false;
+static volatile bool     pendingActive    = false;
+static volatile uint16_t pendingSeq       = 0;      // frame-level SEQ (uint16_t, from loraNextSeq)
+static volatile uint32_t pendingSentMs    = 0;      // millis() when the PING was enqueued
+static volatile bool     pendingIsPing    = false;
 
-static loraiot_Response  lastResponse  = loraiot_Response_init_zero;
-static PingResult        lastPingResult = {0, 0};
+static loraiot_Response  lastResponse     = loraiot_Response_init_zero;
+static PingResult        lastPingResult   = {0, 0};
 
-// Monotonically increasing SEQ counter for outgoing REQUESTs
-static volatile uint32_t nextSeq = 1;
+// Boot identity - random non-zero value generated once at loraBrokerBegin().
+// Carried in every outgoing PING Beacon payload so REMOTE can log it.
+static uint32_t bootId = 0;
 
-// ---- Phase 2 stub frame sender ----------------------------------------------
+// ---- Phase 2 stub frame sender (REQUEST frames only) -----------------------
 
 /**
- * Encode a loraiot_Request into a raw byte frame and queue it for transmission.
- *
- * Phase 2 stub: builds only the nanopb payload (no frame header / CRC yet).
- * Sends the raw protobuf bytes directly via LoRaTransport.sendRaw() so the
- * round-trip can be exercised on hardware before Phase 3 wires the full frame.
- *
- * Phase 3 will wrap this with: [0xAA 0x55][VER][TYPE][SRC][DST][SEQ][LEN]
- * + payload + CRC16, all in one atomic write.
+ * Encode a loraiot_Request into raw protobuf bytes and queue for transmission.
+ * No frame header or CRC yet - Phase 2 stub pending M4 full integration.
  */
-static BrokerResult encodeAndSend(const loraiot_Request& req, uint8_t dstAddr, uint32_t seq) {
+static BrokerResult encodeAndSend(const loraiot_Request& req, uint8_t dstAddr, uint16_t seq) {
   uint8_t buf[LORA_MAX_PAYLOAD_LEN];
   pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
   if (!pb_encode(&stream, loraiot_Request_fields, &req)) {
     Log_error("LoRaBroker: nanopb encode failed: %s", PB_GET_ERROR(&stream));
     return BrokerResult::ENCODE_ERR;
   }
-  size_t encodedLen = stream.bytes_written;
   Log_info("LoRaBroker: sending REQUEST seq=%u type=%u dst=0x%02X encoded=%u bytes [Phase2 stub - no frame header yet]",
-           seq, req.which_command, dstAddr, (unsigned)encodedLen);
-  LoRaTransport.sendRaw(buf, encodedLen);
+           seq, req.which_command, dstAddr, (unsigned)stream.bytes_written);
+  LoRaTransport.sendRaw(dstAddr, buf, stream.bytes_written);
   return BrokerResult::OK;
 }
 
 // ---- Public API -------------------------------------------------------------
 
 void loraBrokerBegin() {
-  brokerMutex  = xSemaphoreCreateMutex();
-  responseSem  = xSemaphoreCreateBinary();
+  brokerMutex = xSemaphoreCreateMutex();
+  responseSem = xSemaphoreCreateBinary();
   if (brokerMutex == nullptr || responseSem == nullptr) {
     Log_error("LoRaBroker::begin - failed to create synchronisation primitives");
   }
+
+  // Generate a non-zero random boot_id (0 is the sentinel DEVICE_REGISTRY_BOOT_ID_NONE).
+  do {
+    bootId = esp_random();
+  } while (bootId == 0);
+  Log_info("LoRaBroker::begin - boot_id=0x%08X", bootId);
+}
+
+uint32_t loraBrokerBootId() {
+  return bootId;
+}
+
+bool loraBrokerPendingPing(uint16_t& seq, uint32_t& sentMs) {
+  if (brokerMutex == nullptr) return false;
+  xSemaphoreTake(brokerMutex, portMAX_DELAY);
+  const bool active = pendingActive && pendingIsPing;
+  if (active) {
+    seq    = pendingSeq;
+    sentMs = pendingSentMs;
+  }
+  xSemaphoreGive(brokerMutex);
+  return active;
 }
 
 BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
@@ -84,7 +105,7 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
   // Drain any stale semaphore token from a previous cycle
   xSemaphoreTake(responseSem, 0);
 
-  uint32_t seq = nextSeq++;
+  const uint16_t seq = loraNextSeq();
   pendingSeq    = seq;
   pendingActive = true;
   pendingIsPing = (type == BrokerRequestType::PING);
@@ -92,15 +113,40 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
 
   xSemaphoreGive(brokerMutex);
 
-  // Build the loraiot_Request outside the mutex (no shared state touched)
+  // Build and send the frame outside the mutex (no shared state touched after this point)
   BrokerResult encResult = BrokerResult::OK;
 
   if (type == BrokerRequestType::PING) {
-    // PING is a BEACON-type frame (not REQUEST/RESPONSE). Send a minimal
-    // plain-text ping for now; Phase 3 will encode a proper Beacon frame.
-    const char pingMsg[] = "PING\n";
-    Log_info("LoRaBroker: sending PING seq=%u dst=0x%02X [Phase2 stub]", seq, dstAddr);
-    LoRaTransport.sendRaw(reinterpret_cast<const uint8_t*>(pingMsg), sizeof(pingMsg) - 1);
+    // Encode Beacon{boot_id} as the PING payload, wrap in a proper LoRaFrame and send.
+    loraiot_Beacon beacon = loraiot_Beacon_init_zero;
+    beacon.boot_id = bootId;
+
+    uint8_t payloadBuf[loraiot_Beacon_size];
+    pb_ostream_t pbStream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+    if (!pb_encode(&pbStream, loraiot_Beacon_fields, &beacon)) {
+      Log_error("LoRaBroker: PING nanopb encode failed: %s", PB_GET_ERROR(&pbStream));
+      encResult = BrokerResult::ENCODE_ERR;
+    } else {
+      LoRaFrame frame;
+      frame.ver  = LORA_PROTOCOL_VER;
+      frame.type = LoRaFrameType::PING;
+      frame.src  = LoRaConfig.getAddress();
+      frame.dst  = dstAddr;
+      frame.seq  = seq;
+      frame.len  = static_cast<uint8_t>(pbStream.bytes_written);
+      memcpy(frame.payload, payloadBuf, frame.len);
+
+      if (!LoRaTransport.sendFrame(frame)) {
+        Log_error("LoRaBroker: PING sendFrame failed");
+        encResult = BrokerResult::ENCODE_ERR;
+      } else {
+        // Record enqueue time for RTT measurement in the ACK handler
+        xSemaphoreTake(brokerMutex, portMAX_DELAY);
+        pendingSentMs = millis();
+        xSemaphoreGive(brokerMutex);
+        Log_info("LoRaBroker: sent PING seq=%u dst=0x%02X boot_id=0x%08X", seq, dstAddr, bootId);
+      }
+    }
   } else {
     loraiot_Request req = loraiot_Request_init_zero;
     switch (type) {
