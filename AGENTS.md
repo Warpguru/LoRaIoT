@@ -41,6 +41,17 @@ TASK_CREATE(taskFunc, "TaskName", stackSize, param, priority, &handle);
 - Arduino IDE: uncomment `#define LORAIOT_DUAL_CORE` in `LoRaIoT.ino` / `LoRaIoT.cpp`.
 - PlatformIO: set automatically via `build_flags = -D LORAIOT_DUAL_CORE` on `[env:esp32dev]` and `[env:esp32s3]`. Single-core envs (`esp32c3`, `esp32c6`, `esp32s2`, `esp32h2`) deliberately omit this flag.
 
+## Task file conventions
+
+There are two valid patterns for FreeRTOS tasks in this codebase:
+
+- **Standalone `*Task.cpp/.h`** - use when the task is an autonomous named actor in the protocol state machine with no owning class (e.g. `BeaconTask`, `PingTask`). The file exposes a `taskBegin()` function and any notification helpers; the task function itself is `static`.
+- **Private `static` member of a class** - use when the task is the internal engine of a class that has its own broader public API (e.g. `loraTransportTask` inside `LoRaTransportClass`, `ledTask` inside `StatusLed`, `broadcastTask` inside `WebSocketService`). The task is an encapsulated implementation detail; callers never interact with it directly.
+
+Do **not** extract a class-owned task into its own `*Task.cpp` - that breaks encapsulation and fragments a cohesive class. Do **not** inline a protocol-level standalone task into an unrelated class.
+
+After every `TASK_CREATE`, immediately call `TaskRegistry.add(name, handle, stackSize)` so `GET /status` reports the stack high-water mark for that task.
+
 ## Threading Model (must be followed exactly)
 
 ```
