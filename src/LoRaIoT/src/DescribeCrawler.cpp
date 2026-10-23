@@ -4,7 +4,12 @@
 #include <freertos/semphr.h>
 
 #include "../../util/src/LogBuffer.h"
+#include "../../lora/src/LoRaFrame.h"
+#include "../../lora/src/LoRaTransport.h"
+#include "../../lora/src/nanopb/pb_encode.h"
+#include "../../lora/src/nanopb/loraiot.pb.h"
 #include "DeviceRegistry.h"
+#include "LoRaConfig.h"
 
 /**
  * DescribeCrawler.cpp - LOCAL node Describe crawl state machine.
@@ -15,10 +20,6 @@
  *   REQUESTING ──(RESPONSE received)──► REQUESTING (next device idx)
  *   REQUESTING ──(STATUS_BAD_REQUEST)──► IDLE (crawl complete)
  *   REQUESTING ──(timeout / max retries)──► IDLE (crawl aborted)
- *
- * The actual REQUEST(Describe) frame encoding and transmission is delegated to
- * sendDescribeRequest() below. In Phase 1 this is a no-op stub; the real encoder
- * will be filled in Phase 2 once the frame protocol layer is wired.
  */
 
 // ---- Crawler state ----------------------------------------------------------
@@ -40,21 +41,48 @@ struct CrawlerContext {
 static CrawlerContext ctx;
 static SemaphoreHandle_t crawlerMutex = nullptr;
 
-// ---- Forward declaration of the (Phase 2) frame-send stub ------------------
+// ---- Real REQUEST(Describe) frame sender ------------------------------------
 
 /**
- * Send a REQUEST(Describe{device}) frame to targetAddr.
- * Returns the SEQ number assigned to this REQUEST (used to match the RESPONSE).
- *
- * Phase 1: stub - logs the intent and returns a dummy SEQ of 0.
- * Phase 2: replace with real protobuf encode + LoRaTransport.sendRaw() call.
+ * Encode and send a REQUEST(Describe{device=deviceIdx}) frame to targetAddr.
+ * Returns the SEQ number assigned to the frame (stored in ctx.inFlightSeq so
+ * describeCrawlerOnResponse() can match it against the incoming RESPONSE).
+ * Bypasses LoRaBroker intentionally: the broker has a single in-flight slot used
+ * by REST handlers; the crawler manages its own retry state independently.
  */
-static uint32_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
-  Log_info("DescribeCrawler: REQUEST(Describe{device=%u}) -> node 0x%02X [stub - Phase 2]",
-           deviceIdx, targetAddr);
-  // TODO(Phase 2): encode loraiot_Request{describe:{device:deviceIdx}}, build frame,
-  //                call LoRaTransport.sendRaw(), return real SEQ.
-  return 0;
+static uint16_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
+  // Build loraiot_Request{describe:{device:deviceIdx}}
+  static loraiot_Request req;
+  req = loraiot_Request_init_zero;
+  req.which_command           = loraiot_Request_describe_tag;
+  req.command.describe.device = deviceIdx;
+
+  static uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Request_fields, &req)) {
+    Log_error("DescribeCrawler: REQUEST(Describe{device=%u}) encode failed: %s",
+              deviceIdx, PB_GET_ERROR(&pbOut));
+    return 0;
+  }
+
+  const uint16_t seq = loraNextSeq();
+  LoRaFrame frame;
+  frame.ver  = LORA_PROTOCOL_VER;
+  frame.type = LoRaFrameType::REQUEST;
+  frame.src  = LoRaConfig.getAddress();
+  frame.dst  = targetAddr;
+  frame.seq  = seq;
+  frame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(frame.payload, payloadBuf, frame.len);
+
+  if (!LoRaTransport.sendFrame(frame)) {
+    Log_error("DescribeCrawler: REQUEST(Describe{device=%u}) sendFrame failed", deviceIdx);
+    return 0;
+  }
+
+  Log_info("DescribeCrawler: REQUEST(Describe{device=%u}) -> node 0x%02X seq=%u",
+           deviceIdx, targetAddr, seq);
+  return seq;
 }
 
 // ---- Public API -------------------------------------------------------------
@@ -93,7 +121,7 @@ void describeCrawlerLoop() {
         ctx.deviceIdx   = 0;
         ctx.retryCount  = 0;
         ctx.sentAtMs    = millis();
-        ctx.inFlightSeq = sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
+        ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
         Log_info("DescribeCrawler: starting crawl for node 0x%02X", ctx.targetAddr);
         break;
       }
@@ -124,7 +152,7 @@ void describeCrawlerLoop() {
   Log_warn("DescribeCrawler: timeout waiting for Describe{device=%u} response from node 0x%02X, retry %u/%u",
            ctx.deviceIdx, ctx.targetAddr, ctx.retryCount, DESCRIBE_MAX_RETRIES - 1);
   ctx.sentAtMs    = millis();
-  ctx.inFlightSeq = sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
+  ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
 
   xSemaphoreGive(crawlerMutex);
 }
@@ -160,7 +188,7 @@ void describeCrawlerOnResponse(uint8_t srcAddr, const loraiot_Response& response
     ctx.deviceIdx++;
     ctx.retryCount  = 0;
     ctx.sentAtMs    = millis();
-    ctx.inFlightSeq = sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
+    ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
   } else {
     // Unexpected result type - skip and advance
     Log_warn("DescribeCrawler: unexpected response.which_result=%u from node 0x%02X, advancing",
@@ -168,7 +196,7 @@ void describeCrawlerOnResponse(uint8_t srcAddr, const loraiot_Response& response
     ctx.deviceIdx++;
     ctx.retryCount  = 0;
     ctx.sentAtMs    = millis();
-    ctx.inFlightSeq = sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
+    ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
   }
 
   xSemaphoreGive(crawlerMutex);

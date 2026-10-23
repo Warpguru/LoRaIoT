@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include "../../diagnostics/src/TaskRegistry.h"
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/TaskUtils.h"
 #include "../../LoRaIoT/src/Tier.h"
@@ -43,7 +44,9 @@ static constexpr uint32_t BROADCAST_INTERVAL_MS = 1000;      // Time between sta
 WebSocketService::WebSocketService(AsyncWebSocket* webSocket) : ws(webSocket) {}
 
 void WebSocketService::begin() {
-  TASK_CREATE(broadcastTask, "WSBroadcast", BROADCAST_TASK_STACK_SIZE, this, BROADCAST_TASK_PRIORITY, nullptr);
+  TaskHandle_t handle = nullptr;
+  TASK_CREATE(broadcastTask, "WSBroadcast", BROADCAST_TASK_STACK_SIZE, this, BROADCAST_TASK_PRIORITY, &handle);
+  TaskRegistry.add("WSBroadcast", handle, BROADCAST_TASK_STACK_SIZE);
   Log_info("WebSocketService: broadcast task started.");
 }
 

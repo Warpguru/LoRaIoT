@@ -24,18 +24,22 @@ for avoiding DRAM overflows and making informed sizing decisions.
 ```
 Total DRAM:              ~320 KB
 WiFi stack + lwIP:       ~100 KB  (system, not in .bss)
-FreeRTOS task stacks:     ~20 KB  (4 tasks × ~4-5 KB each, heap)
+FreeRTOS task stacks:     ~24 KB  (6 tasks × 2-4 KB each, heap)
 FreeRTOS queues/mutexes:   ~4 KB  (heap)
 LogBuffer static array:   ~20 KB  (.bss)
+nanopb TX scratch (§4):    ~1 KB  (.bss, static locals in Application.cpp)
+TaskRegistry:             <0.1 KB (.bss)
 Other static globals:      ~3 KB  (.bss)
 Phase 1 registries:        ~7 KB  (.bss)
 ─────────────────────────────────
-Estimated free heap:     ~166 KB  (reported by ESP.getFreeHeap() at runtime)
+Estimated free heap:     ~145 KB  (live measurement via GET /status after M6 tasks added;
+                                   was ~166 KB estimate before M6 task stacks and .bss growth)
 ```
 
 The single largest controllable cost in `.bss` is `LogBuffer` - see §1 below for
-improvement options. Everything else (nanopb encode/decode, REST handlers,
-OpenAPI strings) adds flash size, not DRAM.
+improvement options. Flash image size (§6) is the current critical resource; DRAM
+is healthy. Everything else (nanopb encode/decode, REST handlers, OpenAPI strings)
+adds flash size, not DRAM.
 
 ### When to use each region
 
@@ -283,3 +287,341 @@ final flash measurement is available. At that point:
 - If flash headroom < 60 KB: choose Option B.
 - If a LAN-hosted dashboard is acceptable: choose Option B regardless and host
   the GUI as a static page that polls the REST API.
+
+---
+
+## 4. loraTransportTask nanopb scratch buffers
+
+### Current design
+
+All nanopb encode/decode work on `loraTransportTask` (stack = 4096 B) uses `static` local variables to avoid stack overflow. The affected functions and their BSS cost are:
+
+- `sendBadRequestResponse` - `loraiot_Response` (311 B) + `payloadBuf[311]` = 622 B
+- `sendDescribeResponse` - `loraiot_Request` (181 B) + `loraiot_Device` (300 B) + `loraiot_Response` (311 B) + `payloadBuf[311]` = 1103 B
+- `sendReadResponse` - `loraiot_Request` (181 B) + `loraiot_Data` (238 B) + `loraiot_Response` (311 B) + `payloadBuf[311]` = 1041 B
+- `sendEchoResponse` - `loraiot_Request` (181 B) + `loraiot_Response` (311 B) + `payloadBuf[311]` = 803 B
+- RESPONSE decode in `onLoRaReceive` - `loraiot_Response` (311 B)
+- REQUEST peek in `onLoRaReceive` - `loraiot_Request` (181 B)
+- `DescribeCrawler::sendDescribeRequest` - `loraiot_Request` (181 B) + `payloadBuf[186]` = 367 B
+
+Total static BSS committed: approximately **1341 B** (overlapping unions; the real worst-case unique bytes are `loraiot_Request` 181 + `loraiot_Device` 300 + `loraiot_Response` 311 + `payloadBuf` 311 = **1103 B**, since many of the statics alias across functions that are never live simultaneously - but each is independently reserved).
+
+### Why it is a risk
+
+1. `static` locals are safe **only** because `loraTransportTask` is the sole caller and processes one frame at a time. Any future refactor that calls these helpers from a second context (ISR, second task, timer callback) will silently corrupt data - the compiler will not warn.
+2. If the proto schema grows (more metrics, longer strings), `loraiot_Response_size` and `loraiot_Device_size` grow automatically. The `static` buffers grow with them in BSS, but *without any compile-time guard* that checks total BSS headroom.
+3. There is no single place in the codebase that documents or enforces the "one caller at a time" invariant. The constraint is an implicit assumption that future contributors may not be aware of.
+
+### Option A - Status quo with a safety assertion (trivial)
+
+Add a `static bool s_inFlight = false` guard:
+
+```cpp
+static void sendBadRequestResponse(const LoRaFrame& req) {
+  configASSERT(!s_inFlight);   // fires immediately if called re-entrantly
+  s_inFlight = true;
+  // ... existing body ...
+  s_inFlight = false;
+}
+```
+
+Cost: one `bool` in BSS, zero runtime overhead in release builds (if `configASSERT` maps to nothing). Makes the single-caller invariant explicit and machine-checked. Does not reduce BSS usage.
+
+### Option B - Shared `TxScratch` struct (moderate effort, ~30 lines)
+
+Replace all the scattered `static` locals with a single named workspace:
+
+```cpp
+// src/LoRaIoT/src/Application.cpp  (or a dedicated TxScratch.h)
+struct TxScratch {
+  loraiot_Request  req;                      // 181 B
+  loraiot_Response resp;                     // 311 B
+  loraiot_Device   dev;                      // 300 B
+  loraiot_Data     data;                     // 238 B
+  uint8_t          buf[loraiot_Response_size]; // 311 B
+};
+static TxScratch s_txScratch;               // 1341 B total, one BSS slot
+```
+
+Each helper zeroes only the fields it needs (`s_txScratch.resp = loraiot_Response_init_zero`) and accesses the struct by name. Benefits:
+
+- Total BSS cost is visible in one place (`sizeof(TxScratch)` = 1341 B)
+- No duplicated `static` declarations scattered across four functions
+- The single ownership is structurally obvious - it has one name
+
+### Option C - `TxScratch` wrapped in a class with guarded access (recommended long-term)
+
+Encapsulate `s_txScratch` in a small class that enforces single-use at runtime:
+
+```cpp
+class LoRaTxScratch {
+public:
+  // Claim the scratch space. Asserts if already in use (re-entrancy guard).
+  // Returns references to the internal buffers for the caller to populate.
+  loraiot_Request&  request()  { configASSERT(!inUse); inUse = true; req  = loraiot_Request_init_zero;  return req; }
+  loraiot_Response& response() {                                       resp = loraiot_Response_init_zero; return resp; }
+  loraiot_Device&   device()   {                                       dev  = loraiot_Device_init_zero;   return dev; }
+  loraiot_Data&     data()     {                                       data_ = loraiot_Data_init_zero;    return data_; }
+  uint8_t*          buf()      { return rawBuf; }
+  size_t            bufSize()  { return sizeof(rawBuf); }
+
+  // Release the scratch space after a frame is built and sent.
+  void release()               { inUse = false; }
+
+private:
+  bool             inUse = false;
+  loraiot_Request  req;
+  loraiot_Response resp;
+  loraiot_Device   dev;
+  loraiot_Data     data_;
+  uint8_t          rawBuf[loraiot_Response_size];
+};
+
+static LoRaTxScratch s_txScratch;
+```
+
+Each helper calls `s_txScratch.request()` to claim, populates, sends, then calls `s_txScratch.release()`. The `configASSERT(!inUse)` fires immediately under test if a second context accidentally calls in. The class interface documents exactly what the scratch space is for - new contributors cannot misuse it without reading the API.
+
+### Recommendation
+
+Apply **Option A** (assertion guard) immediately - it is a one-line change per helper that makes the invariant machine-checked. Implement **Option C** (`LoRaTxScratch` class) as a dedicated task once M6 is complete and the full set of frame-building helpers is stable. Implement Option C in `src/LoRaIoT/src/LoRaTxScratch.h` (header-only, no `.cpp` needed).
+
+---
+
+---
+
+## 5. Broadcast PING: single-slot broker contradicts multi-ACK collection
+
+### Current design
+
+`GET /api/lora/ping` sends a PING frame to address `0xFF` (E220 broadcast) and returns
+as soon as the **first** ACK arrives. The implementation in `LoRaBroker.cpp` is:
+
+```cpp
+void loraBrokerOnPingAck(uint8_t srcAddr, uint32_t rttMs) {
+    xSemaphoreTake(brokerMutex, portMAX_DELAY);
+    bool match = pendingActive && pendingIsPing;
+    if (match) {
+        lastPingResult.addr  = srcAddr;   // overwrites - single slot
+        lastPingResult.rttMs = rttMs;
+        pendingActive = false;            // slot released on first ACK
+    }
+    xSemaphoreGive(brokerMutex);
+    if (match) {
+        xSemaphoreGive(responseSem);      // unblocks the HTTP handler immediately
+    }
+}
+```
+
+Any subsequent ACKs from other nodes arrive after `pendingActive` is already `false`
+and are silently discarded.
+
+### Why this contradicts the single-slot, single-waiter pattern
+
+The broker is designed around three invariants that are correct for unicast but break
+for multi-ACK broadcast:
+
+1. **Single result slot** - `lastPingResult` holds exactly one `(addr, rttMs)` pair.
+   There is no array. Writing a second ACK would require either an array or a queue,
+   neither of which exists.
+
+2. **Binary semaphore as a one-shot gate** - `responseSem` is a FreeRTOS binary
+   semaphore. It has only two states: taken and given. `xSemaphoreGive()` on an already-
+   given semaphore is a no-op — the second ACK's `xSemaphoreGive()` would be silently
+   dropped even if the slot were still open.
+
+3. **`pendingActive = false` on first match** - the flag is cleared the moment the
+   first ACK is stored. This is the correct design for unicast (only one node can
+   answer) but makes multi-ACK collection impossible: every subsequent ACK sees
+   `pendingActive = false` and takes the no-op path.
+
+4. **Physical layer constraint** - the E220 module is half-duplex. When LOCAL sends
+   a broadcast PING, all REMOTEs receive it at the same moment and each immediately
+   queues an ACK. Without a random backoff before transmitting the ACK, all REMOTEs
+   transmit simultaneously and their signals **collide on the air** — only the
+   strongest survives. This is a MAC-layer problem entirely below the broker layer.
+   Fixing the broker to collect multiple ACKs only makes sense if the protocol also
+   adds a random ACK backoff on REMOTE (e.g. `delay(random(0, 200))` before sending
+   the ACK). Without that, even a multi-ACK broker would receive at most one ACK
+   from N nodes.
+
+### Why sending multiple broadcast PINGs does not help
+
+A common intuition is: "send 5 PINGs rapidly — different nodes will answer different
+ones." This does not work because:
+
+- All N REMOTEs respond to **every** PING, not just one. Each PING triggers N
+  simultaneous ACKs, all of which collide with each other.
+- The staggering of the 5 PINGs (sequential, each ~300 ms apart including ACK wait)
+  gives no advantage: each PING independently causes the same simultaneous-ACK
+  collision. The result is still "the strongest signal wins each time" — which is
+  likely the same node every time (the one physically closest).
+- This is exactly the problem CSMA/CA (Carrier Sense Multiple Access / Collision
+  Avoidance) was designed to solve in WiFi. The E220 has no equivalent mechanism.
+
+### What a correct multi-ACK implementation would require
+
+Both layers must change together:
+
+**Protocol layer (REMOTE firmware):**
+- After receiving a broadcast PING, REMOTE waits a random delay before sending its
+  ACK: `delay(random(0, BROADCAST_ACK_JITTER_MS))` where `BROADCAST_ACK_JITTER_MS`
+  is large enough that two nodes are unlikely to transmit simultaneously.
+  With N=10 nodes and E220 ACK air-time ~15 ms, a jitter window of ~200 ms gives
+  ~93% probability of zero collisions (birthday problem with 10 slots of 15 ms each
+  in a 200 ms window).
+- This jitter should only apply to broadcast PINGs (dst=0xFF), not unicast PINGs.
+
+**Broker layer (LOCAL firmware):**
+
+| Change | Detail |
+|---|---|
+| `PingResult results[MAX_BROADCAST_NODES]` | Replace single slot with a fixed-size array (e.g. 8 entries) |
+| `uint8_t resultCount` | Track how many ACKs have been collected |
+| `loraBrokerOnPingAck()` | Append to array instead of overwriting; do NOT release `pendingActive` or give the semaphore on each ACK |
+| New `broadcastPingActive` flag | Separate from `pendingActive` so normal unicast requests are still blocked during the window |
+| `loraBrokerBroadcastPingWait(windowMs)` | New function: blocks for `windowMs` using `xTaskDelayUntil` or a countdown semaphore, then releases the slot and returns |
+| `loraBrokerGetBroadcastPingResults()` | Returns pointer + count to the results array |
+| `GET /api/lora/ping?window=<ms>` | REST handler uses the new wait function; default window e.g. 500 ms |
+
+**Files affected:** `LoRaBroker.h`, `LoRaBroker.cpp`, `RestService.cpp`,
+`openapi_json.h`, `doc/RestApi.md`, `index_html.h`.
+
+### Recommendation
+
+Do not implement until there are 3 or more REMOTE nodes in the deployment. With a
+single REMOTE, sequential per-node pings (`GET /api/lora/nodes/ping?addr=N`) give
+identical information with no firmware changes. Implement the random ACK jitter on
+REMOTE first, verify it eliminates collisions on hardware with 2 nodes, then add the
+multi-ACK broker support. Track the jitter constant `BROADCAST_ACK_JITTER_MS` as a
+named constant in `LoRaTransport.h` so it can be tuned per deployment.
+
+---
+
+## 6. Flash partition layout: app slot is 92.5% full
+
+### Analysis (live data from `GET /status`, both nodes identical)
+
+| Partition | Address | Size | Used by this firmware |
+|---|---|---|---|
+| nvs | 0x009000 | 20 KB | Yes (log level, LoRa channel/address, tier) |
+| otadata | 0x00E000 | 8 KB | OTA bookkeeping only |
+| app0 | 0x010000 | 1280 KB | Yes (running image) |
+| app1 | 0x150000 | 1280 KB | OTA target only |
+| **spiffs** | 0x290000 | **1408 KB** | **No** |
+| coredump | 0x3F0000 | 64 KB | Crash dumps |
+
+This is the Arduino-ESP32 / PlatformIO `default.csv` layout for a 4 MB flash.
+
+- The firmware image is 1,212,608 B. An app slot is 1,310,720 B (1280 KB), so the
+  image fills **92.5%** of a slot. Headroom is only **98,112 B (~96 KB)**.
+  (`sketch.freeSpace` in `/status` is the slot size, not free bytes.)
+- The 85% WARNING threshold is already exceeded; 95% (CRITICAL) is only ~32 KB of
+  growth away.
+- No code uses SPIFFS, LittleFS or FFat (`grep` finds only a "(future)" remark in
+  `doc/Feasibility.md`). The browser UI is served from PROGMEM (`INDEX_HTML`), which
+  is part of the app image. The 1408 KB `spiffs` partition is therefore **dead flash**.
+- The application is not feature complete (Phase 2-3 REST endpoints, GUI, more
+  protocol handling), so the image will grow. 96 KB of headroom will not last.
+- Partitions only affect flash. They do nothing for heap or `.bss` pressure.
+
+### Conclusion
+
+Re-purpose the unused `spiffs` area by enlarging `app0` and `app1`. OTA is kept
+(both slots are the same size, as OTA requires). `nvs` stays at the same address and
+size, so stored settings survive the reflash. `coredump` stays at `0x3F0000`.
+
+| Partition | Address | Size | Note |
+|---|---|---|---|
+| nvs | 0x009000 | 20 KB | unchanged |
+| otadata | 0x00E000 | 8 KB | unchanged |
+| app0 | 0x010000 | **1984 KB** (0x1F0000) | was 1280 KB |
+| app1 | 0x200000 | **1984 KB** (0x1F0000) | was 1280 KB |
+| coredump | 0x3F0000 | 64 KB | unchanged |
+
+Ends exactly at 0x400000 (4 MB). App partitions must be aligned to 64 KB (0x10000);
+both are.
+
+Effect on the current image (1,212,608 B):
+
+| | Before | After |
+|---|---|---|
+| Slot size | 1,310,720 B | 2,031,616 B |
+| Used | 92.5% | 59.7% |
+| Headroom | 98,112 B (~96 KB) | 819,008 B (~800 KB), about 8.3x more |
+
+### How to apply
+
+Create `partitions.csv` in the repository root (next to `LoRaIoT.ino` and
+`platformio.ini`):
+
+```csv
+# Name,    Type, SubType,  Offset,   Size,     Flags
+nvs,       data, nvs,      0x9000,   0x5000,
+otadata,   data, ota,      0xE000,   0x2000,
+app0,      app,  ota_0,    0x10000,  0x1F0000,
+app1,      app,  ota_1,    0x200000, 0x1F0000,
+coredump,  data, coredump, 0x3F0000, 0x10000,
+```
+
+**Arduino IDE:** with `partitions.csv` in the sketch folder, the arduino-esp32 build
+uses it automatically and ignores *Tools > Partition Scheme*. Run a normal *Upload*;
+it writes bootloader, partition table and app together. Fallback if a custom table
+is not wanted: select *Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)*, which gives
+~1.9 MB per slot and keeps a small SPIFFS area (less headroom than the table above).
+
+**PlatformIO:** add to `[env:esp32dev]` (the table above is specific to 4 MB flash
+and a classic ESP32; do not put it in the shared `[env]` section because the other
+targets have different flash sizes and defaults):
+
+```ini
+[env:esp32dev]
+board_build.partitions = partitions.csv
+```
+
+The path is relative to the project root. This is compatible with both toolchains
+because both read the same CSV.
+
+### Caveats
+
+- **Serial flash required, once per node.** A changed partition table cannot be
+  delivered over OTA (OTA only writes into existing slots). Both LOCAL and REMOTE
+  need a USB upload.
+- **Do not move `nvs`.** Moving or resizing it wipes stored settings and the nodes
+  fall back to defaults (channel, address, tier, log level).
+- **Anything on the old `spiffs` area is lost.** Nothing uses it today.
+- **Verify after flashing:** `GET /status` should list `app0`/`app1` at 1984 KB and
+  no `spiffs`. The Arduino IDE build output should report the new maximum.
+- Keep `ESPInfo.h` unchanged; it enumerates partitions dynamically.
+
+### Further mitigations as the image grows
+
+Ordered roughly by expected benefit versus effort. Sizes are not measured; get a
+real number first (Arduino IDE build output, or `pio run -t size` / the `.map` file)
+before spending effort on any of them.
+
+1. **Track image size against the new slot.** Treat 85% of 2,031,616 B
+   (~1.65 MB) as the next WARNING line, and re-check `/status` after each milestone.
+2. **Lower the core debug level.** Arduino IDE: *Tools > Core Debug Level: None*.
+   PlatformIO: `build_flags = -DCORE_DEBUG_LEVEL=0`. Removes ESP-IDF/Arduino log
+   strings and call sites.
+3. **Compress PROGMEM assets.** Serve `INDEX_HTML` and `openapi_json.h` pre-gzipped
+   (`Content-Encoding: gzip`). Text such as HTML and JSON typically compresses to
+   20-30% of its size. The openapi document grows with every endpoint, so this
+   scales with the API.
+4. **Remove WebSockets if no GUI is built** (see §3). Saves the broadcast task code
+   and library paths, as well as DRAM for its task stack.
+5. **Review duplicated web stacks.** `WiFiManager` brings its own HTTP server for the
+   captive portal while `ESPAsyncWebServer` serves the application. Consider whether
+   one can replace the other, or whether WiFiManager can be restricted to the
+   provisioning path only. Check the map file before investing.
+6. **Trim log strings.** `Log_*` macros embed `__FILE__` and format strings in flash
+   at every call site. Dropping TRACE/DEBUG call sites at compile time (e.g. a
+   `LOG_COMPILE_LEVEL` guard) removes them from the image entirely.
+7. **ArduinoJson / nanopb instantiations.** Large numbers of distinct
+   `JsonDocument` shapes or nanopb messages add code. Only relevant if the map
+   file shows them as large.
+8. **Hard ceiling of 4 MB flash.** If two 1984 KB slots are eventually not enough:
+   (a) drop OTA and use a single `factory` app of ~3.9 MB, giving up rollback and
+   remote updates, or (b) move to a module with 8 or 16 MB flash (for example a
+   WROOM-32E variant in the same footprint) and re-do the table.

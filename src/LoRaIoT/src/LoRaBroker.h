@@ -131,16 +131,19 @@ void loraBrokerOnResponse(const loraiot_Response& response);
 
 /**
  * Called by the LoRa receive/decode layer when a PING ACK (Ack frame for a
- * PING) arrives. Stores RTT and boot_id, then unblocks the waiting handler.
+ * PING) arrives. Stores the responder address and RTT, then unblocks the
+ * waiting handler. The Ack message carries no boot_id (doc/LoRaProtocol.md
+ * section 6.1), so callers that need it read it from DeviceRegistry.
  * No-op if no PING is pending.
  */
-void loraBrokerOnPingAck(uint32_t bootId, uint32_t rttMs);
+void loraBrokerOnPingAck(uint8_t srcAddr, uint32_t rttMs);
 
 /**
  * After a successful PING wait, retrieve the ping result.
+ * addr is the node that answered (differs from the destination for a broadcast PING).
  */
 struct PingResult {
-  uint32_t bootId;
+  uint8_t  addr;
   uint32_t rttMs;
 };
 const PingResult& loraBrokerGetPingResult();

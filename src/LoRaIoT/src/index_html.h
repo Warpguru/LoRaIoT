@@ -68,6 +68,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 
   <h2>Settings</h2>
   <ul>
+    <li><a href="/reboot"><code>GET /reboot</code></a> - reboot ESP32 (settings preserved)</li>
     <li><a href="/reset"><code>GET /reset</code></a> - clear WiFi + NVS settings and reboot to captive portal
         <span class="note">(caution: requires re-provisioning)</span></li>
   </ul>

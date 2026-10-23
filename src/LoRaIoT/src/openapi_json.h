@@ -335,6 +335,19 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
+    "/reboot": {
+      "get": {
+        "tags": ["Diagnostics"],
+        "summary": "Reboot the ESP32",
+        "description": "Reboots the ESP32 immediately, preserving all NVS settings (WiFi credentials, tier, log level, LoRa config). The node is back online within a few seconds.",
+        "responses": {
+          "200": {
+            "description": "ESP32 is rebooting",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
     "/reset": {
       "get": {
         "tags": ["Diagnostics"],
@@ -447,7 +460,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Ping a remote node (unicast)",
-        "description": "Sends a PING to the specified node and waits for an ACK. Returns RTT and boot_id. Also available as POST.",
+        "description": "Sends a PING to the specified node and waits for an ACK. Returns RTT and, when known from a BEACON, boot_id. Also available as POST.",
         "parameters": [
           { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
         ],
@@ -596,6 +609,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "boot_id":       { "type": "integer", "description": "Random number chosen by the node at boot; changes on reboot" },
           "registry_rev":  { "type": "integer", "description": "Last successfully crawled registry revision" },
           "last_seen_ms":  { "type": "integer", "description": "millis() timestamp of the last received frame from this node" },
+          "online":        { "type": "boolean", "description": "false after 3 unanswered keep-alive PINGs; the entry and its cache are kept and any received frame sets it back to true" },
           "devices":       { "type": "integer", "description": "Number of cached device definitions" },
           "crawl_pending": { "type": "boolean", "description": "true if a Describe crawl is scheduled or in progress" }
         }
@@ -683,9 +697,9 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "PingResponse": {
         "type": "object",
         "properties": {
-          "addr":    { "type": "integer", "description": "Node address that replied" },
-          "boot_id": { "type": "integer", "description": "boot_id of the responding node; changes on reboot" },
-          "rtt_ms":  { "type": "integer", "description": "Round-trip time in milliseconds" }
+          "addr":    { "type": "integer", "description": "Node address that replied (for a broadcast ping, the first node that answered)" },
+          "rtt_ms":  { "type": "integer", "description": "Round-trip time in milliseconds" },
+          "boot_id": { "type": "integer", "description": "Optional. boot_id from the last BEACON of that node; omitted if no BEACON was received yet (the ACK carries no boot_id)" }
         }
       },
       "BeaconResponse": {
@@ -762,6 +776,8 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
  * Placeholders (positional, consumed by snprintf in handleGetOpenApiUi):
  *   %s  SSID of the connected network             (banner)
  *   %s  Gateway tier name for display             (banner)
+ *   %u  LoRa key, decimal (0 = disabled)          (banner)
+ *   %s  LoRa key state "on" / "off"               (banner)
  *   %s  Build timestamp __DATE__ " " __TIME__     (banner)
  *   %s  Gateway tier name for JS TIER variable    (x-tier filter)
  *
@@ -786,6 +802,7 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
   "IP: <b><span id='ip'></span></b>"
   " | SSID: <b>%s</b>"
   " | Tier: <b>%s</b>"
+  " | Key: <b>%u (%s)</b>"
   " | Built: <b>%s</b>"
   "</div>"
   "<div id='swagger-ui'></div>"

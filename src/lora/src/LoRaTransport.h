@@ -151,7 +151,7 @@ class LoRaTransportClass {
   static constexpr uint32_t RX_FRAME_TIMEOUT_MS              = 500;    // Reset a half-received frame after this many ms of silence
 
   // FreeRTOS Task Configuration Constants
-  static constexpr uint32_t TASK_STACK_SIZE = 4096;
+  static constexpr uint32_t TASK_STACK_SIZE = 6144;
   static constexpr UBaseType_t TASK_PRIORITY = 2;
   static constexpr uint32_t TASK_DELAY_MS    = 10;      // Responsive polling rate
   static constexpr uint32_t TX_QUEUE_SIZE    = 10;      // Size of the TX message queue

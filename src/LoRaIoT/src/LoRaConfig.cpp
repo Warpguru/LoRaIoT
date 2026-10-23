@@ -15,7 +15,8 @@ void LoRaConfigClass::begin() {
     // getUChar automatically returns LORA_DEFAULT_CHANNEL if the key does not exist
     channel = prefs.getUChar(LORA_CHANNEL_KEY, LORA_DEFAULT_CHANNEL);
     cpuFreq = prefs.getUInt(LORA_CPU_FREQ_KEY, LORA_CPU_FREQ_DEFAULT);
-    
+    key     = prefs.getUShort(LORA_KEY_KEY, LORA_DEFAULT_KEY);
+
     // LORA_ADDR_BROADCAST doubles as the "not stored" marker (never a node address).
     // LORA_ADDR_INVALID was the LOCAL address in an earlier firmware and would make the
     // E220 monitor all traffic, so a stored value of it is discarded and the tier default is used.
@@ -31,19 +32,20 @@ void LoRaConfigClass::begin() {
       }
     }
     prefs.end();
-    Log_info("LoRa config loaded: channel=0x%02X (%d), address=0x%02X (%d), cpuFreq=%d MHz",
-             channel, channel, address, address, cpuFreq);
+    Log_info("LoRa config loaded: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), cpuFreq=%d MHz",
+             LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off", cpuFreq);
   } else {
     // Namespace doesn't exist yet, use default values
     channel = LORA_DEFAULT_CHANNEL;
     cpuFreq = LORA_CPU_FREQ_DEFAULT;
+    key     = LORA_DEFAULT_KEY;
     if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
       address = LORA_DEFAULT_ADDR_REMOTE;
     } else {
       address = LORA_DEFAULT_ADDR_LOCAL;
     }
-    Log_info("LoRa config using defaults: channel=0x%02X (%d), address=0x%02X (%d), cpuFreq=%d MHz",
-             channel, channel, address, address, cpuFreq);
+    Log_info("LoRa config using defaults: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), cpuFreq=%d MHz",
+             LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off", cpuFreq);
   }
 }
 
@@ -52,10 +54,11 @@ void LoRaConfigClass::save() const {
   if (prefs.begin(LORA_NVS_NAMESPACE, /*readOnly=*/false)) {
     prefs.putUChar(LORA_CHANNEL_KEY, channel);
     prefs.putUChar(LORA_ADDR_KEY, address);
+    prefs.putUShort(LORA_KEY_KEY, key);
     prefs.putUInt(LORA_CPU_FREQ_KEY, cpuFreq);
     prefs.end();
-    Log_info("LoRa config saved to NVS: channel=0x%02X (%d), address=0x%02X (%d), cpuFreq=%d MHz",
-             channel, channel, address, address, cpuFreq);
+    Log_info("LoRa config saved to NVS: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), cpuFreq=%d MHz",
+             LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off", cpuFreq);
   } else {
     Log_error("LoRa config save failed - could not open NVS namespace '%s'", LORA_NVS_NAMESPACE);
   }
@@ -75,6 +78,14 @@ uint8_t LoRaConfigClass::getAddress() const {
 
 void LoRaConfigClass::setAddress(uint8_t addr) {
   address = addr;
+}
+
+uint16_t LoRaConfigClass::getKey() const {
+  return key;
+}
+
+void LoRaConfigClass::setKey(uint16_t k) {
+  key = k;
 }
 
 uint32_t LoRaConfigClass::getCpuFreq() const {

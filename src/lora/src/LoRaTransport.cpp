@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 
+#include "../../diagnostics/src/TaskRegistry.h"
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/StatusLed.h"
 #include "../../util/src/TaskUtils.h"
@@ -46,6 +47,9 @@ void LoRaTransportClass::begin() {
 
   // Construct the command payload to permanently configure the E220.
   // Using explicit bitwise-OR options makes the config list completely self-documenting.
+  // Split the 16-bit key into the two CRYPT register bytes.
+  // key == 0 leaves CRYPT_H=0x00 / CRYPT_L=0x00, which disables E220 encryption.
+  const uint16_t loraKey = LoRaConfig.getKey();
   uint8_t configCmd[CONFIG_CMD_LEN] = {
       CMD_WRITE_PERSISTENT,
       REG_START_ADDR,
@@ -56,8 +60,8 @@ void LoRaTransportClass::begin() {
       (REG1_SUB_PACKET_200B | REG1_RSSI_NOISE_DISABLE | REG1_POWER_22DBM),
       LoRaConfig.getChannel(),
       (REG3_MODE_FIXED | REG3_RSSI_BYTE_DISABLE | REG3_LBT_DISABLE),
-      CRYPT_KEY_HIGH,
-      CRYPT_KEY_LOW
+      static_cast<uint8_t>(loraKey >> 8),    // CRYPT_H
+      static_cast<uint8_t>(loraKey & 0xFF)   // CRYPT_L
   };
 
   logHex("LoRaTransport::begin - Sent config cmd:", configCmd, CONFIG_CMD_LEN);
@@ -128,6 +132,7 @@ void LoRaTransportClass::begin() {
 
   // 6. Spawn background transceiver task (TASK_CREATE pins task to Core 1 on dual-core)
   TASK_CREATE(loraTransportTask, "LoRaTransTask", TASK_STACK_SIZE, this, TASK_PRIORITY, &transportTaskHandle);
+  TaskRegistry.add("LoRaTransTask", transportTaskHandle, TASK_STACK_SIZE);
 
   Log_info("LoRa transport layer task started.");
 }

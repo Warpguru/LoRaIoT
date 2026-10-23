@@ -6,6 +6,10 @@
 #include <esp_chip_info.h>
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#include "TaskRegistry.h"
 
 /**
  * ESPInfo.h - ESP32 hardware and diagnostics information.
@@ -134,10 +138,17 @@ inline void fillESPInfo(JsonObject obj) {
 
   // Memory Info
   JsonObject memory = obj["memory"].to<JsonObject>();
-  memory["heapSize"] = ESP.getHeapSize();
-  memory["freeHeap"] = ESP.getFreeHeap();
+  memory["heapSize"]    = ESP.getHeapSize();
+  memory["freeHeap"]    = ESP.getFreeHeap();
   memory["minFreeHeap"] = ESP.getMinFreeHeap();
   memory["maxAllocHeap"] = ESP.getMaxAllocHeap();
+  // Fragmentation %: 0 = one big contiguous block, 100 = completely shredded.
+  // Derived from existing values - no extra API call needed.
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxAlloc = ESP.getMaxAllocHeap();
+  memory["heapFragPct"] = (freeHeap > 0)
+      ? static_cast<uint8_t>(100u - (maxAlloc * 100u / freeHeap))
+      : 0u;
   if (psramFound()) {
     memory["psramSize"] = ESP.getPsramSize();
     memory["freePsram"] = ESP.getFreePsram();
@@ -168,6 +179,25 @@ inline void fillESPInfo(JsonObject obj) {
     it = esp_partition_next(it);
   }
   esp_partition_iterator_release(it);
+
+  // Per-task stack high-water marks from TaskRegistry.
+  // uxTaskGetStackHighWaterMark() returns the minimum amount of free stack
+  // ever seen on the task's stack. In ESP-IDF FreeRTOS StackType_t is uint8_t,
+  // so the value is already in bytes. A value near zero means the stack almost
+  // overflowed.
+  JsonArray tasks = obj["tasks"].to<JsonArray>();
+  for (uint8_t i = 0; i < TaskRegistry.count; i++) {
+    const TaskRegistryEntry& e = TaskRegistry.entries[i];
+    JsonObject t = tasks.add<JsonObject>();
+    t["name"]          = e.name;
+    t["stackBytes"]    = e.stackBytes;
+    if (e.handle != nullptr) {
+      const UBaseType_t hwm = uxTaskGetStackHighWaterMark(e.handle);
+      t["freeBytesMin"] = hwm * sizeof(StackType_t);
+    } else {
+      t["freeBytesMin"] = nullptr;
+    }
+  }
 
   // System & Sensors
   JsonObject system = obj["system"].to<JsonObject>();

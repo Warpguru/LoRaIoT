@@ -280,12 +280,18 @@ defined yet (placeholder in `WebSocketService::broadcastTask`).
 
 ## GET /api/lora/nodes
 
-Returns all remote node addresses that LOCAL has observed via PING or BEACON. LOCAL only.
+Returns all remote node addresses that LOCAL has observed via BEACON. LOCAL only.
+
+`online` is `false` when a keep-alive check failed (3 unanswered PINGs after 90 s of silence).
+Offline nodes stay in the list with their cached definitions; the next frame from the node
+sets `online` back to `true`, and no new Describe crawl happens if `boot_id` and
+`registry_rev` are unchanged. A slot is only reused (oldest offline node first) when all
+slots are taken and a new node appears.
 
 **Response:** `200 application/json`
 
 ```json
-{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":3,"last_seen_ms":12450,"devices":2,"crawl_pending":false}]}
+{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":3,"last_seen_ms":12450,"online":true,"devices":2,"crawl_pending":false}]}
 ```
 
 ---
@@ -374,7 +380,9 @@ Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns i
 
 ## GET /api/lora/nodes/ping  /  POST /api/lora/nodes/ping
 
-Sends a PING to the specified remote node and waits for an ACK. Returns RTT and `boot_id`. LOCAL only.
+Sends a PING to the specified remote node and waits for an ACK. Returns the responder address and RTT.
+`boot_id` is taken from the last BEACON of that node and is omitted if none has been received yet
+(the ACK frame itself carries no `boot_id`). LOCAL only.
 
 | Query parameter | Required | Description |
 |---|---|---|
@@ -382,7 +390,7 @@ Sends a PING to the specified remote node and waits for an ACK. Returns RTT and 
 
 | Status | Meaning |
 |---|---|
-| `200` | ACK received. Body: `{"addr":2,"boot_id":305419896,"rtt_ms":87}` |
+| `200` | ACK received. Body: `{"addr":2,"rtt_ms":87,"boot_id":305419896}` (`boot_id` optional) |
 | `400` | Missing or invalid `addr` |
 | `503` | LoRa broker busy |
 | `504` | No ACK received |
@@ -395,7 +403,7 @@ Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful fo
 
 | Status | Meaning |
 |---|---|
-| `200` | At least one ACK received. Body: `{"addr":255,"boot_id":305419896,"rtt_ms":91}` |
+| `200` | At least one ACK received. Body: `{"addr":2,"rtt_ms":91,"boot_id":305419896}` (`addr` is the node that answered; `boot_id` optional) |
 | `503` | LoRa broker busy |
 | `504` | No response |
 

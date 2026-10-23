@@ -19,6 +19,7 @@
 #include "DescribeCrawler.h"
 #include "LoRaBroker.h"
 #include "BeaconTask.h"
+#include "PingTask.h"
 
 /**
  * Application.cpp - Main application setup and loop.
@@ -29,7 +30,8 @@
  */
 
 // ---- Application Constants -------------------------------------------------
-static constexpr uint32_t PING_INTERVAL_MS = 2000;  // Periodic PING interval on LOCAL
+// PING_INTERVAL_MS (2000 ms, periodic PoC PING on LOCAL) is disabled together with the
+// PoC loop in applicationLoop(); see the comment block there before re-enabling.
 static constexpr uint32_t BOOT_DELAY_MS    = 1000;  // Safe boot startup delay
 
 // ---- LoRa readiness gate ---------------------------------------------------
@@ -94,12 +96,162 @@ static void sendPingAck(const LoRaFrame& ping) {
 // ---- REQUEST/RESPONSE helpers ----------------------------------------------
 
 /**
+ * Send a RESPONSE with STATUS_BAD_REQUEST back to the requester.
+ * Used when a Describe or Read request cannot be fulfilled.
+ */
+static void sendBadRequestResponse(const LoRaFrame& req) {
+  static loraiot_Response response;
+  response = loraiot_Response_init_zero;
+  response.request_seq = req.seq;
+  response.status      = loraiot_Status_STATUS_BAD_REQUEST;
+
+  static uint8_t payloadBuf[loraiot_Response_size];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
+    Log_error("RESPONSE(BAD_REQUEST) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    return;
+  }
+
+  LoRaFrame respFrame;
+  respFrame.ver  = LORA_PROTOCOL_VER;
+  respFrame.type = LoRaFrameType::RESPONSE;
+  respFrame.src  = LoRaConfig.getAddress();
+  respFrame.dst  = req.src;
+  respFrame.seq  = loraNextSeq();
+  respFrame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(respFrame.payload, payloadBuf, respFrame.len);
+
+  LoRaTransport.sendFrame(respFrame);
+  Log_info("RESPONSE(BAD_REQUEST) sent to 0x%02X request_seq=%u", req.src, req.seq);
+}
+
+/**
+ * Called by REMOTE when it receives a REQUEST(Describe{device}) frame.
+ * Looks up the device definition in SensorRegistry and sends RESPONSE(Device)
+ * or RESPONSE(STATUS_BAD_REQUEST) when the device index is unknown.
+ * Device index 0 is the REMOTE node itself - not in SensorRegistry (SoftAP devices
+ * start at 1), so index 0 always returns BAD_REQUEST (signals end of device list
+ * to LOCAL if no SoftAP devices are registered).
+ * Runs on loraTransportTask - only queue operations, no UART I/O.
+ */
+static void sendDescribeResponse(const LoRaFrame& req) {
+  static loraiot_Request request;
+  request = loraiot_Request_init_zero;
+  pb_istream_t pbIn = pb_istream_from_buffer(req.payload, req.len);
+  if (!pb_decode(&pbIn, loraiot_Request_fields, &request)) {
+    Log_warn("REQUEST(Describe) from 0x%02X seq=%u - decode failed: %s",
+             req.src, req.seq, PB_GET_ERROR(&pbIn));
+    return;
+  }
+
+  const uint32_t deviceIdx = request.command.describe.device;
+  Log_info("REQUEST(Describe{device=%u}) from 0x%02X seq=%u", deviceIdx, req.src, req.seq);
+
+  static loraiot_Device dev;
+  dev = loraiot_Device_init_zero;
+  if (!SensorRegistry.toProtoDevice(deviceIdx, dev)) {
+    // Device not found (includes device 0 which is the node itself, not in SensorRegistry)
+    Log_info("REQUEST(Describe{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
+    sendBadRequestResponse(req);
+    return;
+  }
+
+  static loraiot_Response response;
+  response = loraiot_Response_init_zero;
+  response.request_seq  = req.seq;
+  response.status       = loraiot_Status_STATUS_OK;
+  response.which_result = loraiot_Response_def_tag;
+  response.result.def   = dev;
+
+  static uint8_t payloadBuf[loraiot_Response_size];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
+    Log_error("RESPONSE(Device) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    return;
+  }
+
+  LoRaFrame respFrame;
+  respFrame.ver  = LORA_PROTOCOL_VER;
+  respFrame.type = LoRaFrameType::RESPONSE;
+  respFrame.src  = LoRaConfig.getAddress();
+  respFrame.dst  = req.src;
+  respFrame.seq  = loraNextSeq();
+  respFrame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(respFrame.payload, payloadBuf, respFrame.len);
+
+  if (LoRaTransport.sendFrame(respFrame)) {
+    Log_info("RESPONSE(Device{device=%u}) sent to 0x%02X request_seq=%u", deviceIdx, req.src, req.seq);
+  } else {
+    Log_error("RESPONSE(Device) sendFrame failed for request_seq=%u", req.seq);
+  }
+}
+
+/**
+ * Called by REMOTE when it receives a REQUEST(Read{device}) frame.
+ * Looks up the most recent values in SensorRegistry and sends RESPONSE(Data)
+ * or RESPONSE(STATUS_BAD_REQUEST) when the device index is unknown.
+ * Runs on loraTransportTask - only queue operations, no UART I/O.
+ */
+static void sendReadResponse(const LoRaFrame& req) {
+  static loraiot_Request request;
+  request = loraiot_Request_init_zero;
+  pb_istream_t pbIn = pb_istream_from_buffer(req.payload, req.len);
+  if (!pb_decode(&pbIn, loraiot_Request_fields, &request)) {
+    Log_warn("REQUEST(Read) from 0x%02X seq=%u - decode failed: %s",
+             req.src, req.seq, PB_GET_ERROR(&pbIn));
+    return;
+  }
+
+  const uint32_t deviceIdx = request.command.read.device;
+  Log_info("REQUEST(Read{device=%u}) from 0x%02X seq=%u", deviceIdx, req.src, req.seq);
+
+  static loraiot_Data data;
+  data = loraiot_Data_init_zero;
+  if (!SensorRegistry.toProtoData(deviceIdx, data)) {
+    Log_info("REQUEST(Read{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
+    sendBadRequestResponse(req);
+    return;
+  }
+
+  static loraiot_Response response;
+  response = loraiot_Response_init_zero;
+  response.request_seq  = req.seq;
+  response.status       = loraiot_Status_STATUS_OK;
+  response.which_result = loraiot_Response_data_tag;
+  response.result.data  = data;
+
+  static uint8_t payloadBuf[loraiot_Response_size];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
+    Log_error("RESPONSE(Data) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    return;
+  }
+
+  LoRaFrame respFrame;
+  respFrame.ver  = LORA_PROTOCOL_VER;
+  respFrame.type = LoRaFrameType::RESPONSE;
+  respFrame.src  = LoRaConfig.getAddress();
+  respFrame.dst  = req.src;
+  respFrame.seq  = loraNextSeq();
+  respFrame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(respFrame.payload, payloadBuf, respFrame.len);
+
+  if (LoRaTransport.sendFrame(respFrame)) {
+    Log_info("RESPONSE(Data{device=%u, values=%u}) sent to 0x%02X request_seq=%u",
+             deviceIdx, data.values_count, req.src, req.seq);
+  } else {
+    Log_error("RESPONSE(Data) sendFrame failed for request_seq=%u", req.seq);
+  }
+}
+
+/**
  * Called by REMOTE when it receives a REQUEST(echo) frame.
  * Decodes the Echo payload, reverses the text, and sends a RESPONSE back.
  * Runs on loraTransportTask - only queue operations, no UART I/O.
  */
 static void sendEchoResponse(const LoRaFrame& req) {
-  loraiot_Request request = loraiot_Request_init_zero;
+  static loraiot_Request request;
+  request = loraiot_Request_init_zero;
   pb_istream_t pbIn = pb_istream_from_buffer(req.payload, req.len);
   if (!pb_decode(&pbIn, loraiot_Request_fields, &request)) {
     Log_warn("REQUEST(echo) from 0x%02X seq=%u - decode failed: %s",
@@ -123,13 +275,14 @@ static void sendEchoResponse(const LoRaFrame& req) {
            req.src, req.seq, request.command.echo.text, reversed);
 
   // Build RESPONSE{request_seq, echo{reversed}}.
-  loraiot_Response response = loraiot_Response_init_zero;
+  static loraiot_Response response;
+  response = loraiot_Response_init_zero;
   response.request_seq  = req.seq;
   response.status       = loraiot_Status_STATUS_OK;
   response.which_result = loraiot_Response_echo_tag;
   strncpy(response.result.echo.text, reversed, sizeof(response.result.echo.text) - 1);
 
-  uint8_t payloadBuf[loraiot_Response_size];
+  static uint8_t payloadBuf[loraiot_Response_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
     Log_error("RESPONSE(echo) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
@@ -170,6 +323,16 @@ static void onLoRaReceive(const LoRaFrame& frame) {
     pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
     if (pb_decode(&pbIn, loraiot_Beacon_fields, &beacon)) {
       bootId = beacon.boot_id;
+    }
+  }
+
+  // LOCAL: any valid frame from a REMOTE proves it is alive, so refresh its liveness
+  // (and revive it if PingTask had marked it offline). Done before the duplicate check
+  // because a retransmitted duplicate is just as good a proof of life. Unknown nodes
+  // are ignored here; only a BEACON creates a registry entry.
+  if (isLocal) {
+    if (DeviceRegistry.markSeen(frame.src)) {
+      Log_info("Node 0x%02X is back online", frame.src);
     }
   }
 
@@ -225,7 +388,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         }
         const uint32_t rttMs = millis() - sentMs;
         Log_info("PING ACK from 0x%02X seq=%u rtt=%ums", frame.src, ack.acked_seq, rttMs);
-        loraBrokerOnPingAck(DEVICE_REGISTRY_BOOT_ID_NONE, rttMs);
+        loraBrokerOnPingAck(frame.src, rttMs);
       } else {
         Log_debug("onLoRaReceive: REMOTE received unexpected ACK from 0x%02X", frame.src);
       }
@@ -233,8 +396,28 @@ static void onLoRaReceive(const LoRaFrame& frame) {
 
     case LoRaFrameType::REQUEST:
       if (!isLocal) {
-        // REMOTE: handle the request and send a RESPONSE back
-        sendEchoResponse(frame);
+        // REMOTE: dispatch to the appropriate handler based on which_command.
+        // Decode the request type first (without consuming payload - we re-decode inside each handler).
+        {
+          static loraiot_Request peek;
+          peek = loraiot_Request_init_zero;
+          pb_istream_t pbPeek = pb_istream_from_buffer(frame.payload, frame.len);
+          if (!pb_decode(&pbPeek, loraiot_Request_fields, &peek)) {
+            Log_warn("REQUEST from 0x%02X seq=%u - decode failed: %s",
+                     frame.src, frame.seq, PB_GET_ERROR(&pbPeek));
+            break;
+          }
+          if (peek.which_command == loraiot_Request_echo_tag) {
+            sendEchoResponse(frame);
+          } else if (peek.which_command == loraiot_Request_describe_tag) {
+            sendDescribeResponse(frame);
+          } else if (peek.which_command == loraiot_Request_read_tag) {
+            sendReadResponse(frame);
+          } else {
+            Log_debug("onLoRaReceive: REMOTE unknown REQUEST cmd=%u from 0x%02X seq=%u",
+                      peek.which_command, frame.src, frame.seq);
+          }
+        }
       } else {
         Log_debug("onLoRaReceive: LOCAL received unexpected REQUEST from 0x%02X", frame.src);
       }
@@ -242,17 +425,28 @@ static void onLoRaReceive(const LoRaFrame& frame) {
 
     case LoRaFrameType::RESPONSE:
       if (isLocal) {
-        // LOCAL: decode the Response payload and unblock the waiting broker/handler
-        loraiot_Response response = loraiot_Response_init_zero;
+        // LOCAL: decode the Response payload, then route to the correct handler.
+        // - def_tag or STATUS_BAD_REQUEST -> describeCrawlerOnResponse (Describe crawl)
+        // - data_tag or echo_tag          -> loraBrokerOnResponse (REST handler waiting)
+        static loraiot_Response response;
+        response = loraiot_Response_init_zero;
         pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
         if (!pb_decode(&pbIn, loraiot_Response_fields, &response)) {
           Log_warn("RESPONSE from 0x%02X seq=%u - decode failed: %s",
                    frame.src, frame.seq, PB_GET_ERROR(&pbIn));
           break;
         }
-        Log_info("RESPONSE from 0x%02X request_seq=%u status=%u",
-                 frame.src, response.request_seq, (uint8_t)response.status);
-        loraBrokerOnResponse(response);
+        Log_info("RESPONSE from 0x%02X request_seq=%u status=%u which=%u",
+                 frame.src, response.request_seq, (uint8_t)response.status,
+                 response.which_result);
+        if (response.which_result == loraiot_Response_def_tag ||
+            response.status == loraiot_Status_STATUS_BAD_REQUEST) {
+          // Describe crawl response (Device definition or end-of-list signal)
+          describeCrawlerOnResponse(frame.src, response);
+        } else {
+          // Echo or Data response destined for a waiting REST handler
+          loraBrokerOnResponse(response);
+        }
       } else {
         Log_debug("onLoRaReceive: REMOTE received unexpected RESPONSE from 0x%02X", frame.src);
       }
@@ -276,6 +470,10 @@ static void onLoRaReceive(const LoRaFrame& frame) {
           if (crawlNeeded) {
             describeCrawlerSchedule(frame.src);
           }
+          // Answer the BEACON with a PING so the REMOTE learns it was discovered and
+          // drops to the slow beacon rate. Queued, not sent here, because waiting for
+          // the ACK would block the very task that receives it.
+          pingTaskNotifyBeacon(frame.src);
         } else {
           Log_warn("BEACON from 0x%02X seq=%u - Beacon decode failed: %s",
                    frame.src, frame.seq, PB_GET_ERROR(&pbIn));
@@ -321,10 +519,10 @@ void applicationSetup() {
   // Apply the loaded CPU frequency config
   setCpuFrequencyMhz(LoRaConfig.getCpuFreq());
 
-  Log_info("Starting LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ") tier=%s logLevel=%s loraChannel=0x%02X loraAddr=0x%02X cpuFreq=%d MHz",
-           Gateway.getTierName(), LogBuffer.getLevelName(), LoRaConfig.getChannel(), LoRaConfig.getAddress(), getCpuFrequencyMhz());
-  Serial.printf("\n--- LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ") tier=%s logLevel=%s loraChannel=0x%02X loraAddr=0x%02X cpuFreq=%d MHz ---\n",
-                Gateway.getTierName(), LogBuffer.getLevelName(), LoRaConfig.getChannel(), LoRaConfig.getAddress(), getCpuFrequencyMhz());
+  // Configuration details (log level, channel, address, key, CPU frequency) are
+  // logged once by LoRaConfig.begin(); do not repeat them here.
+  Log_info("Starting LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ")");
+  Serial.printf("\n--- LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ") ---\n");
 
   // Initialize WiFi, construct service objects, register all routes, start server.
   // setupServer() blocks in the captive portal until the node is provisioned, and
@@ -341,9 +539,12 @@ void applicationSetup() {
     LoRaTransport.setReceiveCallback(onLoRaReceive);
     LoRaTransport.begin();
     loraBrokerBegin();
-    // Start the beacon task on REMOTE; LOCAL does not beacon.
+    // REMOTE beacons; LOCAL runs the keep-alive task that answers beacons and
+    // detects dead REMOTEs. The two roles never run each other's task.
     if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
       beaconTaskBegin();
+    } else {
+      pingTaskBegin();
     }
     Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X",
              Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress());
@@ -378,6 +579,28 @@ void applicationLoop() {
     describeCrawlerLoop();
   }
 
+  /*
+   * PoC PING/ACK loop - disabled (kept for reference).
+   *
+   * This was the initial proof of concept of the LoRa link: every PING_INTERVAL_MS (2 s)
+   * LOCAL sent a PING to the hardcoded address LORA_DEFAULT_ADDR_REMOTE (0x02) and waited
+   * for the ACK. It is replaced by:
+   *   - GET /api/lora/nodes/ping?addr=N  (on demand ping, returns the round trip time)
+   *   - PingTask (a PING in reply to every BEACON and a keep-alive PING for idle nodes)
+   *
+   * What happens if this block (and PING_INTERVAL_MS above) is uncommented again:
+   *   - LOCAL pings node 0x02 every 2 s, whatever nodes really exist (no multi-REMOTE support).
+   *   - loraBrokerWait() blocks the Arduino main task for up to LORA_REQUEST_TIMEOUT_MS per
+   *     cycle when the REMOTE is absent, which delays describeCrawlerLoop() and diagnosticsLoop().
+   *   - The broker has a single in-flight slot, so while a PING is pending, REST calls that
+   *     use the broker (live read, echo, ping) are answered with HTTP 503.
+   *   - Each exchange adds about 4 INFO lines (sent PING, TX hex, RX hex, PING ACK); the
+   *     128 line log buffer (GET /api/log) then only covers about a minute.
+   *   - The REMOTE sees a frame from LOCAL every 2 s and therefore stays DISCOVERED (60 s
+   *     beacon interval) even if LOCAL never registered it, which hides discovery problems.
+   *   - It competes with PingTask and with cyclic reads for the broker slot and the
+   *     half-duplex channel.
+   *
   static unsigned long lastSendTime = 0;
 
   // LOCAL Node: Periodically send a PING to REMOTE via the broker.
@@ -401,6 +624,7 @@ void applicationLoop() {
       }
     }
   }
+  */
 
   // ESPAsyncWebServer is fully non-blocking; this is a no-op kept for symmetry.
   handleServerRequests();

@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "../../diagnostics/src/TaskRegistry.h"
+
 /**
  * StatusLed.cpp - Sole owner of the onboard status LED (GPIO 2).
  *
@@ -115,6 +117,7 @@ void StatusLed::begin() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH); // ON immediately while task starts
   xTaskCreate(ledTask, "StatusLed", LED_TASK_STACK_SIZE, this, LED_TASK_PRIORITY, &taskHandle);
+  TaskRegistry.add("StatusLed", taskHandle, LED_TASK_STACK_SIZE);
 }
 
 // ---- setState --------------------------------------------------------------

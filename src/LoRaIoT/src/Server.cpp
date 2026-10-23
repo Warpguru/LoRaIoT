@@ -40,6 +40,10 @@ static constexpr size_t PORTAL_TIER_HTML_SIZE       = 280;  // Custom HTML of th
 static constexpr size_t PORTAL_LEVEL_HTML_SIZE      = 350;  // Custom HTML of the log level parameter
 static constexpr size_t PORTAL_NAME_VALUE_LEN       = 8;    // Max value length of the tier / log level parameter
 static constexpr size_t PORTAL_CHANNEL_VALUE_LEN    = 4;    // Max value length of the channel parameter (incl. terminator)
+static constexpr size_t PORTAL_KEY_VALUE_LEN        = 6;    // Max value length of the loraKey parameter (0-65535 + terminator)
+static constexpr size_t PORTAL_KEY_HTML_SIZE        = 220;  // Custom HTML of the loraKey parameter
+static constexpr size_t PORTAL_ADDR_VALUE_LEN       = 4;    // Max value length of the loraAddr parameter (2-254 + terminator)
+static constexpr size_t PORTAL_ADDR_HTML_SIZE       = 260;  // Custom HTML of the loraAddr parameter
 
 // ---- Global server objects -------------------------------------------------
 
@@ -73,6 +77,13 @@ static void clearNvsNamespace(const char* nvsNamespace) {
   } else {
     Log_error("NVS namespace '%s' could not be opened for clearing", nvsNamespace);
   }
+}
+
+static void handleReboot(AsyncWebServerRequest* request) {
+  Log_warn("GET /reboot - rebooting");
+  request->send(HTTP_STATUS_OK, "text/plain", "ESP32 rebooting...");
+  delay(RESET_REBOOT_DELAY_MS);
+  ESP.restart();
 }
 
 static void handleReset(AsyncWebServerRequest* request) {
@@ -144,10 +155,12 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   Log_info("GET /openapi/ui");
   String ssid = WiFi.SSID();   // extracted to named local so .c_str() is safe
-  char buf[1250];  // template ~1147 B static + up to ~64 B dynamic = ~1203 B worst-case
+  char buf[1300];  // template ~1170 B static + up to ~75 B dynamic = ~1245 B worst-case
   snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
            ssid.c_str(),           // %s SSID in banner
            Gateway.getTierName(),  // %s tier in banner
+           (unsigned)LoRaConfig.getKey(),               // %u key (decimal) in banner
+           LoRaConfig.getKey() ? "on" : "off",          // %s key state in banner
            __DATE__ " " __TIME__,  // %s build timestamp in banner
            Gateway.getTierName()); // %s TIER JS variable for x-tier filter
   request->send(HTTP_STATUS_OK, "text/html", buf);
@@ -267,7 +280,42 @@ void setupServer() {
   WiFiManagerParameter channelParam("loraChannel", "", channelStr, PORTAL_CHANNEL_VALUE_LEN, channelCustomHtml.c_str());
   wm.addParameter(&channelParam);
 
-  auto saveCallback = [&tierParam, &levelParam, &channelParam]() {
+   // -- LoRa encryption key (ddmmy format; 0 = disabled) --
+  // Pre-fill with the persisted key so re-provisioning shows the current value.
+  // The field is type='number' - the browser enforces 0-65535 numerically.
+  char keyStr[PORTAL_KEY_VALUE_LEN];
+  snprintf(keyStr, sizeof(keyStr), "%u", (unsigned)LoRaConfig.getKey());
+  char keyCustomHtml[PORTAL_KEY_HTML_SIZE];
+  snprintf(keyCustomHtml, sizeof(keyCustomHtml),
+           " type='hidden'><br/>"
+           "<label for='loraKey'>LoRa Encryption Key (ddmmy, e.g. 25066 = 25 Jun 2026; 0 = disabled)</label>"
+           "<input id='loraKeyInput' type='number' min='0' max='65535' value='%s'"
+           " onchange=\"document.getElementById('loraKey').value=this.value\">",
+           keyStr);
+  // Strip trailing '>' - WiFiManager appends its own closing '>'
+  keyCustomHtml[strlen(keyCustomHtml) - 1] = '\0';
+  // Append closing without '>'
+  strncat(keyCustomHtml, "</input", sizeof(keyCustomHtml) - strlen(keyCustomHtml) - 1);
+  WiFiManagerParameter keyParam("loraKey", "", keyStr, PORTAL_KEY_VALUE_LEN, keyCustomHtml);
+  wm.addParameter(&keyParam);
+
+  // -- LoRa address (REMOTE only; always visible, saveCallback ignores value for LOCAL) --
+  char addrStr[PORTAL_ADDR_VALUE_LEN];
+  snprintf(addrStr, sizeof(addrStr), "%d",
+           (LoRaConfig.getAddress() >= LORA_DEFAULT_ADDR_REMOTE) ? LoRaConfig.getAddress() : LORA_DEFAULT_ADDR_REMOTE);
+  char addrCustomHtml[PORTAL_ADDR_HTML_SIZE];
+  snprintf(addrCustomHtml, sizeof(addrCustomHtml),
+           " type='hidden'><br/>"
+           "<label for='loraAddr'>LoRa Node Address (REMOTE only, 2-254; ignored for LOCAL)</label>"
+           "<input id='loraAddrInput' type='number' min='2' max='254' value='%s'"
+           " onchange=\"document.getElementById('loraAddr').value=this.value\">",
+           addrStr);
+  addrCustomHtml[strlen(addrCustomHtml) - 1] = '\0';
+  strncat(addrCustomHtml, "</input", sizeof(addrCustomHtml) - strlen(addrCustomHtml) - 1);
+  WiFiManagerParameter addrParam("loraAddr", "", addrStr, PORTAL_ADDR_VALUE_LEN, addrCustomHtml);
+  wm.addParameter(&addrParam);
+
+  auto saveCallback = [&tierParam, &levelParam, &channelParam, &keyParam, &addrParam]() {
     const char* chosenTier    = tierParam.getValue();
     const char* chosenLevel   = levelParam.getValue();
     const char* chosenChannel = channelParam.getValue();
@@ -299,15 +347,43 @@ void setupServer() {
       }
     }
 
-    // Auto-configure the LoRa address based on the selected tier (no GUI visible)
+    // LoRa encryption key - portal value overrides persisted key.
+    // Key=0 is valid and means "disabled"; blank field is treated as 0.
+    const char* chosenKey = keyParam.getValue();
+    if (chosenKey != nullptr) {
+      int k = (chosenKey[0] != '\0') ? atoi(chosenKey) : 0;
+      if (k >= 0 && k <= (int)LORA_MAX_KEY) {
+        LoRaConfig.setKey((uint16_t)k);
+        Log_info("LoRa key set from portal (%s); takes effect on next reboot",
+                 k ? "encryption enabled" : "encryption disabled");
+      } else {
+        Log_warn("Portal returned invalid LoRa key '%s' - ignored", chosenKey);
+      }
+    }
+
+    // LoRa address - applied only for REMOTE; LOCAL is always 0x01.
     if (Gateway.isConfigured()) {
       if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
-        LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
+        const char* chosenAddr = addrParam.getValue();
+        if (chosenAddr != nullptr && chosenAddr[0] != '\0') {
+          int addr = atoi(chosenAddr);
+          if (addr >= LORA_DEFAULT_ADDR_REMOTE && addr <= LORA_MAX_ADDR_REMOTE) {
+            LoRaConfig.setAddress((uint8_t)addr);
+            Log_info("LoRa address set from portal to 0x%02X", LoRaConfig.getAddress());
+          } else {
+            Log_warn("Portal returned invalid LoRa address '%s' - using default 0x%02X",
+                     chosenAddr, LORA_DEFAULT_ADDR_REMOTE);
+            LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
+          }
+        } else {
+          LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
+          Log_info("LoRa address defaulted to 0x%02X (REMOTE, no value entered)", LORA_DEFAULT_ADDR_REMOTE);
+        }
       } else {
         LoRaConfig.setAddress(LORA_DEFAULT_ADDR_LOCAL);
+        Log_info("LoRa address fixed to 0x%02X (LOCAL)", LORA_DEFAULT_ADDR_LOCAL);
       }
       LoRaConfig.save();
-      Log_info("LoRa address auto-configured to 0x%02X based on tier %s", LoRaConfig.getAddress(), Gateway.getTierName());
     }
   };
   wm.setSaveParamsCallback(saveCallback);
@@ -341,8 +417,9 @@ void setupServer() {
       [](AsyncWebServerRequest* request) {},
       nullptr,
       handlePutLogLevel);
-  server.on("/status", AsyncWebRequestMethod::HTTP_GET, handleGetStatus);
-  server.on("/reset",  AsyncWebRequestMethod::HTTP_GET, handleReset);
+  server.on("/status",  AsyncWebRequestMethod::HTTP_GET, handleGetStatus);
+  server.on("/reboot",  AsyncWebRequestMethod::HTTP_GET, handleReboot);
+  server.on("/reset",   AsyncWebRequestMethod::HTTP_GET, handleReset);
 
   server.begin();
   Log_info("AsyncWebServer started on port %d (HTTP + WS on %s).", SERVER_PORT, WS_PATH);

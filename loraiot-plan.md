@@ -148,7 +148,7 @@ artifact: it is stored as `src/lora/proto/loraiot.proto`, and the nanopb sources
 
 ## Milestone 2 — NVS Provisioning: Role, Channel, Address, Log Level, CRYPT Key
 
-**Status:** [x] substantially complete - two items deferred: loraKey/CRYPT and REMOTE-only addr portal input
+**Status:** [x] complete
 **Prerequisite:** Milestone 0 (compile-time role toggle exists; this replaces it with runtime provisioning)
 
 **Intent:**
@@ -185,8 +185,12 @@ Address notes:
 - [x] Create `src/lora/src/LoRaConfig.h/.cpp` — `LoRaConfigClass` singleton: `begin()` (NVS load), `save()`, getters/setters for channel (`uint8_t`) and addr (`uint8_t`); mirrors `GatewayClass` / `Tier` pattern exactly
 - [x] Add `LoRaConfigClass LoRaConfig` global; `begin()` called from `applicationSetup()` before `setupServer()`
 - [x] Add LoRa channel `<select>` to portal in `Server.cpp` (options 0-31, each labelled "Ch N - 433.NNN MHz", current value pre-selected)
-- [ ] Add LoRa address `<input type='number' min='2' max='254'>` to portal, rendered only when tier == REMOTE (inject conditionally using `Gateway.getTier()`) — deferred: address is currently auto-set from tier at save time; a multi-REMOTE deployment needs this (M6/M7)
-- [ ] Add `loraKey` (NVS, portal, `PUT /api/config`) and `LoRaConfig.getKey()` / `setKey()`; use it for CRYPT_H/CRYPT_L in `LoRaTransport::begin()` — deferred to M4 (frame codec needs it alongside the full frame layer)
+- [x] Add LoRa address `<input type='number' min='2' max='254'>` to portal — always visible; `saveCallback` applies value only when tier == REMOTE (with `0x02` fallback for blank), forces `0x01` for LOCAL; `LoRaConfig.setAddress()` + `LoRaConfig.save()` called from `saveCallback`
+- [x] Add `loraKey` to portal, NVS, and `LoRaTransport::begin()`:
+  - NVS key `loraKey` (`uint16`, namespace `sc_prefs`); `LoRaConfig.getKey()` / `setKey(uint16_t)`; `prefs.getUShort` / `prefs.putUShort` in `LoRaConfig.begin()` / `save()`
+  - Portal field: `<input type='number' min='0' max='65535'>` with `ddmmy` format hint — pre-filled with persisted key; `saveCallback` validates `0-65535` (`LORA_MAX_KEY = 0xFFFF`), calls `LoRaConfig.setKey()`; no REST endpoint (portal-only; boot log shows enabled/disabled status)
+  - `ddmmy` format: day (01-31) + month (01-12) + year digit (1-9) — max `31129`, well within `uint16`; `0` = disabled (`CRYPT_H=0x00`, `CRYPT_L=0x00`)
+  - `LoRaTransport::begin()`: hardcoded `CRYPT_KEY_HIGH` / `CRYPT_KEY_LOW` replaced with `LoRaConfig.getKey() >> 8` / `LoRaConfig.getKey() & 0xFF`
 - [x] Address defaults set: `LORA_DEFAULT_ADDR_LOCAL = 0x01`, `LORA_DEFAULT_ADDR_REMOTE = 0x02`; `LORA_ADDR_INVALID = 0x00`, `LORA_ADDR_BROADCAST = 0xFF`, `LORA_MAX_ADDR_REMOTE = 0xFE` defined in `LoRaConfig.h`
 - [x] Portal save callback: persist channel and addr via `LoRaConfig.save()`
 - [x] Register `GET /api/lora/channel` / `GET /api/lora/address` in `RestService::registerRoutes()`
@@ -203,7 +207,7 @@ Address notes:
 
 ## Milestone 3 — LoRa Transport Layer: Full E220 Init + Serial2 Owner Task
 
-**Status:** [x] complete (Note: CRYPT_H/L key uses default 0x00 0x00 pending loraKey provisioning)
+**Status:** [x] complete
 **Prerequisite:** Milestone 0 (LoRaTransport skeleton exists; this replaces it with production implementation), Milestone 2 (LoRaConfig available for channel/addr)
 
 **Intent:**
@@ -324,7 +328,7 @@ replies with a `RESPONSE(echo)` whose `request_seq` equals the request SEQ. This
 
 ## Milestone 6 — Dual-Role Application Logic: Beacon, Requests, and Sensor Data
 
-**Status:** [-] in progress (core infrastructure, endpoints, registries, and beacon task completed; crawl dispatch and softAP pending)
+**Status:** [-] in progress (core infrastructure, endpoints, registries, beacon task, crawl dispatch, PingTask, and broker all complete; SoftAP, cyclic reads, DATA/DATA_ACK handling, WebSocket broadcast, and UI pending)
 **Prerequisite:** Milestone 5 (framed LoRa link confirmed working end-to-end)
 
 **Intent:**
@@ -375,8 +379,10 @@ UNDISCOVERED -> beacon every 5 s  (self-healing)
 - [x] LOCAL: register `GET /api/lora/nodes`, `.../nodes/devices`, `.../nodes/metrics` (cached and `live=true`), `POST .../nodes/data` in `RestService.cpp`
 - [x] Update `openapi_json.h` and `doc/RestApi.md` for all registered endpoints (source of truth)
 - [x] LOCAL: handle BEACON reception in `Application.cpp` `onLoRaReceive` - decodes `Beacon`, updates node metadata in `DeviceRegistry`, flags pending crawl
-- [ ] REMOTE: handle `REQUEST(Read)` -> `RESPONSE(Data)` and `REQUEST(Describe)` -> `RESPONSE(Device)` / `STATUS_BAD_REQUEST` (PING -> ACK and REQUEST(echo) are already implemented)
-- [ ] LOCAL: complete Describe crawl request dispatch (`sendDescribeRequest` in `DescribeCrawler.cpp`) and wire incoming RESPONSE frames in `Application.cpp` to `describeCrawlerOnResponse()`
+- [x] REMOTE: handle `REQUEST(Read)` -> `RESPONSE(Data)` and `REQUEST(Describe)` -> `RESPONSE(Device)` / `STATUS_BAD_REQUEST` - `sendDescribeResponse()` and `sendReadResponse()` added to `Application.cpp`; REQUEST case dispatches on `which_command`; device 0 returns `BAD_REQUEST` (REMOTE node itself not in `SensorRegistry`, signals end-of-list when no SoftAP devices registered)
+- [x] LOCAL: complete Describe crawl request dispatch - `sendDescribeRequest()` stub in `DescribeCrawler.cpp` replaced with real nanopb encode + `LoRaTransport.sendFrame()`; returns real SEQ stored in `ctx.inFlightSeq`; RESPONSE case in `Application.cpp` routes `def_tag` / `STATUS_BAD_REQUEST` to `describeCrawlerOnResponse()` instead of `loraBrokerOnResponse()`; hardware-verified end-to-end (BEACON → REQUEST(Describe{0}) → BAD_REQUEST → crawl complete)
+- [x] LOCAL: implement `PingTask` keep-alive (`src/LoRaIoT/src/PingTask.h/.cpp`) — sends PING to each known REMOTE after 90 s idle; marks node offline after 3 consecutive misses; `GET /api/lora/nodes/ping?addr=N` and `GET /api/lora/ping` (broadcast, first ACK only) registered; hardware-verified RTT 110–135 ms; broker try-acquire (`xSemaphoreTake(brokerMutex, 0)`) in `loraBrokerSend()` ensures concurrent callers receive HTTP 503 immediately rather than silently queueing
+- [x] Implement `GET /reboot` — clean ESP32 reboot preserving all NVS settings; registered in `Server.cpp`, documented in `openapi_json.h`, `doc/RestApi.md`, and `index_html.h`
 - [ ] REMOTE: optional alert threshold -> unsolicited `DATA_ACK` with `alert=true` (retry with random backoff)
 - [ ] LOCAL: handle unsolicited DATA and DATA_ACK frames (ACK reply, cache update)
 - [ ] LOCAL: implement optional cyclic read task (`readTask`): iterate registry, send `REQUEST(Read)`, update `loraState`; uses `TASK_CREATE`

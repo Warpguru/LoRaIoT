@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <esp_random.h>
 
+#include "../../diagnostics/src/TaskRegistry.h"
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/TaskUtils.h"
 #include "Application.h"
@@ -126,6 +127,8 @@ static void beaconTask(void* /*param*/) {
 // ---- Public: begin ----------------------------------------------------------
 
 void beaconTaskBegin() {
-    TASK_CREATE(beaconTask, "Beacon", BEACON_TASK_STACK_SIZE, nullptr, BEACON_TASK_PRIORITY, nullptr);
+    TaskHandle_t handle = nullptr;
+    TASK_CREATE(beaconTask, "Beacon", BEACON_TASK_STACK_SIZE, nullptr, BEACON_TASK_PRIORITY, &handle);
+    TaskRegistry.add("Beacon", handle, BEACON_TASK_STACK_SIZE);
     Log_info("BeaconTask: started (UNDISCOVERED, interval=%ums)", BEACON_INTERVAL_UNDISCOVERED_MS);
 }

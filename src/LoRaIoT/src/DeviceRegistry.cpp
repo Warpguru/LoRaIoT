@@ -44,6 +44,14 @@ bool DeviceRegistryClass::updateNodeMeta(uint8_t addr, uint32_t bootId,
   node.bootId      = bootId;
   node.lastSeenMs  = millis();
 
+  // A BEACON proves the node is alive, so a node presumed dead comes back online.
+  // Its cached definitions were kept while offline: if boot_id and registry_rev are
+  // unchanged (checked above and below) no new Describe crawl is needed.
+  if (!node.online) {
+    Log_info("DeviceRegistry: node 0x%02X is online again (BEACON)", addr);
+    node.online = true;
+  }
+
   if (hasRegistryRev) {
     node.pendingRev = registryRev;
     // Schedule a crawl if we have never crawled, or the rev has advanced.
@@ -143,6 +151,94 @@ void DeviceRegistryClass::storeData(uint8_t addr, const loraiot_Data& data) {
   xSemaphoreGive(mutex);
 }
 
+// markSeen() is called for EVERY valid frame from a node (not only BEACON), so the
+// keep-alive logic sees DATA, RESPONSE, ACK etc. as proof of life and stays silent
+// while a node is busy. It never creates an entry: only a BEACON may add a node,
+// otherwise a stray frame could occupy one of the few slots.
+bool DeviceRegistryClass::markSeen(uint8_t addr) {
+  if (mutex == nullptr) {
+    return false;
+  }
+  xSemaphoreTake(mutex, portMAX_DELAY);
+
+  bool wasOffline = false;
+  int8_t idx = findNode(addr);
+  if (idx >= 0) {
+    wasOffline = !nodes[idx].online;
+    nodes[idx].online     = true;
+    nodes[idx].lastSeenMs = millis();
+  }
+
+  xSemaphoreGive(mutex);
+
+  // Log after releasing the mutex: logging can be slow and must not block other tasks.
+  if (wasOffline) {
+    Log_info("DeviceRegistry: node 0x%02X is online again", addr);
+  }
+  return wasOffline;
+}
+
+// markOffline() keeps the entry on purpose (see NodeEntry::online): a node that was
+// only out of range returns with the same boot_id and registry_rev, so its cached
+// definitions stay valid and no Describe crawl is needed.
+void DeviceRegistryClass::markOffline(uint8_t addr) {
+  if (mutex == nullptr) {
+    return;
+  }
+  xSemaphoreTake(mutex, portMAX_DELAY);
+
+  bool changed = false;
+  int8_t idx = findNode(addr);
+  if (idx >= 0 && nodes[idx].online) {
+    nodes[idx].online = false;
+    changed = true;
+  }
+
+  xSemaphoreGive(mutex);
+
+  if (changed) {
+    Log_warn("DeviceRegistry: node 0x%02X marked offline", addr);
+  }
+}
+
+// getLiveness()/getBootId() exist because getNode() copies the whole NodeEntry
+// (about 2 KB). The ping task and REST handlers only need a few scalar fields, and
+// copying 2 KB onto a 4 KB task stack risks a stack overflow.
+bool DeviceRegistryClass::getLiveness(uint8_t addr, uint32_t& lastSeenMs, bool& online) const {
+  if (mutex == nullptr) {
+    return false;
+  }
+  xSemaphoreTake(mutex, portMAX_DELAY);
+
+  int8_t idx = findNode(addr);
+  const bool found = (idx >= 0);
+  if (found) {
+    lastSeenMs = nodes[idx].lastSeenMs;
+    online     = nodes[idx].online;
+  }
+
+  xSemaphoreGive(mutex);
+  return found;
+}
+
+// The Ack message carries no boot_id (doc/LoRaProtocol.md section 6.1), so a REST ping
+// reports the value LOCAL learned from the node's last BEACON.
+bool DeviceRegistryClass::getBootId(uint8_t addr, uint32_t& bootId) const {
+  if (mutex == nullptr) {
+    return false;
+  }
+  xSemaphoreTake(mutex, portMAX_DELAY);
+
+  int8_t idx = findNode(addr);
+  const bool found = (idx >= 0) && (nodes[idx].bootId != DEVICE_REGISTRY_BOOT_ID_NONE);
+  if (found) {
+    bootId = nodes[idx].bootId;
+  }
+
+  xSemaphoreGive(mutex);
+  return found;
+}
+
 bool DeviceRegistryClass::getNode(uint8_t addr, NodeEntry& out) const {
   if (mutex == nullptr) return false;
   xSemaphoreTake(mutex, portMAX_DELAY);
@@ -208,12 +304,42 @@ int8_t DeviceRegistryClass::findNode(uint8_t addr) const {
 
 int8_t DeviceRegistryClass::findOrCreateNode(uint8_t addr) {
   int8_t idx = findNode(addr);
-  if (idx >= 0) return idx;
+  if (idx >= 0) {
+    return idx;
+  }
 
-  if (nodeCount_ >= DEVICE_REGISTRY_MAX_NODES) return -1;
+  if (nodeCount_ >= DEVICE_REGISTRY_MAX_NODES) {
+    // Table full. Offline nodes are kept (not removed) so a returning node keeps its
+    // cache; the slot is only reclaimed now, when a new address needs it. Evict the
+    // offline node that has been silent the longest. Unsigned subtraction keeps the
+    // age correct when millis() wraps. Online nodes are never evicted.
+    const uint32_t now = millis();
+    int8_t   victim    = -1;
+    uint32_t victimAge = 0;
+    for (uint8_t i = 0; i < nodeCount_; i++) {
+      if (nodes[i].online) {
+        continue;
+      }
+      const uint32_t age = now - nodes[i].lastSeenMs;
+      if (victim < 0 || age > victimAge) {
+        victim    = static_cast<int8_t>(i);
+        victimAge = age;
+      }
+    }
+    if (victim < 0) {
+      return -1;   // every node is online: the new node is rejected
+    }
+    Log_info("DeviceRegistry: table full, reusing slot of offline node 0x%02X for 0x%02X",
+             nodes[victim].addr, addr);
+    idx = victim;
+  } else {
+    idx = static_cast<int8_t>(nodeCount_++);
+  }
 
-  idx = static_cast<int8_t>(nodeCount_++);
+  // Start from a clean entry; a new node counts as online, because it was just heard.
   memset(&nodes[idx], 0, sizeof(NodeEntry));
+  nodes[idx].online      = true;
+  nodes[idx].lastSeenMs  = millis();
   nodes[idx].addr        = addr;
   nodes[idx].bootId      = DEVICE_REGISTRY_BOOT_ID_NONE;
   nodes[idx].registryRev = DEVICE_REGISTRY_REV_NONE;

@@ -157,6 +157,10 @@ void RestService::registerRoutes() {
         request->send(HTTP_STATUS_OK, "application/json", json);
       });
 
+  // Note: loraKey has no REST endpoint - it is set only via the captive portal during
+  // provisioning and takes effect on next reboot. The boot log shows whether encryption
+  // is enabled. Use GET /reset + re-provision to change the key.
+
   // GET /api/system/cpu - get active CPU frequency (available on all nodes).
   server->on("/api/system/cpu", HTTP_GET, [](AsyncWebServerRequest* request) {
     Log_info("GET /api/system/cpu");
@@ -399,9 +403,14 @@ void RestService::registerRoutes() {
     }
     const PingResult& pr = loraBrokerGetPingResult();
     JsonDocument doc;
-    doc["addr"]    = addr;
-    doc["boot_id"] = pr.bootId;
-    doc["rtt_ms"]  = pr.rttMs;
+    doc["addr"]   = pr.addr;
+    doc["rtt_ms"] = pr.rttMs;
+    // The Ack carries no boot_id, so report the one learned from the node's last BEACON.
+    // It is omitted (not 0) when the node never beaconed, to avoid a misleading value.
+    uint32_t bootId = 0;
+    if (DeviceRegistry.getBootId(pr.addr, bootId)) {
+      doc["boot_id"] = bootId;
+    }
     String json;
     serializeJson(doc, json);
     request->send(HTTP_STATUS_OK, "application/json", json);
@@ -421,11 +430,15 @@ void RestService::registerRoutes() {
       request->send(HTTP_STATUS_GATEWAY_TIMEOUT, "application/json", "{\"error\":\"no response\"}");
       return;
     }
+    // For a broadcast PING pr.addr is the node that answered first (not 0xFF).
     const PingResult& pr = loraBrokerGetPingResult();
     JsonDocument doc;
-    doc["addr"]    = LORA_ADDR_BROADCAST;
-    doc["boot_id"] = pr.bootId;
-    doc["rtt_ms"]  = pr.rttMs;
+    doc["addr"]   = pr.addr;
+    doc["rtt_ms"] = pr.rttMs;
+    uint32_t bootId = 0;
+    if (DeviceRegistry.getBootId(pr.addr, bootId)) {
+      doc["boot_id"] = bootId;
+    }
     String json;
     serializeJson(doc, json);
     request->send(HTTP_STATUS_OK, "application/json", json);
@@ -641,6 +654,7 @@ void RestService::registerRoutes() {
         obj["boot_id"]      = node.bootId;
         obj["registry_rev"] = node.registryRev;
         obj["last_seen_ms"] = node.lastSeenMs;
+        obj["online"]       = node.online;
         obj["devices"]      = node.deviceCount;
         obj["crawl_pending"]= node.crawlPending;
       }

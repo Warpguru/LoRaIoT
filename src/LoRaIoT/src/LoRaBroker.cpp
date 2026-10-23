@@ -107,7 +107,14 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
                              const void* payload, uint32_t& outSeq) {
   if (brokerMutex == nullptr) return BrokerResult::BUSY;
 
-  xSemaphoreTake(brokerMutex, portMAX_DELAY);
+  // Try-acquire: if the mutex is held, another send is actively building/sending a
+  // frame. Return BUSY immediately rather than blocking — callers must not queue
+  // silently behind an in-flight LoRa request (ESPAsyncWebServer handler would appear
+  // to hang for up to BROKER_DEFAULT_TIMEOUT_MS with no indication).
+  if (xSemaphoreTake(brokerMutex, 0) != pdTRUE) {
+    Log_warn("LoRaBroker::send - rejected, broker mutex held (another send in progress)");
+    return BrokerResult::BUSY;
+  }
 
   if (pendingActive) {
     xSemaphoreGive(brokerMutex);
@@ -237,14 +244,14 @@ void loraBrokerOnResponse(const loraiot_Response& response) {
   }
 }
 
-void loraBrokerOnPingAck(uint32_t bootId, uint32_t rttMs) {
+void loraBrokerOnPingAck(uint8_t srcAddr, uint32_t rttMs) {
   if (brokerMutex == nullptr || responseSem == nullptr) return;
 
   xSemaphoreTake(brokerMutex, portMAX_DELAY);
   bool match = pendingActive && pendingIsPing;
   if (match) {
-    lastPingResult.bootId = bootId;
-    lastPingResult.rttMs  = rttMs;
+    lastPingResult.addr  = srcAddr;
+    lastPingResult.rttMs = rttMs;
     pendingActive = false;
   }
   xSemaphoreGive(brokerMutex);

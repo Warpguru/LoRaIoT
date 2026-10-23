@@ -8,57 +8,21 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Project State
 
-This is an ESP32 embedded firmware project. The Maven/Eclipse Java project shell (`pom.xml`, `.classpath`, `src/main/java/`) is a scaffolding artifact - there is **no Java source code**.
+This is an ESP32 embedded firmware project (Arduino C++, FreeRTOS). The Maven/Eclipse Java project shell (`pom.xml`, `.classpath`, `src/main/java/`) is a scaffolding artifact - there is **no Java source code**.
 
 - **`ESP/`** is a **symlink to a read-only reference project** - never write to anything under `ESP/`. Use it only to copy proven patterns (FreeRTOS task wiring, logging, NVS persistence).
 - All firmware for this project lives at the repository root (`LoRaIoT.ino`, `LoRaIoT.cpp`, `platformio.ini`, `src/`).
+- Project overview, source layout, libraries, and wiring are documented in `README.md`, `platformio.ini`, and `doc/Feasibility.md` - do not duplicate them here.
+- Dependency direction (one-way only): `service` and `LoRaIoT` → `diagnostics` → `util`.
+- `LogBuffer`, `StatusLed`, and `ESPInfo.h` originate from `ESP/SerialController/` - update both if the shared components need changes.
 
-## Stack
+## Build and Tooling Constraints
 
-- **Target hardware:** ESP32 + E220-400T22D LoRa module (Semtech LLCC68, 433 MHz)
-- **Firmware framework:** Arduino (C++), FreeRTOS tasks on ESP32
-- **Build toolchain:** PlatformIO or Arduino IDE (both supported - identical source, different entry-point stubs)
-
-## Libraries (declared in `platformio.ini`)
-
-| Library | Author | Version | Purpose |
-|---|---|---|---|
-| WiFiManager | tzapu | >= 2.0.17 | First-time WiFi captive-portal setup |
-| ArduinoJson | Benoit Blanchon | >= 7.4.3 | JSON (`JsonDocument`, `serializeJson`) |
-| ESPAsyncWebServer | ESP32Async | >= 3.12.1 | Non-blocking HTTP + WebSocket server |
-| AsyncTCP | ESP32Async | >= 3.5.0 | Required dependency of ESPAsyncWebServer |
-
-PlatformIO: `lib_deps` in `platformio.ini` - downloaded automatically.
-Arduino IDE: Sketch -> Include Library -> Manage Libraries, install all four.
-
-## Source Layout
-
-```
-LoRaIoT.ino                    Arduino IDE entry point (stub - delegates to Application)
-LoRaIoT.cpp                    PlatformIO entry point (#ifndef ARDUINO guard)
-platformio.ini
-src/
-  util/src/                    Platform layer - zero project-specific knowledge
-    LogBuffer.h/.cpp           Levelled ring-buffer logger (Log_* macros, NVS persist)
-    StatusLed.h/.cpp           LED state machine BOOTING/NO_DEVICE/READY/FAULT
-    TaskUtils.h                TASK_CREATE macro (single/dual-core portability)
-  diagnostics/src/
-    Diagnostics.h/.cpp         E220 6-step wiring check; diagnosticsLoop()/diagnosticsRequest()
-    ESPInfo.h                  GET /status hardware diagnostics helper
-  LoRaIoT/src/                 Application wiring + LoRaIoT domain model
-    Application.h/.cpp         applicationSetup() / applicationLoop()
-    Server.h/.cpp              WiFiManager, AsyncWebServer, route registration
-    Tier.h/.cpp                Gateway tier (LOCAL/REMOTE); GatewayClass singleton
-    openapi_json.h             OpenAPI 3.0 spec in PROGMEM - source of truth for API
-    index_html.h               PROGMEM macro for browser UI HTML (placeholder)
-  service/src/
-    RestService.h/.cpp         /api/* HTTP handlers - add LoRaIoT endpoints here
-    WebSocketService.h/.cpp    1 s broadcast task + command queue
-```
-
-Dependency direction (one-way only): `service` and `LoRaIoT` → `diagnostics` → `util`.
-
-`LogBuffer`, `StatusLed`, and `ESPInfo.h` originate from `ESP/SerialController/` - update both if the shared components need changes.
+- **Never build automatically.** Neither the Arduino IDE build nor the PlatformIO build can be triggered automatically - the developer runs both manually. The agent must never run `pio run`, `arduino-cli`, or any other build/flash command, and must never add build commands to a hook or any automated step.
+- **Python scripts:** the Python environment is not on the global PATH. Always source the environment setup first:
+  ```
+  cmd /c D:\Development\SetupEnvPython3.cmd && python script.py
+  ```
 
 ## Single-core / Dual-core Portability
 
@@ -107,6 +71,13 @@ StatusLed ledTask (priority 1, tskNO_AFFINITY)
 - **Diagnostics endpoints** (already wired in `Server.cpp`): `GET /api/log`, `PUT /api/log/level`, `GET /status`, `GET /reset`.
 - **Log level** is persisted in NVS (`sc_prefs` / `logLevel`) and survives reboots. Set via captive-portal form or `PUT /api/log/level`.
 
+### Known node addresses (manual testing)
+
+Typical REST API addresses during development (`GET /api/log`, `GET /api/lora/nodes`, etc.):
+
+- LOCAL node: `http://192.168.1.147`
+- REMOTE node: `http://192.168.1.174`
+
 ## Logging
 
 Use the `Log_*` macros - never `Serial.println()` directly in application code:
@@ -122,40 +93,23 @@ Log_trace("fmt", ...);   // level TRACE
 Output format: `[INFO ][Application.cpp:52] message text`
 Remote retrieval: `GET /api/log` (last 128 lines as JSON).
 
-- **Multi-node log comparison** - because standard serial monitors can only show one COM port at a time, you can fetch and compare the live logs of both nodes concurrently via the network API using `curl`:
+- **Multi-node log comparison** - serial monitors can only show one COM port at a time, so fetch and compare the live logs of both nodes via the network API using `curl` (addresses in "Known node addresses" above):
   ```bash
-  curl -s http://<local_node_ip>/api/log
-  curl -s http://<remote_node_ip>/api/log
+  curl -s http://192.168.1.147/api/log
+  curl -s http://192.168.1.174/api/log
   ```
 
-## LoRa / E220 Architecture (from `doc/Feasibility.md`)
+## LoRa / E220 Constraints
 
-Two ESP32 gateway nodes bridge a remote WiFi SoftAP to a local network via a 433 MHz LoRa P2P link:
+Architecture and rationale: `doc/Feasibility.md`. Pin mapping: `doc/Feasibility.md` §3.1 and `README.md` §3. Register values and configuration: named constants in `src/lora/src/LoRaTransport.h` and `doc/Feasibility.md` §3.3.
 
-- **Remote node:** WiFi SoftAP (192.168.4.1) -> payload compressor -> UART -> E220 LoRa TX
-- **Local node:** E220 LoRa RX -> UART -> frame validator -> WiFi STA -> MQTT/REST upstream
-
-Lightweight TCP/IP (DNS, NTP, MQTT, small REST with MTU=190) is viable over the LoRa link. General-purpose IP routing is not. See `doc/Feasibility.md` Appendix A.
-
-## E220 Hardware Wiring (canonical pin mapping)
-
-| E220 Pin | ESP32 GPIO | Note |
-|---|---|---|
-| M0 (1) | GPIO 4 | Output - mode control |
-| M1 (2) | GPIO 2 | Output - mode control |
-| RXD (3) | GPIO 17 (TX2) | UART2 TX from ESP32 |
-| TXD (4) | GPIO 16 (RX2) | UART2 RX to ESP32 |
-| AUX (5) | GPIO 15 | Input - HIGH = module ready (see AUX semantics below) |
-| VCC (6) | 3.3V or 5V | |
-| GND (7) | GND | |
-
-## Critical E220 Firmware Rules
-
+- Lightweight TCP/IP (DNS, NTP, MQTT, small REST with MTU=190) is viable over the LoRa link. General-purpose IP routing is not. See `doc/Feasibility.md` Appendix A.
 - **AUX=HIGH does not mean RF transmission is complete** - the last sub-packet may still be in the air. Correct pattern: poll AUX HIGH -> write frame atomically -> wait AUX LOW -> wait AUX HIGH -> add 50ms guard delay.
 - **Mode switching:** Set M0/M1, then wait for AUX rising edge >= 2 ms before sending any UART data.
 - **Config mode (Mode 3: M1=1, M0=1)** uses fixed **9600 8N1** - switch UART to 9600 before entering, back to 115200 after returning to Mode 0.
 - **Write each frame atomically** - never byte-by-byte with delays; the E220 force-flushes after 2 s of UART inactivity.
 - **Wrong-format config response is `FF FF FF`** - always check and retry.
+- **ADDL = node address** (LOCAL `0x01`, REMOTE `0x02..0xFE`); never `0x0000`/`0xFFFF` (monitor/broadcast).
 
 ## Frame Protocol (spec: `doc/LoRaProtocol.md`)
 
@@ -164,32 +118,21 @@ Lightweight TCP/IP (DNS, NTP, MQTT, small REST with MTU=190) is viable over the 
 ```
 Max UART write = 200 bytes (3 E220 routing bytes + 11 B frame overhead + payload). Types: `0x01` PING, `0x02` BEACON, `0x03` ACK, `0x04` DATA, `0x05` DATA_ACK, `0x06` REQUEST, `0x07` RESPONSE. Payloads are protobuf (nanopb): PING and BEACON share the `Beacon` message, `Data` carries `Measurement{metric_id, value}`, and metric definitions (name, unit, scale) are fetched once with `REQUEST(Describe)` and cached by LOCAL. There is no compile-time metric list and no over-the-air channel change (`doc/LoRaProtocol.md` §10 to §12). Addresses: LOCAL `0x01`, REMOTE `0x02`-`0xFE`, `0xFF` broadcast, `0x00` invalid. The E220 never delivers the sender address, so SRC/DST are in our header.
 
-## Recommended E220 Configuration (max performance)
-
-```cpp
-// C0 + StartAddr(00) + Length(08) + ADDH + ADDL + REG0 + REG1 + REG2 + REG3 + CRYPT_H + CRYPT_L
-// REG0=0xE7: UART=115200 (bits 7-5), 8N1 (bits 4-3 = 00), AirRate=62.5kbps (bits 2-0)
-// REG1=0x00: SubPacket=200B, Power=22dBm
-// REG2=0x17: Channel 23 -> 433.125 MHz
-// REG3=0x40: Fixed transmission (bit 6), RSSI byte off, LBT off
-// ADDL = node address (LOCAL 0x01, REMOTE 0x02..0xFE); never 0x0000/0xFFFF (monitor/broadcast)
-uint8_t configCmd[] = {0xC0, 0x00, 0x08, 0x00, 0x02, 0xE7, 0x00, 0x17, 0x40, 0x00, 0x00};
-```
-
 ## Code Style
 
 - **No underscore-prefixed member variables** - use plain names (`server`, `ws`). Constructor parameters that shadow a member name use a descriptive prefix (e.g. `webServer` instead of `server`).
+- **Never use inline if statements** - always use braces `{}`, even for single-statement bodies:
+  ```cpp
+  // WRONG
+  if (condition) doSomething();
+
+  // CORRECT
+  if (condition) {
+    doSomething();
+  }
+  ```
 - **Constants preferred over hardcoded values** - never use "magic numbers" directly in logic. Define them as descriptive `static constexpr` or inline constants.
 - **Naming semantics for constants** - use uppercase with underscores (e.g. `REG3_MODE_FIXED`, `POLL_INTERVAL_MS`). Group similar registers or settings together with matching prefixes so the codebase is naturally organized.
 - **Self-documenting code** - write inline comments or place constants directly near the code where they are used when required, making it clear what each value represents without external lookup.
 - **Function prototypes belong in header files** - any function called from another translation unit must be declared in the corresponding `.h` file.
 - Use `Log_*` macros everywhere - `Serial.println()` directly is only acceptable in standalone diagnostic sketches, never in firmware library code.
-
-## Build / Flash Commands
-
-PlatformIO (from repository root): `pio run -e esp32dev` / `pio run -e esp32c6 --target upload` / `pio device monitor`
-
-Arduino IDE: Sketch -> Export Compiled Binary -> flash with esptool:
-```
-esptool.exe --chip esp32 --port COM3 --baud 921600 write-flash 0x0 LoRaIoT.ino.merged.bin
-```
