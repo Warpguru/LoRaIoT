@@ -60,8 +60,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
   <h2>LoRa Nodes <span class="note">(LOCAL only)</span></h2>
   <ul>
     <li><a href="/api/lora/nodes"><code>GET /api/lora/nodes</code></a> - list all known remote nodes</li>
-    <li><a href="/api/lora/nodes/devices?addr=2"><code>GET /api/lora/nodes/devices?addr=2</code></a> - device list for node 0x02</li>
-    <li><a href="/api/lora/nodes/metrics?addr=2&amp;device=0"><code>GET /api/lora/nodes/metrics?addr=2&amp;device=0</code></a> - cached metrics for device 0 on node 0x02</li>
+    <li><a href="/api/lora/nodes/snapshot?addr=2"><code>GET /api/lora/nodes/snapshot?addr=2</code></a> - full device + metric snapshot for node 0x02</li>
     <li><a href="/api/lora/nodes/ping?addr=2"><code>GET /api/lora/nodes/ping?addr=2</code></a> - ping node 0x02</li>
     <li><a href="/api/lora/ping"><code>GET /api/lora/ping</code></a> - broadcast ping</li>
     <li><a href="/api/lora/stats"><code>GET /api/lora/stats</code></a> - TX/RX/CRC/ACK counters</li>

@@ -30,8 +30,7 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/api/system/cpu` | `RestService.cpp` | Both | Get active CPU frequency |
 | PUT | `/api/system/cpu` | `RestService.cpp` | Both | Set active CPU frequency (80, 160, 240 MHz) |
 | GET | `/api/lora/nodes` | `RestService.cpp` | LOCAL | List all known remote nodes |
-| GET | `/api/lora/nodes/devices` | `RestService.cpp` | LOCAL | List/lookup devices on a remote node (`?addr=`, `?device=`, `?refresh=true`) |
-| GET | `/api/lora/nodes/metrics` | `RestService.cpp` | LOCAL | Cached or live metric readings (`?addr=`, `?device=`, `?live=true`, `?timeout=ms`) |
+| GET | `/api/lora/nodes/snapshot` | `RestService.cpp` | LOCAL | Unified device + metric snapshot (`?addr=`, `?device=`, `?live=true`, `?timeout=ms`) |
 | GET | `/api/lora/stats` | `RestService.cpp` | LOCAL | LoRa transport TX/RX/CRC/ACK counters |
 | POST | `/api/lora/nodes/echo` | `RestService.cpp` | LOCAL | Echo test to a remote node (`?addr=`) |
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
@@ -340,49 +339,27 @@ slots are taken and a new node appears.
 
 ---
 
-## GET /api/lora/nodes/devices
+## GET /api/lora/nodes/snapshot
 
-Returns cached device definitions for a remote node. LOCAL only.
-
-| Query parameter | Required | Description |
-|---|---|---|
-| `addr` | Yes | Remote node LoRa address (2-254) |
-| `device` | No | Filter to a single device by index (integer) or name |
-| `refresh` | No | `true` to schedule a fresh Describe crawl before responding |
-
-| Status | Meaning |
-|---|---|
-| `200` | OK. Body: `DeviceListResponse` |
-| `400` | `addr` missing or out of range |
-| `404` | Node not found in registry |
-
-```json
-{"addr":2,"registry_rev":3,"crawl_pending":false,"devices":[{"device":0,"name":"RemoteNode","metrics":[{"id":1,"name":"Uptime","unit":"s","scale":1}]},{"device":1,"name":"SensorA","metrics":[{"id":1,"name":"Voltage","unit":"V","scale":100}]}]}
-```
-
----
-
-## GET /api/lora/nodes/metrics
-
-Returns the most recent measurement values for a device. LOCAL only.
+Returns cached device definitions and metric values for one or all nodes in a single call. LOCAL only.
 
 | Query parameter | Required | Description |
 |---|---|---|
-| `addr` | Yes | Remote node LoRa address (2-254) |
-| `device` | Yes | Device index |
-| `live` | No | `true` to send a REQUEST(Read) and wait for a fresh response |
-| `timeout` | No | Timeout in ms for live read (200-10000, default 3000) |
+| `addr` | No | Remote node LoRa address (2-254). Omit for all known nodes |
+| `device` | No | Filter to one device index. Only valid when `addr` is present |
+| `live` | No | `true` to send a REQUEST(Read) before responding. Requires both `addr` and `device` |
+| `timeout` | No | Live read timeout in ms (200-4000, default 3000). Only used with `live=true` |
 
 | Status | Meaning |
 |---|---|
-| `200` | OK. Body: `MetricsResponse` |
-| `400` | Missing or invalid parameters |
-| `404` | Device not found |
-| `503` | LoRa broker busy (another request in flight) |
-| `504` | No response from remote node within timeout |
+| `200` | OK. Body: `NodeSnapshotResponse` |
+| `400` | Invalid parameter combination (e.g. `device` without `addr`, `live=true` without both `addr` and `device`) |
+| `404` | `addr` specified but node not found |
+| `503` | LoRa broker busy (only when `live=true`) |
+| `504` | No response from remote node within timeout (only when `live=true`) |
 
 ```json
-{"addr":2,"device":1,"name":"SensorA","has_data":true,"age_ms":450,"alert":false,"live":false,"values":[{"metric_id":1,"value":335,"name":"Voltage","unit":"V","scale":100}]}
+{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":6,"online":true,"devices":[{"device":1,"name":"PMon A","has_data":true,"age_ms":820,"alert":false,"metrics":[{"id":1,"name":"Voltage","unit":"V","scale":10,"value":2311},{"id":2,"name":"Current","unit":"A","scale":100,"value":380}]},{"device":2,"name":"EnvMon B","has_data":false,"age_ms":0,"alert":false,"metrics":[{"id":1,"name":"Temperature","unit":"C","scale":10,"value":null},{"id":2,"name":"Humidity","unit":"%","scale":10,"value":null}]}]}]}
 ```
 
 ---

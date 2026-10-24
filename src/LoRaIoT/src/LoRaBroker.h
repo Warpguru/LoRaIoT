@@ -32,12 +32,16 @@
  */
 
 // Maximum time an HTTP handler will block waiting for a RESPONSE (ms).
-// ESPAsyncWebServer tasks have a default WDT watchdog of several seconds;
-// this must be shorter than that limit.
+// ESPAsyncWebServer callbacks run on the async_tcp task which is monitored by
+// the ESP Task WDT (default 5000 ms). Every loraBrokerWait() call blocks that
+// task, so the combined wait must stay well below 5000 ms.
+// Default is 3000 ms; the hard ceiling is 4000 ms (1000 ms headroom for the
+// response-building path after the semaphore is given).
 static constexpr uint32_t BROKER_DEFAULT_TIMEOUT_MS = 3000;
 
-// Maximum allowed timeout an API caller may request via ?timeout=ms
-static constexpr uint32_t BROKER_MAX_TIMEOUT_MS = 10000;
+// Hard ceiling for the ?timeout=ms query parameter. Must be less than the
+// ESP Task WDT timeout (5000 ms) minus response-building overhead (~1000 ms).
+static constexpr uint32_t BROKER_MAX_TIMEOUT_MS = 4000;
 
 // Minimum sensible timeout
 static constexpr uint32_t BROKER_MIN_TIMEOUT_MS = 200;

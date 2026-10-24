@@ -253,69 +253,175 @@ void RestService::registerRoutes() {
   // All require tier=LOCAL. Parameters are query strings (see doc/TechDebt.md §2).
   // -------------------------------------------------------------------------
 
-  // GET /api/lora/nodes/devices?addr=2[&device=1][&refresh=true]
-  // Without 'device': returns all devices on the node.
-  // With 'device': returns the single named/indexed device.
-  // With 'refresh=true': schedules a fresh Describe crawl before responding.
-  server->on("/api/lora/nodes/devices", HTTP_GET, [](AsyncWebServerRequest* request) {
-    if (!request->hasArg("addr")) {
-      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"missing param: addr\"}");
+  // GET /api/lora/nodes/snapshot - unified device schema + metric values
+  // Optional params: addr (2-254), device (requires addr), live (requires addr+device),
+  //                  timeout (only with live=true).
+  server->on("/api/lora/nodes/snapshot", HTTP_GET, [](AsyncWebServerRequest* request) {
+    bool hasAddr   = request->hasArg("addr");
+    bool hasDevice = request->hasArg("device");
+    bool liveReq   = request->hasArg("live") && request->arg("live") == "true";
+
+    // Validate parameter combinations
+    if (hasDevice && !hasAddr) {
+      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"device requires addr\"}");
       return;
     }
-    uint8_t addr = (uint8_t)request->arg("addr").toInt();
-    if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
-      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr out of range (2-254)\"}");
-      return;
-    }
-
-    // Optional refresh: schedule a Describe crawl; caller must poll again
-    if (request->hasArg("refresh") && request->arg("refresh") == "true") {
-      describeCrawlerSchedule(addr);
-      Log_info("GET /api/lora/nodes/devices?addr=%u&refresh=true - crawl scheduled", addr);
-    }
-
-    NodeEntry node;
-    if (!DeviceRegistry.getNode(addr, node)) {
-      request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node not found\"}");
+    if (liveReq && (!hasAddr || !hasDevice)) {
+      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"live=true requires both addr and device\"}");
       return;
     }
 
-    // Optional single-device filter
-    bool hasDevFilter = request->hasArg("device");
-    String devVal     = hasDevFilter ? request->arg("device") : String();
+    uint8_t addr      = 0;
+    uint8_t deviceIdx = 0;
+    if (hasAddr) {
+      addr = (uint8_t)request->arg("addr").toInt();
+      if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr out of range (2-254)\"}");
+        return;
+      }
+    }
+    if (hasDevice) {
+      deviceIdx = (uint8_t)request->arg("device").toInt();
+    }
 
-    Log_info("GET /api/lora/nodes/devices?addr=%u", addr);
+    // Live read: send REQUEST(Read) and wait for a fresh DATA response
+    if (liveReq) {
+      uint32_t timeoutMs = BROKER_DEFAULT_TIMEOUT_MS;
+      if (request->hasArg("timeout")) {
+        uint32_t t = (uint32_t)request->arg("timeout").toInt();
+        if (t >= BROKER_MIN_TIMEOUT_MS && t <= BROKER_MAX_TIMEOUT_MS) {
+          timeoutMs = t;
+        }
+      }
+      loraiot_Read readReq = loraiot_Read_init_zero;
+      readReq.device = deviceIdx;
+      uint32_t seq = 0;
+      BrokerResult res = loraBrokerSend(BrokerRequestType::READ, addr, &readReq, seq);
+      if (res == BrokerResult::BUSY) {
+        request->send(HTTP_STATUS_SERVICE_UNAVAILABLE, "application/json", "{\"error\":\"LoRa broker busy\"}");
+        return;
+      }
+      if (loraBrokerWait(timeoutMs) != BrokerResult::OK) {
+        request->send(HTTP_STATUS_GATEWAY_TIMEOUT, "application/json", "{\"error\":\"no response from node\"}");
+        return;
+      }
+      const loraiot_Response& resp = loraBrokerGetResponse();
+      if (resp.status != loraiot_Status_STATUS_OK || resp.which_result != loraiot_Response_data_tag) {
+        request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node returned error\"}");
+        return;
+      }
+      DeviceRegistry.storeData(addr, resp.result.data);
+    }
+
+    Log_info("GET /api/lora/nodes/snapshot addr=%u device=%u live=%d",
+             (unsigned)addr, (unsigned)deviceIdx, (int)liveReq);
+
+    // Build the response: collect the set of NodeEntry records to serialise
     JsonDocument doc;
-    doc["addr"]         = node.addr;
-    doc["registry_rev"] = node.registryRev;
-    doc["crawl_pending"]= node.crawlPending;
-    JsonArray arr = doc["devices"].to<JsonArray>();
-    for (uint8_t i = 0; i < node.deviceCount; i++) {
-      const CachedDevice& cd = node.devices[i];
-      // Filter by device index or name if param given
-      if (hasDevFilter) {
-        bool matchIdx  = (devVal.toInt() == (int)cd.def.device);
-        bool matchName = (devVal == cd.def.name);
-        if (!matchIdx && !matchName) continue;
+    JsonArray nodesArr = doc["nodes"].to<JsonArray>();
+
+    if (hasAddr) {
+      // Single node
+      NodeEntry node;
+      if (!DeviceRegistry.getNode(addr, node)) {
+        request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node not found\"}");
+        return;
       }
-      JsonObject obj = arr.add<JsonObject>();
-      obj["device"] = cd.def.device;
-      obj["name"]   = cd.def.name;
-      JsonArray metrics = obj["metrics"].to<JsonArray>();
-      for (uint8_t m = 0; m < cd.def.metrics_count; m++) {
-        JsonObject mo = metrics.add<JsonObject>();
-        mo["id"]    = cd.def.metrics[m].id;
-        mo["name"]  = cd.def.metrics[m].name;
-        mo["unit"]  = cd.def.metrics[m].unit;
-        mo["scale"] = cd.def.metrics[m].scale;
+      JsonObject nobj = nodesArr.add<JsonObject>();
+      nobj["addr"]         = node.addr;
+      nobj["boot_id"]      = node.bootId;
+      nobj["registry_rev"] = node.registryRev;
+      nobj["online"]       = node.online;
+      JsonArray devArr = nobj["devices"].to<JsonArray>();
+      for (uint8_t i = 0; i < node.deviceCount; i++) {
+        const CachedDevice& cd = node.devices[i];
+        if (hasDevice && cd.def.device != deviceIdx) {
+          continue;
+        }
+        JsonObject dobj = devArr.add<JsonObject>();
+        dobj["device"]   = cd.def.device;
+        dobj["name"]     = cd.def.name;
+        dobj["has_data"] = cd.hasData;
+        dobj["age_ms"]   = cd.hasData ? cd.lastData.age_ms : 0;
+        dobj["alert"]    = cd.hasData && cd.lastData.alert;
+        JsonArray mArr = dobj["metrics"].to<JsonArray>();
+        for (uint8_t m = 0; m < cd.def.metrics_count; m++) {
+          JsonObject mo = mArr.add<JsonObject>();
+          mo["id"]    = cd.def.metrics[m].id;
+          mo["name"]  = cd.def.metrics[m].name;
+          mo["unit"]  = cd.def.metrics[m].unit;
+          mo["scale"] = cd.def.metrics[m].scale;
+          if (cd.hasData) {
+            bool found = false;
+            for (uint8_t vi = 0; vi < cd.lastData.values_count; vi++) {
+              if (cd.lastData.values[vi].metric_id == cd.def.metrics[m].id) {
+                mo["value"] = cd.lastData.values[vi].value;
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              mo["value"] = nullptr;
+            }
+          } else {
+            mo["value"] = nullptr;
+          }
+        }
+      }
+    } else {
+      // All nodes
+      uint8_t addrBuf[DEVICE_REGISTRY_MAX_NODES];
+      uint8_t count = DeviceRegistry.listNodes(addrBuf, DEVICE_REGISTRY_MAX_NODES);
+      for (uint8_t n = 0; n < count; n++) {
+        NodeEntry node;
+        if (!DeviceRegistry.getNode(addrBuf[n], node)) {
+          continue;
+        }
+        JsonObject nobj = nodesArr.add<JsonObject>();
+        nobj["addr"]         = node.addr;
+        nobj["boot_id"]      = node.bootId;
+        nobj["registry_rev"] = node.registryRev;
+        nobj["online"]       = node.online;
+        JsonArray devArr = nobj["devices"].to<JsonArray>();
+        for (uint8_t i = 0; i < node.deviceCount; i++) {
+          const CachedDevice& cd = node.devices[i];
+          JsonObject dobj = devArr.add<JsonObject>();
+          dobj["device"]   = cd.def.device;
+          dobj["name"]     = cd.def.name;
+          dobj["has_data"] = cd.hasData;
+          dobj["age_ms"]   = cd.hasData ? cd.lastData.age_ms : 0;
+          dobj["alert"]    = cd.hasData && cd.lastData.alert;
+          JsonArray mArr = dobj["metrics"].to<JsonArray>();
+          for (uint8_t m = 0; m < cd.def.metrics_count; m++) {
+            JsonObject mo = mArr.add<JsonObject>();
+            mo["id"]    = cd.def.metrics[m].id;
+            mo["name"]  = cd.def.metrics[m].name;
+            mo["unit"]  = cd.def.metrics[m].unit;
+            mo["scale"] = cd.def.metrics[m].scale;
+            if (cd.hasData) {
+              bool found = false;
+              for (uint8_t vi = 0; vi < cd.lastData.values_count; vi++) {
+                if (cd.lastData.values[vi].metric_id == cd.def.metrics[m].id) {
+                  mo["value"] = cd.lastData.values[vi].value;
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                mo["value"] = nullptr;
+              }
+            } else {
+              mo["value"] = nullptr;
+            }
+          }
+        }
       }
     }
+
     String json;
     serializeJson(doc, json);
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
-
-  // GET /api/lora/nodes/metrics - full handler with live=true support registered below in Phase 2e.
 
   // GET /api/lora/stats - transport-layer packet counters.
   server->on("/api/lora/stats", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -478,85 +584,6 @@ void RestService::registerRoutes() {
     uint32_t bootId = 0;
     if (DeviceRegistry.getBootId(pr.addr, bootId)) {
       doc["boot_id"] = bootId;
-    }
-    String json;
-    serializeJson(doc, json);
-    request->send(HTTP_STATUS_OK, "application/json", json);
-  });
-
-  // GET /api/lora/nodes/metrics with live=true - now wired to the broker
-  // Override the 503 stub registered in 2c by re-registering the handler.
-  // ESPAsyncWebServer uses last-registered wins for duplicate paths.
-  server->on("/api/lora/nodes/metrics", HTTP_GET, [](AsyncWebServerRequest* request) {
-    if (!request->hasArg("addr") || !request->hasArg("device")) {
-      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"missing params: addr, device\"}");
-      return;
-    }
-    uint8_t addr      = (uint8_t)request->arg("addr").toInt();
-    uint8_t deviceIdx = (uint8_t)request->arg("device").toInt();
-    if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
-      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr out of range (2-254)\"}");
-      return;
-    }
-
-    bool liveRequested = request->hasArg("live") && request->arg("live") == "true";
-    if (liveRequested) {
-      uint32_t timeoutMs = BROKER_DEFAULT_TIMEOUT_MS;
-      if (request->hasArg("timeout")) {
-        uint32_t t = (uint32_t)request->arg("timeout").toInt();
-        if (t >= BROKER_MIN_TIMEOUT_MS && t <= BROKER_MAX_TIMEOUT_MS) timeoutMs = t;
-      }
-      loraiot_Read readReq = loraiot_Read_init_zero;
-      readReq.device = deviceIdx;
-      uint32_t seq = 0;
-      BrokerResult res = loraBrokerSend(BrokerRequestType::READ, addr, &readReq, seq);
-      if (res == BrokerResult::BUSY) {
-        request->send(HTTP_STATUS_SERVICE_UNAVAILABLE, "application/json", "{\"error\":\"LoRa broker busy\"}");
-        return;
-      }
-      if (loraBrokerWait(timeoutMs) != BrokerResult::OK) {
-        request->send(HTTP_STATUS_GATEWAY_TIMEOUT, "application/json", "{\"error\":\"no response from node\"}");
-        return;
-      }
-      const loraiot_Response& resp = loraBrokerGetResponse();
-      if (resp.status != loraiot_Status_STATUS_OK || resp.which_result != loraiot_Response_data_tag) {
-        request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node returned error\"}");
-        return;
-      }
-      // Store live data in the registry for future cached reads
-      DeviceRegistry.storeData(addr, resp.result.data);
-    }
-
-    // Serve from cache (populated by live read above or previous DATA frame)
-    CachedDevice cd;
-    if (!DeviceRegistry.getDevice(addr, deviceIdx, cd)) {
-      request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"device not found\"}");
-      return;
-    }
-    JsonDocument doc;
-    doc["addr"]     = addr;
-    doc["device"]   = cd.def.device;
-    doc["name"]     = cd.def.name;
-    doc["has_data"] = cd.hasData;
-    doc["age_ms"]   = cd.hasData ? cd.lastData.age_ms : 0;
-    doc["alert"]    = cd.hasData && cd.lastData.alert;
-    doc["live"]     = liveRequested;
-    JsonArray vals  = doc["values"].to<JsonArray>();
-    if (cd.hasData) {
-      for (uint8_t i = 0; i < cd.lastData.values_count; i++) {
-        const loraiot_Measurement& m = cd.lastData.values[i];
-        JsonObject vo = vals.add<JsonObject>();
-        vo["metric_id"] = m.metric_id;
-        vo["value"]     = m.value;
-        for (uint8_t mi = 0; mi < cd.def.metrics_count; mi++) {
-          if (cd.def.metrics[mi].id == m.metric_id) {
-            vo["name"]  = cd.def.metrics[mi].name;
-            vo["unit"]  = cd.def.metrics[mi].unit;
-            vo["scale"] = cd.def.metrics[mi].scale;
-            break;
-          }
-        }
-      }
     }
     String json;
     serializeJson(doc, json);

@@ -435,48 +435,27 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
-    "/api/lora/nodes/devices": {
+    "/api/lora/nodes/snapshot": {
       "get": {
         "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
-        "summary": "List or lookup devices on a remote node",
-        "description": "Returns cached device definitions for the node. Filter by `device` (index or name). Add `refresh=true` to trigger a Describe crawl (async; poll again after ~3 s).",
+        "summary": "Unified device schema and metric snapshot",
+        "description": "Returns cached device definitions and metric values for one or all nodes in a single call. Use `addr` to target one node, `device` to filter to one device, `live=true` (requires `addr`+`device`) to send a REQUEST(Read) before responding.",
         "parameters": [
-          { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
-          { "name": "device",  "in": "query", "required": false, "schema": { "type": "string" }, "description": "Device index (integer) or device name to filter by" },
-          { "name": "refresh", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to trigger a fresh Describe crawl" }
+          { "name": "addr",    "in": "query", "required": false, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address. Omit for all known nodes" },
+          { "name": "device",  "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Device index filter. Only valid when addr is present" },
+          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to send REQUEST(Read) before responding. Requires both addr and device" },
+          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 4000, "default": 3000 }, "description": "Live read timeout in ms (max 4000 - constrained by async_tcp WDT). Only used with live=true" }
         ],
         "responses": {
           "200": {
             "description": "OK",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceListResponse" } } }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeSnapshotResponse" } } }
           },
-          "400": { "description": "addr missing or out of range", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "404": { "description": "Node not found in registry",  "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    },
-    "/api/lora/nodes/metrics": {
-      "get": {
-        "x-tier": "LOCAL",
-        "tags": ["LoRa-Nodes"],
-        "summary": "Get cached or live metric readings for a device",
-        "description": "Returns cached measurements for the device. Add `live=true` to send a REQUEST(Read) and wait for a fresh response (blocks up to `timeout` ms, 504 on no reply).",
-        "parameters": [
-          { "name": "addr",    "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
-          { "name": "device",  "in": "query", "required": true,  "schema": { "type": "integer" }, "description": "Device index" },
-          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to force a live REQUEST(Read) instead of returning cached data" },
-          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 10000, "default": 3000 }, "description": "Timeout in ms for live read (only used when live=true)" }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK - cached or live measurements",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MetricsResponse" } } }
-          },
-          "400": { "description": "Missing or invalid parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "404": { "description": "Device not found",             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "503": { "description": "LoRa broker busy",             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "504": { "description": "No response from remote node within timeout", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+          "400": { "description": "Invalid parameter combination", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "addr specified but node not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No response from remote node within timeout (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
@@ -680,53 +659,41 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/NodeEntry" } }
         }
       },
-      "MetricDefinition": {
+      "NodeSnapshotResponse": {
         "type": "object",
         "properties": {
-          "id":    { "type": "integer", "description": "Metric ID, unique within the device (1-based)" },
-          "name":  { "type": "string",  "description": "Human-readable metric name, e.g. Voltage (max 12 chars)" },
-          "unit":  { "type": "string",  "description": "Unit string, e.g. V (max 5 chars, may be empty)" },
-          "scale": { "type": "integer", "description": "Divisor: real_value = raw_value / scale. 0 treated as 1" }
+          "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/SnapshotNode" } }
         }
       },
-      "DeviceDefinition": {
+      "SnapshotNode": {
         "type": "object",
         "properties": {
-          "device":  { "type": "integer", "description": "Device index (0 = the REMOTE node itself, 1-4 = SoftAP sensors)" },
-          "name":    { "type": "string",  "description": "Device name, e.g. Sensor A (max 12 chars)" },
-          "metrics": { "type": "array",   "items": { "$ref": "#/components/schemas/MetricDefinition" } }
+          "addr":         { "type": "integer" },
+          "boot_id":      { "type": "integer" },
+          "registry_rev": { "type": "integer" },
+          "online":       { "type": "boolean" },
+          "devices":      { "type": "array", "items": { "$ref": "#/components/schemas/SnapshotDevice" } }
         }
       },
-      "DeviceListResponse": {
+      "SnapshotDevice": {
         "type": "object",
         "properties": {
-          "addr":          { "type": "integer" },
-          "registry_rev":  { "type": "integer" },
-          "crawl_pending": { "type": "boolean" },
-          "devices":       { "type": "array", "items": { "$ref": "#/components/schemas/DeviceDefinition" } }
-        }
-      },
-      "MeasurementValue": {
-        "type": "object",
-        "properties": {
-          "metric_id": { "type": "integer", "description": "Matches MetricDefinition.id" },
-          "value":     { "type": "integer", "description": "Scaled integer value. Divide by scale for real value" },
-          "name":      { "type": "string",  "description": "Metric name (from definition, if available)" },
-          "unit":      { "type": "string",  "description": "Unit string (from definition, if available)" },
-          "scale":     { "type": "integer", "description": "Scale divisor (from definition, if available)" }
-        }
-      },
-      "MetricsResponse": {
-        "type": "object",
-        "properties": {
-          "addr":     { "type": "integer" },
           "device":   { "type": "integer" },
           "name":     { "type": "string" },
-          "has_data": { "type": "boolean", "description": "false if no measurement has ever been received for this device" },
-          "age_ms":   { "type": "integer", "description": "Milliseconds since the data was last updated (0 = just now)" },
-          "alert":    { "type": "boolean", "description": "true if the last frame carried an alert flag" },
-          "live":     { "type": "boolean", "description": "true if this response came from a live REQUEST(Read)" },
-          "values":   { "type": "array",   "items": { "$ref": "#/components/schemas/MeasurementValue" } }
+          "has_data": { "type": "boolean" },
+          "age_ms":   { "type": "integer" },
+          "alert":    { "type": "boolean" },
+          "metrics":  { "type": "array", "items": { "$ref": "#/components/schemas/SnapshotMetric" } }
+        }
+      },
+      "SnapshotMetric": {
+        "type": "object",
+        "properties": {
+          "id":    { "type": "integer" },
+          "name":  { "type": "string" },
+          "unit":  { "type": "string" },
+          "scale": { "type": "integer" },
+          "value": { "type": "integer", "nullable": true, "description": "null when has_data is false for this device" }
         }
       },
       "LoRaStatsResponse": {

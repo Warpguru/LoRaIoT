@@ -362,7 +362,7 @@ UNDISCOVERED -> beacon every 5 s  (self-healing)
 **Expected Outcomes:**
 - REMOTE `beaconTask`: beacons at 5 s rate until the first frame from LOCAL; then 60 s; reverts to 5 s after 2 min of silence
 - LOCAL `GET /api/lora/nodes` returns the live registry: `[{"addr":2,"lastSeen":1234567,"online":true,"bootId":...}]`
-- Live read: `GET /api/lora/nodes/metrics?addr=2&device=1&live=true&timeout=ms` sends `REQUEST(Read)` and returns 200, 404 (unknown/purged node) or 504 (LoRa timeout); the cached variant (without `live`) returns the last values with their age
+- Live read: `GET /api/lora/nodes/snapshot?addr=2&device=1&live=true&timeout=ms` sends `REQUEST(Read)` and returns 200, 404 (unknown/purged node) or 504 (LoRa timeout); the cached variant (without `live`) returns the last values with their age
 - LOCAL fills its definition cache with the `Describe` crawl (device 0, 1, 2, ... until `STATUS_BAD_REQUEST`) when a BEACON shows a new `boot_id` or `registry_rev`
 - REMOTE WiFi SoftAP (`LoRaIoT-Remote`, 192.168.4.1) starts after provisioning; IoT devices POST sensor data to `POST /api/sensor/data` on REMOTE, which keeps the latest values per device name (device and metric tables, `Beacon.registry_rev`); a registration that would make a `Device` exceed one frame is rejected with HTTP 400
 - REMOTE may send an unsolicited `DATA_ACK` alert when a configured threshold is exceeded; LOCAL ACKs it and updates its cache
@@ -376,7 +376,7 @@ UNDISCOVERED -> beacon every 5 s  (self-healing)
 - [x] REMOTE: implement sensor registry (`SensorRegistryClass` in `src/LoRaIoT/src/SensorRegistry.h/.cpp`) - stores schemas and readings, validates 186B payload capacity, assigns stable metric IDs and increments `registry_rev`
 - [x] LOCAL: implement definition cache (`DeviceRegistryClass` in `src/LoRaIoT/src/DeviceRegistry.h/.cpp`) - caches device definitions and measurements per node; clears cache on `boot_id` changes
 - [x] LOCAL: implement the request/response broker towards `loraTask` (`src/LoRaIoT/src/LoRaBroker.h/.cpp`) - REST handlers post requests, wait on semaphore with configurable timeout, never touch Serial2 directly
-- [x] LOCAL: register `GET /api/lora/nodes`, `.../nodes/devices`, `.../nodes/metrics` (cached and `live=true`), `POST .../nodes/data` in `RestService.cpp`
+- [x] LOCAL: register `GET /api/lora/nodes`, `.../nodes/snapshot` (unified schema+values, cached and `live=true`, `refresh=true`), `POST .../nodes/data` in `RestService.cpp`
 - [x] Update `openapi_json.h` and `doc/RestApi.md` for all registered endpoints (source of truth)
 - [x] LOCAL: handle BEACON reception in `Application.cpp` `onLoRaReceive` - decodes `Beacon`, updates node metadata in `DeviceRegistry`, flags pending crawl
 - [x] REMOTE: handle `REQUEST(Read)` -> `RESPONSE(Data)` and `REQUEST(Describe)` -> `RESPONSE(Device)` / `STATUS_BAD_REQUEST` - `sendDescribeResponse()` and `sendReadResponse()` added to `Application.cpp`; REQUEST case dispatches on `which_command`; device 0 returns `BAD_REQUEST` (REMOTE node itself not in `SensorRegistry`, signals end-of-list when no SoftAP devices registered)

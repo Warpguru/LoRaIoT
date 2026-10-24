@@ -549,10 +549,9 @@ Phase 2 stub pending the frame protocol layer.
 | Method | Endpoint | LoRa action |
 |---|---|---|
 | `GET` | `/api/lora/nodes` | Registry read (no LoRa) |
-| `GET` | `/api/lora/nodes/devices?addr=` | Cached device definitions (no LoRa); `?refresh=true` re-runs the Describe crawl (§12) |
-| `GET` | `/api/lora/nodes/devices?addr=&device=` | Single device lookup by index or name (no LoRa) |
-| `GET` | `/api/lora/nodes/metrics?addr=&device=` | Cached measurements with age (no LoRa) |
-| `GET` | `/api/lora/nodes/metrics?addr=&device=&live=true&timeout=ms` | `REQUEST(Read)` -> wait for `RESPONSE(Data)` via LoRaBroker |
+| `GET` | `/api/lora/nodes/snapshot` | All nodes: cached schema + values (no LoRa) |
+| `GET` | `/api/lora/nodes/snapshot?addr=` | One node: cached schema + values; `?device=` filters to one device; `?refresh=true` re-runs the Describe crawl (§12) |
+| `GET` | `/api/lora/nodes/snapshot?addr=&device=&live=true&timeout=ms` | `REQUEST(Read)` -> wait for `RESPONSE(Data)` via LoRaBroker |
 | `GET,POST` | `/api/lora/nodes/ping?addr=` | `PING` -> wait for `ACK`; returns RTT and `boot_id` |
 | `GET` | `/api/lora/ping` | Broadcast `PING` (dst=0xFF) -> first `ACK` |
 | `POST` | `/api/lora/nodes/echo?addr=` | `REQUEST(Echo)` -> wait for `RESPONSE(Echo)`; REMOTE reverses the text |
