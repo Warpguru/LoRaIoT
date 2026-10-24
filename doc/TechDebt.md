@@ -713,3 +713,144 @@ existing `pause()` / `resume()` sequence), storing the last reading in a member
 variable exposed via `GET /api/lora/stats`. No new task is needed. Effort is low
 (~30-40 lines). Defer until after Milestone 6 so it does not interfere with the
 DATA / DATA_ACK / REQUEST / RESPONSE flow currently under development.
+
+---
+
+## 8. Unified node snapshot endpoint: replace `devices` and `metrics`
+
+### Problem
+
+Two LOCAL-only endpoints expose different halves of the same cached record:
+
+| Endpoint | Returns | Optional parameters |
+|---|---|---|
+| `GET /api/lora/nodes/devices?addr=2` | Cached schema: device names, metric names, units, scales | `device` filter, `refresh=true` (triggers a Describe crawl) |
+| `GET /api/lora/nodes/metrics?addr=2&device=1` | Last cached measurement values for one device, merged with schema | `live=true`, `timeout=ms` (sends `REQUEST(Read)` over LoRa) |
+
+Live `devices` response:
+
+```json
+{"addr":2,"registry_rev":6,"crawl_pending":false,"devices":[
+  {"device":1,"name":"PMon A","metrics":[
+    {"id":1,"name":"Voltage","unit":"V","scale":10},
+    {"id":2,"name":"Current","unit":"A","scale":100}
+  ]},
+  {"device":2,"name":"EnvMon B","metrics":[
+    {"id":1,"name":"Temperature","unit":"C","scale":10},
+    {"id":2,"name":"Humidity","unit":"%","scale":10}
+  ]}
+]}
+```
+
+Live `metrics` response:
+
+```json
+{"addr":2,"device":1,"name":"PMon A","has_data":true,"age_ms":1634619,"alert":false,"live":true,
+ "values":[
+   {"metric_id":1,"value":2311,"name":"Voltage","unit":"V","scale":10},
+   {"metric_id":2,"value":380, "name":"Current","unit":"A","scale":100}
+ ]}
+```
+
+### The overlap
+
+Both handlers read from the same `DeviceRegistry` cache. Each `CachedDevice`
+(`DeviceRegistry.h`) holds the schema (`def`) and the measurements (`lastData`)
+as sibling fields of one struct. The two endpoints are therefore two views of
+one record, split along a boundary that does not exist in the data.
+
+Consequences:
+
+- To learn what a sensor reported and what it is called, a caller must invoke
+  both APIs and join the results by hand.
+- The `metrics` endpoint already performs that join internally: for every
+  value it looks up `cd.def.metrics[mi]` to fill `name`, `unit` and `scale`.
+  The schema is repeated on every value, so the `metrics` response is a
+  superset of the `devices` response for a single device.
+- `metrics` is limited to one device per call. Reading a whole node takes one
+  request per device, each of which can only be answered from cache.
+
+### Resource pressure
+
+`openapi_json.h` is already close to the PROGMEM limits tracked in §6. Each
+endpoint carries a full path object with its parameter array and `$ref`
+response schemas. Replacing two path objects with one reduces flash size and
+removes a schema that has to be kept in sync with the other.
+
+### Proposed replacement
+
+```
+GET /api/lora/nodes/snapshot
+```
+
+All parameters are optional:
+
+| Parameter | Required | Description |
+|---|---|---|
+| `addr` | No | Filter to one node (2-254). Omit for all known nodes |
+| `device` | No | Filter to one device index. Omit for all devices on the matched node(s) |
+| `live` | No | `true` = send `REQUEST(Read)` before responding. Only valid when both `addr` and `device` are specified |
+| `timeout` | No | Live read timeout in ms (200-10000, default 3000). Only used with `live=true` |
+| `refresh` | No | `true` = schedule a Describe crawl before responding. Only valid when `addr` is specified |
+
+The response unifies schema and value per metric, for all devices and all
+nodes in one call:
+
+```json
+{"nodes":[
+  {"addr":2,"boot_id":305419896,"registry_rev":6,"online":true,
+   "devices":[
+     {"device":1,"name":"PMon A","has_data":true,"age_ms":820,"alert":false,
+      "metrics":[
+        {"id":1,"name":"Voltage","unit":"V","scale":10,"value":2311},
+        {"id":2,"name":"Current","unit":"A","scale":100,"value":380}
+      ]},
+     {"device":2,"name":"EnvMon B","has_data":false,"age_ms":0,"alert":false,
+      "metrics":[
+        {"id":1,"name":"Temperature","unit":"C","scale":10,"value":null},
+        {"id":2,"name":"Humidity","unit":"%","scale":10,"value":null}
+      ]}
+   ]}
+]}
+```
+
+`value` is `null` when `has_data` is `false` for that device (no DATA frame has
+been received yet).
+
+### Constraints
+
+- **`live=true` requires both `addr` and `device`.** The LoRaBroker allows only
+  one in-flight request at a time (half-duplex LoRa), so a live read cannot fan
+  out across devices or nodes. Omitting either parameter with `live=true`
+  returns `400`.
+- **`device` without `addr` is rejected with `400`.** Device indices are only
+  meaningful within a node, so the request is ambiguous.
+- **`refresh=true` without `addr` is rejected with `400`.** The caller must say
+  which node to crawl.
+
+### HTTP status codes
+
+| Status | Condition |
+|---|---|
+| `200` | OK |
+| `400` | Invalid parameter combination (see constraints) |
+| `404` | `addr` specified but node not found |
+| `503` | LoRa broker busy (only when `live=true`) |
+| `504` | No response from remote node within timeout (only when `live=true`) |
+
+### Endpoints to remove
+
+`GET /api/lora/nodes/devices` and `GET /api/lora/nodes/metrics` are both
+removed. No firmware component calls either endpoint internally; every
+reference is documentation, the OpenAPI spec, or the index HTML page.
+
+Changes required when implementing:
+
+- Remove both handlers from `src/service/src/RestService.cpp`.
+- Remove both path objects from `src/LoRaIoT/src/openapi_json.h`.
+- Replace both `<li>` links in `index_html.h` with a single link to
+  `GET /api/lora/nodes/snapshot`.
+- Update `doc/RestApi.md`: remove the two sections, add one new section.
+- Update the "Full Phase 2 URL reference" table in §2 of this document.
+
+---

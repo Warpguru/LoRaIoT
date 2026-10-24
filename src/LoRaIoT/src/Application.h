@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../lora/src/nanopb/loraiot.pb.h"
+
 /**
  * Application.h - LoRaIoT application entry points.
  *
@@ -17,3 +19,11 @@ void applicationLoop();
  * the first diagnosticsLoop() run; never reset.
  */
 bool loraIsReady();
+
+/**
+ * Encode a loraiot_Data payload as a DATA frame and enqueue it for
+ * transmission to dstAddr. Fire-and-forget: posts to the LoRa TX queue
+ * and returns immediately. Safe to call from any task or core.
+ * No-op if LoRa transport is not yet initialised.
+ */
+void loraPushData(uint8_t dstAddr, const loraiot_Data& data);

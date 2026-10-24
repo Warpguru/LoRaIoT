@@ -128,14 +128,14 @@ void DeviceRegistryClass::markCrawlComplete(uint8_t addr, uint32_t finalRev) {
   xSemaphoreGive(mutex);
 }
 
-void DeviceRegistryClass::storeData(uint8_t addr, const loraiot_Data& data) {
-  if (mutex == nullptr) return;
+bool DeviceRegistryClass::storeData(uint8_t addr, const loraiot_Data& data) {
+  if (mutex == nullptr) return false;
   xSemaphoreTake(mutex, portMAX_DELAY);
 
   int8_t idx = findNode(addr);
   if (idx < 0) {
     xSemaphoreGive(mutex);
-    return;
+    return false;
   }
 
   NodeEntry& node = nodes[idx];
@@ -144,11 +144,13 @@ void DeviceRegistryClass::storeData(uint8_t addr, const loraiot_Data& data) {
       node.devices[i].lastData    = data;
       node.devices[i].hasData     = true;
       node.devices[i].lastDataMs  = millis();
-      break;
+      xSemaphoreGive(mutex);
+      return true;
     }
   }
 
   xSemaphoreGive(mutex);
+  return false;
 }
 
 // markSeen() is called for EVERY valid frame from a node (not only BEACON), so the

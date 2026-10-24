@@ -9,8 +9,10 @@
  *
  * Triggered whenever DeviceRegistry.updateNodeMeta() returns true (boot_id
  * changed or registry_rev advanced on a remote node). Iterates Describe
- * requests (device indices 0, 1, 2, ...) until it receives STATUS_BAD_REQUEST,
- * which signals the end of the device list. Stores each Device definition in
+ * requests (device indices 1, 2, ...) until it receives STATUS_BAD_REQUEST,
+ * which signals the end of the device list. Device index 0 is reserved for
+ * the node itself on REMOTE and always returns BAD_REQUEST, so crawling starts
+ * at DESCRIBE_FIRST_DEVICE_IDX (1). Stores each Device definition in
  * DeviceRegistry and calls markCrawlComplete() when finished.
  *
  * Integration points (called from Application.cpp):
@@ -31,6 +33,11 @@ static constexpr uint32_t DESCRIBE_RESPONSE_TIMEOUT_MS = 3000;
 
 // Maximum retries for a single Describe request before aborting the crawl
 static constexpr uint8_t DESCRIBE_MAX_RETRIES = 3;
+
+// First device index to query during a Describe crawl.
+// Device index 0 is reserved for the REMOTE node itself (always BAD_REQUEST);
+// SoftAP-registered devices are assigned indices starting at 1.
+static constexpr uint8_t DESCRIBE_FIRST_DEVICE_IDX = 1;
 
 /**
  * Schedule a Describe crawl for the given node address.

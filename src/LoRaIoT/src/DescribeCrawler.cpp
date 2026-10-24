@@ -16,7 +16,7 @@
  *
  * State machine overview:
  *
- *   IDLE ──(crawlPending detected)──► REQUESTING
+ *   IDLE ──(crawlPending detected)──► REQUESTING (device=DESCRIBE_FIRST_DEVICE_IDX)
  *   REQUESTING ──(RESPONSE received)──► REQUESTING (next device idx)
  *   REQUESTING ──(STATUS_BAD_REQUEST)──► IDLE (crawl complete)
  *   REQUESTING ──(timeout / max retries)──► IDLE (crawl aborted)
@@ -118,7 +118,7 @@ void describeCrawlerLoop() {
       if (DeviceRegistry.getNode(nodeAddrs[i], node) && node.crawlPending) {
         ctx.state       = CrawlState::REQUESTING;
         ctx.targetAddr  = nodeAddrs[i];
-        ctx.deviceIdx   = 0;
+        ctx.deviceIdx   = DESCRIBE_FIRST_DEVICE_IDX;
         ctx.retryCount  = 0;
         ctx.sentAtMs    = millis();
         ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);

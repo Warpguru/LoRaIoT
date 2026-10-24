@@ -93,6 +93,44 @@ static void sendPingAck(const LoRaFrame& ping) {
   }
 }
 
+// ---- loraPushData ----------------------------------------------------------
+
+/**
+ * Encode a loraiot_Data payload as a DATA frame and enqueue it for
+ * transmission to dstAddr. Fire-and-forget: posts to the LoRa TX queue
+ * and returns immediately. Safe to call from any task or core.
+ * No-op if LoRa transport is not yet initialised.
+ */
+void loraPushData(uint8_t dstAddr, const loraiot_Data& data) {
+  if (!loraIsReady()) {
+    Log_debug("loraPushData: LoRa not ready, dropping DATA to 0x%02X", dstAddr);
+    return;
+  }
+
+  uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
+  pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
+  if (!pb_encode(&pbOut, loraiot_Data_fields, &data)) {
+    Log_error("loraPushData: Data encode failed for dst=0x%02X: %s", dstAddr, PB_GET_ERROR(&pbOut));
+    return;
+  }
+
+  LoRaFrame frame;
+  frame.ver  = LORA_PROTOCOL_VER;
+  frame.type = LoRaFrameType::DATA;
+  frame.src  = LoRaConfig.getAddress();
+  frame.dst  = dstAddr;
+  frame.seq  = loraNextSeq();
+  frame.len  = static_cast<uint8_t>(pbOut.bytes_written);
+  memcpy(frame.payload, payloadBuf, frame.len);
+
+  if (LoRaTransport.sendFrame(frame)) {
+    Log_info("DATA pushed to 0x%02X device=%u values=%u seq=%u",
+             dstAddr, data.device, data.values_count, frame.seq);
+  } else {
+    Log_error("loraPushData: sendFrame failed for dst=0x%02X", dstAddr);
+  }
+}
+
 // ---- REQUEST/RESPONSE helpers ----------------------------------------------
 
 /**
@@ -480,6 +518,31 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         }
       } else {
         Log_debug("onLoRaReceive: REMOTE received unexpected BEACON from 0x%02X", frame.src);
+      }
+      break;
+
+    case LoRaFrameType::DATA:
+      if (isLocal) {
+        loraiot_Data data = loraiot_Data_init_zero;
+        pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
+        if (!pb_decode(&pbIn, loraiot_Data_fields, &data)) {
+          Log_warn("DATA from 0x%02X seq=%u - decode failed: %s",
+                   frame.src, frame.seq, PB_GET_ERROR(&pbIn));
+          break;
+        }
+        if (DeviceRegistry.storeData(frame.src, data)) {
+          Log_info("DATA from 0x%02X device=%u values=%u stored",
+                   frame.src, data.device, data.values_count);
+        } else {
+          // Device schema not yet known - crawl immediately so the next DATA
+          // frame is not dropped too. The current frame's values are lost but
+          // the window shrinks from the BEACON interval to one crawl round-trip.
+          describeCrawlerSchedule(frame.src);
+          Log_info("DATA from 0x%02X device=%u: schema unknown, Describe crawl scheduled",
+                   frame.src, data.device);
+        }
+      } else {
+        Log_debug("onLoRaReceive: REMOTE received unexpected DATA from 0x%02X", frame.src);
       }
       break;
 

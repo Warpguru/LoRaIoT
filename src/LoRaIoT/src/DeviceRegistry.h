@@ -102,7 +102,12 @@ class DeviceRegistryClass {
   /**
    * Store a Data measurement snapshot for a specific device on a node.
    */
-  void storeData(uint8_t addr, const loraiot_Data& data);
+  /**
+   * Store the most recent measurement values for a device.
+   * Returns true if the device was found and data stored.
+   * Returns false if the node or device index is not yet known (schema not crawled).
+   */
+  bool storeData(uint8_t addr, const loraiot_Data& data);
 
   /**
    * Record that any valid frame was received from addr: updates lastSeenMs and sets

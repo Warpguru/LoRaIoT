@@ -13,6 +13,7 @@
 #include "../../LoRaIoT/src/LoRaBroker.h"
 #include "../../lora/src/LoRaTransport.h"
 #include "../../lora/src/nanopb/pb_encode.h"
+#include "../../LoRaIoT/src/Application.h"
 
 /**
  * RestService.cpp - LoRaIoT REST API handlers.
@@ -587,6 +588,10 @@ void RestService::registerRoutes() {
       JsonDocument respDoc;
       JsonArray accepted = respDoc["accepted"].to<JsonArray>();
       JsonArray rejected = respDoc["rejected"].to<JsonArray>();
+      // Track unique device indices that had at least one accepted metric so we
+      // can push each one to LOCAL over LoRa after the loop.
+      uint32_t pushedDevIdx[SENSOR_REGISTRY_MAX_DEVICES];
+      uint8_t  pushedCount = 0;
       for (JsonPair kv : metrics) {
         const char* metricName = kv.key().c_str();
         int32_t value = kv.value()["value"].as<int32_t>();
@@ -599,8 +604,26 @@ void RestService::registerRoutes() {
           a["metric"]    = metricName;
           a["device_idx"]= devIdx;
           a["metric_id"] = metricId;
+          // Record devIdx if not already in the list.
+          bool seen = false;
+          for (uint8_t i = 0; i < pushedCount; i++) {
+            if (pushedDevIdx[i] == devIdx) {
+              seen = true;
+              break;
+            }
+          }
+          if (!seen && pushedCount < SENSOR_REGISTRY_MAX_DEVICES) {
+            pushedDevIdx[pushedCount++] = devIdx;
+          }
         } else {
           rejected.add(metricName);
+        }
+      }
+      // Fire-and-forget LoRa push for each unique accepted device.
+      for (uint8_t i = 0; i < pushedCount; i++) {
+        loraiot_Data loraData = loraiot_Data_init_zero;
+        if (SensorRegistry.toProtoData(pushedDevIdx[i], loraData)) {
+          loraPushData(LORA_DEFAULT_ADDR_LOCAL, loraData);
         }
       }
       respDoc["registry_rev"] = SensorRegistry.getRegistryRev();
