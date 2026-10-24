@@ -714,3 +714,294 @@ variable exposed via `GET /api/lora/stats`. No new task is needed. Effort is low
 (~30-40 lines). Defer until after Milestone 6 so it does not interfere with the
 DATA / DATA_ACK / REQUEST / RESPONSE flow currently under development.
 
+
+## 8. Push-only data flow and control data from LOCAL to REMOTE
+
+Status: decided in discussion, not implemented. This chapter is the input for an implementation plan.
+Nothing described here exists in the code yet unless it says so.
+
+### 8.1 Why this change
+
+1. **Polling is wasteful.** The planned cyclic read task (`REQUEST(Read)` every 5 s per device) sends two
+   frames per device per interval, even when nothing changed. LoRa is slow and half duplex, so this
+   traffic costs a lot and gives little. The old plan file that described it (`ms6-plan.md`) was outdated
+   and has been deleted. A new implementation plan is to be derived from this chapter (section 8.13).
+2. **Push already carries the news.** A node that has a new value sends it. Every frame also counts as
+   "I am alive" (`DeviceRegistry.markSeen()`), so a pushing node never needs a keep-alive PING either.
+3. **LOCAL must also send data to REMOTE.** Example: set the output voltage of a DC/DC converter that
+   charges a battery. REMOTE cannot drive such hardware itself (ESP32 resources are too small). A
+   second ESP joins the access point that REMOTE opens and does the real sensor and control work. So
+   REMOTE only stores and serves the values. It does not know what they mean.
+4. **The old model is one-directional.** Today only REMOTE defines devices and LOCAL caches them. For
+   control data the roles are reversed, so the design must become symmetric.
+
+### 8.2 Decisions
+
+| # | Decision |
+|---|---|
+| D1 | No cyclic polling of values, in either direction. The cyclic read task is not built. |
+| D2 | Push (`DATA`, `DATA_ACK`) is the normal way to move values, in both directions. |
+| D3 | `REQUEST(Describe)` stays. It is "ask when you do not know", not polling. It costs zero frames in steady state. It now works in both directions. |
+| D4 | `REQUEST(Read)` stays only as an on-demand fetch (REST `live=true`). Nothing calls it on a timer. It must also work in both directions. |
+| D5 | The node that creates a device is its **owner**. The owner defines it, assigns indices and pushes the values. The other node is the **cache side**. It learns the definitions with Describe and the values from pushes. |
+| D6 | Direction fixes the kind of data. From REMOTE to LOCAL it is **sensor data**. From LOCAL to REMOTE it is **control data**. No new field in the frame is needed. |
+| D7 | The same JSON has two meanings. `{"Voltage":{"value":335,"scale":100}}` posted on REMOTE means "I measured 3.35 V". Posted on LOCAL it means "set 3.35 V". Only the receiving client understands the meaning. |
+| D8 | **No NVS writes for any of this.** Neither LOCAL nor REMOTE stores registries or caches in flash. All tables are RAM only. |
+| D9 | LOCAL is the owner of the desired control state. It re-pushes control values to a REMOTE that has rebooted (section 8.7). |
+| D10 | Protocol-level validation (min, max, writable flags) is not added. REMOTE does not understand the values, so it cannot validate them. LOCAL's REST layer validates the request. The consumer on REMOTE side decides what is safe. |
+
+### 8.3 The four registries
+
+Each node needs one **owner** table and one **cache** table.
+
+| Role | Holds | On REMOTE | On LOCAL |
+|---|---|---|---|
+| Owner | Devices and metrics this node defines, plus their current values. REST creates entries. Answers Describe and Read. Counts `registry_rev`. | `SensorRegistry` (exists, `src/LoRaIoT/src/SensorRegistry.h`) | **`ControlRegistry` (new)** |
+| Cache | Definitions and values learned from the peer (Describe and pushed `Data`). | **control cache (new)** | `DeviceRegistry` (exists, `src/LoRaIoT/src/DeviceRegistry.h`) |
+
+Notes:
+
+- **Naming.** "ControlRegistry" would mean the owner on LOCAL but the cache on REMOTE if one name is
+  used for both. Name the classes by role (for example `ControlRegistry` for the LOCAL owner and
+  `ControlCache` for the REMOTE cache) so the code is not confusing. The final names are an open point
+  (section 8.12).
+- **Same shape.** All four hold devices, metrics, values and a revision. Reuse one implementation where
+  possible instead of writing a second copy. Today the owner (`SensorRegistry`, plain structs) and the
+  cache (`DeviceRegistry`, nanopb structs) are written differently, so some refactoring is needed.
+- **LOCAL's owner table is per target node.** Each REMOTE gets its own control devices. The table is
+  keyed by node address. REMOTE's cache has only one peer (LOCAL).
+- **No name clash.** `Data.device = 1` from REMOTE and `Data.device = 1` from LOCAL are different
+  devices. The frame header `SRC` says who owns it, so each cache is keyed by the owner's address.
+- **Device indices.** Keep the existing rule: index 1..N for registered devices. Index 0 is reserved and
+  answers `BAD_REQUEST` (the crawler starts at `DESCRIBE_FIRST_DEVICE_IDX = 1`). `doc/LoRaProtocol.md`
+  section 12 and its exchange diagram still say the crawl starts at 0. Fix that text while updating the
+  spec.
+- **Size limit.** A `Device` definition must fit one frame (186 B payload). `SensorRegistry` already
+  checks this when a metric is registered. `ControlRegistry` must do the same check, because LOCAL
+  answers Describe with the same message.
+- **Capacity.** `DEVICE_REGISTRY_MAX_NODES` is 3 and a `NodeEntry` is about 2 KB. A per-node control
+  table on LOCAL and a new cache on REMOTE add RAM. Measure free heap (`GET /status`) before choosing
+  the constants. Stack risk: `getNode()` copies a whole `NodeEntry` (about 2 KB) by value, and
+  `loraTransportTask` has a 4096 B stack. The same risk applies to the new tables, so do not copy whole
+  entries on small task stacks (use accessors that return only what is needed).
+
+### 8.4 Who talks to whom
+
+```mermaid
+sequenceDiagram
+    participant S as Sensor ESP (on REMOTE AP)
+    participant R as REMOTE
+    participant L as LOCAL
+    participant C as REST client on LOCAL
+
+    Note over S,C: Sensor data (REMOTE owns the definition)
+    S->>R: POST /api/lora/sensor/data
+    R->>L: DATA (device, metric, value)
+    Note over L: DeviceRegistry (cache). Unknown device: Describe crawl on R
+
+    Note over S,C: Control data (LOCAL owns the definition)
+    C->>L: POST /api/lora/nodes/control?addr=2
+    L->>R: DATA_ACK (device, metric, value)
+    R-->>L: ACK
+    L-->>C: 200 (504 if no ACK)
+    Note over R: control cache. Unknown device: Describe crawl on L
+    S->>R: GET /api/lora/nodes/control
+    R-->>S: values with age_ms
+```
+
+### 8.5 Describe in both directions
+
+Today only LOCAL asks and only REMOTE answers. After the change both can do both.
+
+What exists and what changes:
+
+| Part | Today | After |
+|---|---|---|
+| `DescribeCrawler` | Documented as "Only exists on LOCAL". One global state. Called from LOCAL branches only. | Runs on both nodes. State is per peer (LOCAL: up to 3 peers, REMOTE: 1). |
+| `onLoRaReceive` REQUEST case | REMOTE answers Describe, Read and Echo. LOCAL logs "unexpected REQUEST". | Both nodes answer Describe, Read and Echo from their own owner table. |
+| `onLoRaReceive` RESPONSE case | LOCAL only. Describe results go to the crawler, Echo and Data go to the broker. | Same routing on both nodes. |
+| `onLoRaReceive` DATA case | LOCAL only. Unknown device: value dropped, crawl scheduled. | Both nodes. Same behavior. |
+| Crawl trigger | LOCAL sees a new `boot_id` or `registry_rev` in a BEACON. | Same, plus the trigger in section 8.6 for REMOTE. |
+
+Rules that do not change: a lost frame is only a timeout and is retried (`DESCRIBE_RESPONSE_TIMEOUT_MS`,
+`DESCRIBE_MAX_RETRIES`). `STATUS_BAD_REQUEST` ends the crawl. Late responses to an earlier retry must be
+ignored (check `response.request_seq` against the in-flight SEQ). This check is not implemented yet:
+`DescribeCrawler.cpp` stores `inFlightSeq` but `describeCrawlerOnResponse()` does not compare it.
+
+Both nodes may crawl each other at the same moment. This is allowed (section 9 of the protocol: a waiting
+node still sends replies), and neither side blocks. It must be tested.
+
+### 8.6 How REMOTE learns that LOCAL's control definitions changed
+
+BEACON goes only from REMOTE to LOCAL. LOCAL needs a way to say "my control definitions changed".
+
+- The `Beacon` message already has the optional field `registry_rev`. LOCAL's **PING** carries it for
+  the target node: the revision of the control table for that REMOTE.
+- This needs no change in the `.proto` file. It does change the rule in `doc/LoRaProtocol.md` section 10
+  ("a PING sets only `boot_id`"). Change the rule and also the check "by TYPE" in the firmware.
+- LOCAL sends a PING in reply to every BEACON (`PingTask`). That covers the normal case and a reboot of
+  REMOTE.
+- When the control table of a node changes (new device or new metric, or a changed unit or scale), LOCAL
+  sends a PING to that node at once (not only at the next beacon).
+- REMOTE compares the `registry_rev` from the PING with the revision it crawled last. A new value or a
+  new LOCAL `boot_id` starts a crawl (same logic as `DeviceRegistry.updateNodeMeta()` has today).
+- A new device or metric inside a `Data` frame also starts a crawl, but a changed unit or scale of a
+  known metric is only noticed through the revision. That is why the revision is needed.
+
+### 8.7 Pushing values after Describe, and reboots
+
+Problem today: when `Data` arrives for an unknown device, the values are thrown away and a crawl starts
+(`Application.cpp`, DATA case). The first value is lost.
+
+Rule: **after the owner has answered a `Describe` for a device, it pushes the current values of that
+device** (a normal `DATA`). The cache side then has definition and values together. This works in both
+directions: LOCAL for control, REMOTE for sensors. It also solves the lost first value.
+
+Reboot cases:
+
+| Event | What happens |
+|---|---|
+| **REMOTE reboots** | Its RAM caches are empty. It sends the fast BEACON. LOCAL sees a new `boot_id` (`updateNodeMeta()` clears the cached sensor data of that node and schedules a crawl) and replies with a PING that carries the control revision. REMOTE has nothing cached, so it crawls LOCAL. LOCAL answers each Describe and then pushes the values of that device (rule above). **This is the "LOCAL re-pushes all control values after a new REMOTE `boot_id`" rule from the discussion.** It must happen after REMOTE knows the definitions, otherwise REMOTE drops the values and only starts a crawl. |
+| **LOCAL reboots** | The control table is RAM only, so it is empty. Index numbers are assigned in order of the first POST, so they may differ from before. REMOTE learns about the reboot from the new LOCAL `boot_id` (LOCAL pings at boot and after every BEACON). **REMOTE must clear the whole control cache for LOCAL**, because old index numbers may now mean other devices. The consumer then sees "no control data" and must fail safe. The REST client must POST the control values again. LOCAL does not restore them (D8). |
+| **A REMOTE was offline but did not reboot** | Pushes sent while it was away were lost. When LOCAL sees the node come back (`markSeen()` returns true, log line "is back online"), LOCAL re-pushes all control values for that node. |
+| **A control push gets no ACK** | The POST is answered with 504. LOCAL keeps the value in its owner table as the desired state and re-pushes it on the events above. |
+
+Where the `boot_id` of LOCAL is tracked on REMOTE: `LoRaState` already detects a changed `boot_id` per
+`SRC` and resets sequence state. Add a hook there (or in `onLoRaReceive`) that clears the control cache.
+
+### 8.8 Control push and acknowledgement
+
+- Control values go LOCAL to REMOTE as `DATA_ACK`. Retry rule from the protocol: 4 attempts, 200 ms
+  timeout, random backoff.
+- `ACK` means only "REMOTE received and stored it". It does not mean the converter changed. For real
+  confirmation the sensor ESP should post the measured value back to REMOTE as a normal sensor metric
+  (for example a metric `VoltageActual`), which reaches LOCAL as sensor data. Keep setpoint and measured
+  value as two separate metrics.
+- Values must be absolute (set to 3.35 V), never relative (add 0.1 V). A retry or a duplicate is then
+  harmless.
+- **Code gap:** `DATA_ACK` is only an enum value (`LoRaFrame.h`) and appears in the stats comment. No
+  code sends it with retries, receives it, or sends the `ACK` for it. The existing `ACK` handling is for
+  PING only. Build the sender (with retry), the receiver and the `ACK` reply on both nodes. Check how
+  `LoRaBroker` (single in-flight slot, types PING, Echo, Read) should wait for it: either add a broker
+  request type or give the control push its own wait.
+- Duplicate handling already exists (section 6 of the protocol): a duplicate `DATA_ACK` is ACKed again
+  but not processed again.
+- The POST handler runs on Core 0 and must not touch Serial2. It posts the work and waits on a
+  semaphore (the existing pattern with `LoRaBroker`).
+
+### 8.9 REST API changes
+
+There are no existing callers, so renames are free. The API is deliberately the same on both nodes:
+the same paths exist on LOCAL and REMOTE, and `sensor` / `control` always names the **kind of data**
+(sensor data flows REMOTE to LOCAL, control data flows LOCAL to REMOTE). What differs is the role of the
+node for that kind (owner or cache, section 8.3). Nothing fundamental prevents this. The handler for a
+shared path branches on the tier, as `POST /api/sensor/data` already does today with its
+"only available on REMOTE" check.
+
+| Node | Method and path | Role | Meaning |
+|---|---|---|---|
+| LOCAL | `GET /api/lora/nodes/sensor` | cache | Renamed from `/api/lora/nodes/snapshot`. Cached sensor data of the REMOTE nodes (`?addr=`, `?device=`, `?live=true`, `?refresh=true` as before). |
+| LOCAL | `GET /api/lora/nodes/control` | owner | Content of `ControlRegistry` (own control devices and values), `?addr=` selects the node. |
+| LOCAL | `POST /api/lora/nodes/control?addr=` | owner | Create or update control devices and push the values to node `addr`. Same JSON as `POST /api/lora/sensor/data`. Answers after the `ACK` arrived, or 504. |
+| REMOTE | `POST /api/lora/sensor/data` | owner | Renamed from `/api/sensor/data`. The sensor ESP posts measurements. |
+| REMOTE | `GET /api/lora/nodes/sensor` | owner | Content of `SensorRegistry` (own sensor devices and values). |
+| REMOTE | `GET /api/lora/nodes/control` | cache | Content of the control cache: definitions, values and `age_ms` per value. This is what the sensor/control ESP reads. |
+
+Same path, same meaning of the data kind, opposite role:
+
+| Path | On LOCAL | On REMOTE |
+|---|---|---|
+| `GET /api/lora/nodes/sensor` | cache of the REMOTE nodes' sensor data | own `SensorRegistry` |
+| `GET /api/lora/nodes/control` | own `ControlRegistry` | cache of LOCAL's control data |
+
+Query parameters per node:
+
+- `addr`: LOCAL only (selects the REMOTE node; without it all nodes are returned, as the snapshot does
+  today). REMOTE has exactly one peer (LOCAL) and no `addr`; a request that sends it gets 400.
+- `device`: on both nodes. On LOCAL it needs `addr`.
+- `live=true` (sends `REQUEST(Read)`) and `refresh=true` (re-runs the Describe crawl): only on the **cache**
+  view of each node, that is LOCAL `.../sensor` and REMOTE `.../control`. On an owner view they get 400,
+  because the node already holds the truth. This needs the broker (single in-flight request slot) and the
+  crawler to exist on REMOTE as well (section 8.5), and LOCAL to answer `Read` (decision D4).
+- The JSON layout of the answer should be identical on both nodes so a client can reuse its parser.
+  REMOTE adds the link indicator described in section 8.10.
+
+Notes:
+
+- The word `nodes` in the path means "the peers of this node". On REMOTE it is a bit odd (one peer), but
+  it keeps the path identical on both sides, which was the goal.
+- The two POST paths are not identical (`/api/lora/nodes/control?addr=` on LOCAL, `/api/lora/sensor/data`
+  on REMOTE). LOCAL has to name its target node, REMOTE always sends to LOCAL. This is accepted.
+- All manual-use endpoints must be `GET` (browser address bar). The REMOTE views and the LOCAL control
+  view are `GET`. The two POSTs have a body, so they cannot be `GET`.
+- Documents to update in the same change as the code: `src/LoRaIoT/src/openapi_json.h` (source of truth),
+  `doc/RestApi.md`, `doc/OpenAPI.md`, the links in `index_html.h`, and every mention of
+  `/api/sensor/data` or `/api/lora/nodes/snapshot` in `doc/LoRaProtocol.md` (section 17) and the older
+  plan files (`RestPlan.md`, `loraiot-plan.md`). The URL table in chapter 2 of this file lists the old
+  `POST /api/sensor/data` row and is history only.
+- Code that has to move: the route `/api/sensor/data` and the `snapshot` route in
+  `src/service/src/RestService.cpp`, and the new routes belong in `RestService::registerRoutes()`.
+
+Rules for the POST on LOCAL:
+
+- Validate the JSON (device is a string, metrics is an object, name lengths 12 and 5, scale not zero).
+- `addr` must be a known node, otherwise 404.
+- Registration fails with 400 if the encoded `Device` would not fit one frame (same as REMOTE).
+- Existing `POST /api/lora/nodes/data?addr=` is a raw test endpoint that queues a `Data` frame. Decide
+  whether it stays (as a debug tool) or is removed because control replaces it (section 8.12).
+
+### 8.10 What REMOTE returns to the consumer
+
+REMOTE does not know what a value means, so it must give the consumer what it needs to decide:
+
+- For every value: `age_ms` (time since it was received).
+- A link indicator, for example the time since the last frame from LOCAL.
+- No control data (empty answer) after a LOCAL reboot until LOCAL pushes again (section 8.7).
+
+The consumer must define its own fail-safe: if data is too old or missing, return the converter to a safe
+voltage. REMOTE cannot do this because it does not know which value controls what.
+
+### 8.11 Risks and limits
+
+- **Security.** `SRC` can be spoofed. The only protection is the E220 key, which is a deterrent
+  (protocol section 16). That was acceptable for telemetry. With control data a third party could change
+  an output. Plan authentication (for example a signature over the control payload) before using this on
+  real hardware.
+- **Random access.** With push in both directions, any node may transmit at any time. There is no
+  scheduler. Collisions are handled only by the backoff rules. Keep control updates rare and keep sensor
+  reporting rules (minimum change, minimum and maximum interval) on the sensor ESP or REMOTE.
+- **Lost plain `DATA`.** A lost sensor update stays lost until the next change. Use `DATA_ACK` for values
+  that must arrive, and let the sender repeat the last value at a slow heartbeat.
+- **Removing a device** is not learned from pushes. A reboot clears everything. A registry that never
+  forgets entries stays correct for the lifetime of one boot.
+- **RAM.** See the capacity note in section 8.3.
+
+### 8.12 Open points to decide before coding
+
+1. Final class names for the four tables (suggestion: role names, section 8.3).
+2. (Resolved) REMOTE paths are the same as on LOCAL, see section 8.9.
+3. Keep or remove the raw `POST /api/lora/nodes/data?addr=`.
+4. Keep `REQUEST(Read)` for on-demand use (current proposal: keep, section D4).
+5. Whether the control POST waits for the `ACK` (current proposal: yes, 504 on timeout).
+6. Capacity constants for the new tables after measuring free heap.
+
+### 8.13 Suggested implementation order
+
+1. Update the spec: `doc/LoRaProtocol.md` sections 5, 8, 9 (remove "LOCAL may poll cyclically"), 10 (PING
+   carries `registry_rev`), 12 (both directions, crawl start at 1), 15 (diagrams) and 17 (REST). Update
+   `src/lora/proto/loraiot.proto` comments only (no field changes expected).
+2. Write a new implementation plan file derived from this chapter. (`ms6-plan.md` was outdated and has
+   been deleted.)
+3. Shared registry implementation: owner and cache, then `ControlRegistry` (LOCAL) and the cache
+   (REMOTE).
+4. `DATA_ACK` sender with retry, receiver and `ACK` reply (both nodes).
+5. Make the crawler per peer and role independent. Remove the `isLocal` limits in `onLoRaReceive`.
+   Answer Describe and Read on LOCAL.
+6. PING with `registry_rev`, immediate PING on control change, REMOTE crawl trigger, LOCAL `boot_id`
+   handling on REMOTE (clear cache).
+7. Push values after answering Describe, and re-push on "back online".
+8. REST (section 8.9): rename `snapshot` to `nodes/sensor`, rename `/api/sensor/data` to
+   `/api/lora/sensor/data`, add `nodes/control` GET and POST on LOCAL, add `nodes/sensor` and
+   `nodes/control` GET on REMOTE, then update OpenAPI, `RestApi.md` and `index_html.h`.
+9. Tests with two nodes: sensor and control round trip, reboot of each side, both nodes crawling at once,
+   lost frames, and the consumer view after a LOCAL reboot.
