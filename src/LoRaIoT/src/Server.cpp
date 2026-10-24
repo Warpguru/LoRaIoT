@@ -40,6 +40,7 @@ static constexpr size_t PORTAL_TIER_HTML_SIZE       = 280;  // Custom HTML of th
 static constexpr size_t PORTAL_LEVEL_HTML_SIZE      = 350;  // Custom HTML of the log level parameter
 static constexpr size_t PORTAL_NAME_VALUE_LEN       = 8;    // Max value length of the tier / log level parameter
 static constexpr size_t PORTAL_CHANNEL_VALUE_LEN    = 4;    // Max value length of the channel parameter (incl. terminator)
+static constexpr size_t PORTAL_AIR_RATE_VALUE_LEN   = 8;    // Max value length of the air rate parameter ("62.5k" + terminator)
 static constexpr size_t PORTAL_KEY_VALUE_LEN        = 6;    // Max value length of the loraKey parameter (0-65535 + terminator)
 static constexpr size_t PORTAL_KEY_HTML_SIZE        = 220;  // Custom HTML of the loraKey parameter
 static constexpr size_t PORTAL_ADDR_VALUE_LEN       = 4;    // Max value length of the loraAddr parameter (2-254 + terminator)
@@ -155,14 +156,18 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   Log_info("GET /openapi/ui");
   String ssid = WiFi.SSID();   // extracted to named local so .c_str() is safe
-  char buf[1300];  // template ~1170 B static + up to ~75 B dynamic = ~1245 B worst-case
-  snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
+  char buf[1300];  // the size actually needed is logged below after the snprintf
+  const int written = snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
            ssid.c_str(),           // %s SSID in banner
            Gateway.getTierName(),  // %s tier in banner
            (unsigned)LoRaConfig.getKey(),               // %u key (decimal) in banner
            LoRaConfig.getKey() ? "on" : "off",          // %s key state in banner
+           LoRaTransportClass::airRateName(LoRaConfig.getAirRate()),   // %s air data rate in banner
            __DATE__ " " __TIME__,  // %s build timestamp in banner
            Gateway.getTierName()); // %s TIER JS variable for x-tier filter
+  // snprintf returns the length it wanted to write, so written >= buffer size means truncation.
+  Log_info("GET /openapi/ui: banner needs %d of %u buffer bytes%s",
+           written, (unsigned)sizeof(buf), (written >= (int)sizeof(buf)) ? " (TRUNCATED)" : "");
   request->send(HTTP_STATUS_OK, "text/html", buf);
 }
 
@@ -280,6 +285,25 @@ void setupServer() {
   WiFiManagerParameter channelParam("loraChannel", "", channelStr, PORTAL_CHANNEL_VALUE_LEN, channelCustomHtml.c_str());
   wm.addParameter(&channelParam);
 
+  // -- LoRa air data rate selector (value = label from LoRaTransportClass::airRateName, e.g. "62.5k") --
+  String airRateOptions = "";
+  for (uint8_t i = 0; i < LoRaTransportClass::AIR_RATE_COUNT; i++) {
+    const char* rateName = LoRaTransportClass::airRateName(static_cast<LoRaTransportClass::AirRate>(i));
+    const char* sel = (LoRaConfig.getAirRate() == i) ? " selected" : "";
+    char opt[PORTAL_CHANNEL_OPTION_SIZE];
+    snprintf(opt, sizeof(opt), "<option value='%s'%s>%s bps%s</option>", rateName, sel, rateName,
+             (i == LoRaTransportClass::AIR_RATE_DEFAULT) ? " (default)" : "");
+    airRateOptions += opt;
+  }
+  String airRateCustomHtml = " type='hidden'><br/>"
+                             "<label for='loraAirRate'>LoRa Air Data Rate (both nodes must match; lower = longer range)</label>"
+                             "<select id='loraAirRateSelect' onchange=\"document.getElementById('loraAirRate').value=this.value\">";
+  airRateCustomHtml += airRateOptions;
+  airRateCustomHtml += "</select";
+  WiFiManagerParameter airRateParam("loraAirRate", "", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()),
+                                    PORTAL_AIR_RATE_VALUE_LEN, airRateCustomHtml.c_str());
+  wm.addParameter(&airRateParam);
+
    // -- LoRa encryption key (ddmmy format; 0 = disabled) --
   // Pre-fill with the persisted key so re-provisioning shows the current value.
   // The field is type='number' - the browser enforces 0-65535 numerically.
@@ -315,7 +339,7 @@ void setupServer() {
   WiFiManagerParameter addrParam("loraAddr", "", addrStr, PORTAL_ADDR_VALUE_LEN, addrCustomHtml);
   wm.addParameter(&addrParam);
 
-  auto saveCallback = [&tierParam, &levelParam, &channelParam, &keyParam, &addrParam]() {
+  auto saveCallback = [&tierParam, &levelParam, &channelParam, &airRateParam, &keyParam, &addrParam]() {
     const char* chosenTier    = tierParam.getValue();
     const char* chosenLevel   = levelParam.getValue();
     const char* chosenChannel = channelParam.getValue();
@@ -344,6 +368,20 @@ void setupServer() {
         Log_info("LoRa channel set from portal to %d", LoRaConfig.getChannel());
       } else {
         Log_warn("Portal returned invalid LoRa channel '%s' - ignored", chosenChannel);
+      }
+    }
+
+    // LoRa air data rate - the transport is not started yet while the portal runs,
+    // so LoRaTransport.begin() picks the saved rate up later.
+    const char* chosenAirRate = airRateParam.getValue();
+    if (chosenAirRate != nullptr && chosenAirRate[0] != '\0') {
+      LoRaTransportClass::AirRate rate;
+      if (LoRaTransportClass::airRateFromName(chosenAirRate, rate)) {
+        LoRaConfig.setAirRate(rate);
+        LoRaConfig.save();
+        Log_info("LoRa air rate set from portal to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+      } else {
+        Log_warn("Portal returned unknown LoRa air rate '%s' - ignored", chosenAirRate);
       }
     }
 

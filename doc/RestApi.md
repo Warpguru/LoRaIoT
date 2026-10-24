@@ -23,6 +23,8 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/api/diag/e220` | `RestService.cpp` | Both | Request an E220 wiring and register check |
 | GET | `/api/lora/channel` | `RestService.cpp` | Both | Get active LoRa channel |
 | PUT | `/api/lora/channel` | `RestService.cpp` | Both | Set active LoRa channel |
+| GET | `/api/lora/airrate` | `RestService.cpp` | Both | Get active LoRa air data rate |
+| PUT | `/api/lora/airrate` | `RestService.cpp` | Both | Set LoRa air data rate (applied immediately) |
 | GET | `/api/lora/address` | `RestService.cpp` | Both | Get active LoRa address |
 | PUT | `/api/lora/address` | `RestService.cpp` | REMOTE | Set active LoRa address |
 | GET | `/api/system/cpu` | `RestService.cpp` | Both | Get active CPU frequency |
@@ -53,7 +55,7 @@ Returns ESP32 hardware diagnostics as JSON (fields come from `fillESPInfo()` in 
 
 Clears the stored WiFi credentials and every application setting persisted in NVS, then reboots into the
 WiFiManager captive portal. The erased settings are the gateway tier, the log level, the LoRa channel,
-the LoRa address and the CPU frequency (namespaces `TIER_NVS_NAMESPACE`, `LOG_NVS_NAMESPACE` and
+the LoRa air rate, the LoRa address and the CPU frequency (namespaces `TIER_NVS_NAMESPACE`, `LOG_NVS_NAMESPACE` and
 `LORA_NVS_NAMESPACE`, all currently `sc_prefs`). After the reboot the node uses the built-in defaults until
 it is provisioned again.
 
@@ -189,6 +191,48 @@ Allowed values: integer between 0 and 31 (inclusive).
 |---|---|
 | `200` | Channel changed. Body: `{"channel":24}` |
 | `400` | Body is not valid JSON, `channel` is missing, or out of range. |
+
+---
+
+## GET /api/lora/airrate
+
+Returns the currently configured LoRa air data rate. This endpoint is available on both LOCAL and REMOTE instances.
+
+**Response:** `200 application/json`
+
+```json
+{"airRate":"62.5k"}
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | OK. |
+
+---
+
+## PUT /api/lora/airrate
+
+Sets the LoRa air data rate. The rate is persisted in NVS (as the `LoRaTransportClass::AirRate` enum ordinal, key `loraAirRate`)
+and applied immediately: `loraTransportTask` rewrites the E220 registers (Mode 3, about 100 ms), so no reboot is needed.
+Frames sent or received during that moment are lost. This endpoint is available on both LOCAL and REMOTE instances.
+The default is `62.5k`; lower rates give more range but a longer air time.
+
+Both nodes must use the same rate, otherwise they cannot hear each other. Change REMOTE first, then LOCAL: the link
+re-establishes with the next BEACON/PING after both match. If the order is reversed, REMOTE is unreachable over LoRa and must be changed through its own WiFi address.
+The existing timeouts (for example `LORA_REQUEST_TIMEOUT_MS`) are not scaled with the rate; at the slow rates they may need manual tuning.
+
+**Request body:** `application/json`
+
+```json
+{"airRate":"9.6k"}
+```
+
+Allowed values: `"2.4k"`, `"4.8k"`, `"9.6k"`, `"19.2k"`, `"38.4k"`, `"62.5k"`.
+
+| Status | Meaning |
+|---|---|
+| `200` | Air rate changed. Body: `{"airRate":"9.6k"}` |
+| `400` | Body is not valid JSON, `airRate` is missing, or not one of the allowed values. |
 
 ---
 

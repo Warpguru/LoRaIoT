@@ -625,3 +625,91 @@ before spending effort on any of them.
    (a) drop OTA and use a single `factory` app of ~3.9 MB, giving up rollback and
    remote updates, or (b) move to a module with 8 or 16 MB flash (for example a
    WROOM-32E variant in the same footprint) and re-do the table.
+
+## 7. RSSI ambient noise polling via periodic Mode 3 entry
+
+### Background
+
+The E220-400T22D exposes two RSSI-related features (both currently disabled):
+
+| Feature | Register | Current state |
+|---|---|---|
+| RSSI ambient noise | REG1 bit 5 | Disabled (`REG1_RSSI_NOISE_DISABLE = 0x00`) |
+| RSSI byte on receive | REG3 bit 7 | Disabled (`REG3_RSSI_BYTE_DISABLE = 0x00`) |
+
+True SNR is not available - the E220 is a transparent UART bridge and does not surface the
+per-packet SNR figure that the internal SX126x chip computes. Only modules with a direct SPI
+interface expose that register. The closest practical substitute is the ambient noise floor,
+readable via the `C0 C1 C2 C3` command in Mode 3, converted as `dBm = -(256 - byte)`.
+
+### What periodic polling would require
+
+To sample the ambient noise floor (e.g. every 60 seconds) the loraTask must:
+
+1. Drain and pause normal operation (existing `pause()` / `resume()` pattern already used by Diagnostics).
+2. Switch to Mode 3 and rebaud UART2 to 9600.
+3. Issue the 4-byte read command and consume the 1-byte response.
+4. Rebaud to 115200 and switch back to Mode 0.
+5. Resume normal receive/transmit.
+
+```mermaid
+sequenceDiagram
+    participant Task as loraTask
+    participant E220
+    participant UART as UART2
+
+    Note over Task: Every ~60 s timer fires
+    Task->>E220: Set M0=HIGH, M1=HIGH (→ Mode 3)
+    E220-->>Task: AUX goes LOW (busy / reconfiguring)
+    E220-->>Task: AUX rises HIGH (Mode 3 ready) ← up to AUX_TIMEOUT_MS (1000 ms)
+    Task->>Task: delay GUARD_SETTLE_DELAY_MS (5 ms)
+    Task->>UART: LoRaSerial.end() + LoRaSerial.begin(9600)
+    Task->>E220: Write command: C0 C1 C2 C3
+    E220-->>UART: 1-byte response (noise floor)
+    Task->>Task: dBm = -(256 - byte)
+    Task->>UART: LoRaSerial.end() + LoRaSerial.begin(115200)
+    Task->>E220: Set M0=LOW, M1=LOW (→ Mode 0)
+    E220-->>Task: AUX rises HIGH (Mode 0 ready)
+    Task->>Task: delay GUARD_SETTLE_DELAY_MS (5 ms)
+    Note over Task: LoRa receive/transmit resumes
+```
+
+### Timing breakdown
+
+All constants are defined in `src/lora/src/LoRaTransport.h`.
+
+| Step | Time | Constant |
+|---|---|---|
+| Mode 3 entry: AUX settles | typically a few ms, up to 1000 ms worst case | `AUX_TIMEOUT_MS` |
+| Guard settle after AUX | 5 ms | `GUARD_SETTLE_DELAY_MS` |
+| UART rebaud to 9600 + 4-byte write | ~1 ms | - |
+| Read 1-byte response | ~1 ms | - |
+| UART rebaud to 115200 | ~1 ms | - |
+| Mode 0 re-entry: AUX settles + guard | 5 ms guard | `GUARD_SETTLE_DELAY_MS` |
+| **Total realistic** | **~15-25 ms** | - |
+| **Total worst-case** | **~2 s** (two AUX timeouts, fault condition) | `AUX_TIMEOUT_MS` x2 |
+
+At a 60-second polling interval the radio blackout duty cycle is approximately 0.03%
+(25 ms / 60 000 ms), well within the existing ACK retry and timeout margins.
+
+### Key constraints
+
+- **REG1 bit 5 does not need to be permanently set.** The `C0 C1 C2 C3` read command
+  returns the noise floor regardless of that bit. No persistent register change is
+  needed, which avoids a flash write on every poll cycle.
+- **UART2 single-owner rule.** `loraTask` must own the entire sequence. The
+  existing `pause()` / `resume()` pair (already used by Diagnostics for the boot
+  self-test) provides the correct pattern.
+- **Radio is deaf during the blackout.** Any BEACON or PING arriving in the ~15-25 ms
+  window is lost. This is acceptable at a 1-minute interval but must be documented
+  for anyone shortening the poll period significantly.
+- **Both nodes should poll independently.** There is no cross-node correlation benefit;
+  each node's noise floor reflects its own RF environment.
+
+### Recommendation
+
+Implement as a background periodic poll inside `loraTask` (or a thin wrapper on the
+existing `pause()` / `resume()` sequence), storing the last reading in a member
+variable exposed via `GET /api/lora/stats`. No new task is needed. Effort is low
+(~30-40 lines). Defer until after Milestone 6 so it does not interfere with the
+DATA / DATA_ACK / REQUEST / RESPONSE flow currently under development.

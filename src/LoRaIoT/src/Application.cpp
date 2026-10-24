@@ -546,8 +546,9 @@ void applicationSetup() {
     } else {
       pingTaskBegin();
     }
-    Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X",
-             Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress());
+    Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X airRate=%s",
+             Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress(),
+             LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
     // LoRa module is configured and online; transition the status LED to READY
     statusLed.setState(LedState::READY);
   } else {

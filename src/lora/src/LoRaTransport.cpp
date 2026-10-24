@@ -18,6 +18,41 @@ LoRaTransportClass LoRaTransport;
 
 static constexpr size_t HEX_LOG_BUFFER_SIZE = 128;  // Output buffer for logHex()
 
+// Label and REG0 bits of every AirRate, indexed by the enum ordinal (which is what is stored in NVS).
+struct AirRateInfo {
+  const char* name;
+  uint8_t     reg0;
+};
+static constexpr AirRateInfo AIR_RATE_TABLE[LoRaTransportClass::AIR_RATE_COUNT] = {
+    {"2.4k",  LoRaTransportClass::REG0_AIR_DATA_RATE_2K4},    // AIR_RATE_2K4
+    {"4.8k",  LoRaTransportClass::REG0_AIR_DATA_RATE_4K8},    // AIR_RATE_4K8
+    {"9.6k",  LoRaTransportClass::REG0_AIR_DATA_RATE_9K6},    // AIR_RATE_9K6
+    {"19.2k", LoRaTransportClass::REG0_AIR_DATA_RATE_19K2},   // AIR_RATE_19K2
+    {"38.4k", LoRaTransportClass::REG0_AIR_DATA_RATE_38K4},   // AIR_RATE_38K4
+    {"62.5k", LoRaTransportClass::REG0_AIR_DATA_RATE_62K5},   // AIR_RATE_62K5
+};
+
+const char* LoRaTransportClass::airRateName(AirRate rate) {
+  return AIR_RATE_TABLE[rate].name;
+}
+
+uint8_t LoRaTransportClass::airRateReg0(AirRate rate) {
+  return AIR_RATE_TABLE[rate].reg0;
+}
+
+bool LoRaTransportClass::airRateFromName(const char* name, AirRate& out) {
+  if (name == nullptr) {
+    return false;
+  }
+  for (uint8_t i = 0; i < AIR_RATE_COUNT; i++) {
+    if (strcmp(AIR_RATE_TABLE[i].name, name) == 0) {
+      out = static_cast<AirRate>(i);
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Reusable helper to format and log a byte array in hexadecimal.
  */
@@ -30,19 +65,14 @@ static void logHex(const char* prefix, const uint8_t* data, size_t len) {
   Log_info("%s %s", prefix, hex);
 }
 
-void LoRaTransportClass::begin() {
-  Log_info("Initializing LoRa transport layer infrastructure...");
-
-  // 1. Configure E220 hardware control pins
-  pinMode(PIN_M0, OUTPUT);
-  pinMode(PIN_M1, OUTPUT);
-  pinMode(PIN_AUX, INPUT);
-
-  // 2. Perform E220 permanent configuration in Mode 3 (Deep Sleep / Config)
-  Log_info("Configuring E220 module registers permanently in Mode 3...");
+bool LoRaTransportClass::configureE220() {
+  const AirRate airRate = LoRaConfig.getAirRate();
+  Log_info("Configuring E220 module registers permanently in Mode 3 (air rate %s)...", airRateName(airRate));
   setMode(HIGH, HIGH); // M1=1, M0=1
 
-  // Start serial at 9600 baud (fixed for E220 config mode)
+  // Start serial at 9600 baud (fixed for E220 config mode). end() first: at runtime the
+  // port is open at NORMAL_BAUD; at boot it is a harmless no-op.
+  LoRaSerial.end();
   LoRaSerial.begin(CONFIG_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
 
   // Construct the command payload to permanently configure the E220.
@@ -56,7 +86,7 @@ void LoRaTransportClass::begin() {
       REG_WRITE_COUNT,
       ADDH,
       LoRaConfig.getAddress(),
-      (REG0_UART_BAUD_115200 | REG0_PARITY_8N1 | REG0_AIR_DATA_RATE_62K5),
+      (REG0_UART_BAUD_115200 | REG0_PARITY_8N1 | airRateReg0(airRate)),
       (REG1_SUB_PACKET_200B | REG1_RSSI_NOISE_DISABLE | REG1_POWER_22DBM),
       LoRaConfig.getChannel(),
       (REG3_MODE_FIXED | REG3_RSSI_BYTE_DISABLE | REG3_LBT_DISABLE),
@@ -67,8 +97,7 @@ void LoRaTransportClass::begin() {
   logHex("LoRaTransport::begin - Sent config cmd:", configCmd, CONFIG_CMD_LEN);
 
   // Write config and verify response; retry up to LORA_MAX_RETRIES times on
-  // FF FF FF error reply or short read. On persistent failure set FAULT LED
-  // and suspend this task forever (same pattern as WiFi failure in AGENTS.md).
+  // FF FF FF error reply or short read.
   bool configOk = false;
   for (uint8_t attempt = 0; attempt < LORA_MAX_RETRIES; attempt++) {
     // AUX must be HIGH and stable before writing config data
@@ -105,32 +134,50 @@ void LoRaTransportClass::begin() {
     delay(GUARD_SETTLE_DELAY_MS);
   }
 
-  if (!configOk) {
+  // Return to Mode 0 (Normal operation: M1=0, M0=0) and configure normal baud rate,
+  // also after a failure so the radio keeps running with its previous registers.
+  setMode(LOW, LOW);
+  LoRaSerial.end();
+
+  // Re-open serial at 115200 baud (as configured in REG0)
+  LoRaSerial.begin(NORMAL_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
+  return configOk;
+}
+
+void LoRaTransportClass::requestReconfigure() {
+  reconfigRequested.store(true);
+}
+
+void LoRaTransportClass::begin() {
+  Log_info("Initializing LoRa transport layer infrastructure...");
+
+  // 1. Configure E220 hardware control pins
+  pinMode(PIN_M0, OUTPUT);
+  pinMode(PIN_M1, OUTPUT);
+  pinMode(PIN_AUX, INPUT);
+
+  // 2. Perform E220 permanent configuration in Mode 3 (Deep Sleep / Config).
+  // On persistent failure set FAULT LED and suspend this task forever
+  // (same pattern as WiFi failure in AGENTS.md).
+  if (!configureE220()) {
     Log_error("LoRaTransport::begin - E220 config failed after %u attempts. Halting.", (uint8_t)LORA_MAX_RETRIES);
     statusLed.setState(LedState::FAULT);
     vTaskSuspend(NULL);
   }
 
-  // 3. Return to Mode 0 (Normal operation: M1=0, M0=0) and configure normal baud rate
-  setMode(LOW, LOW);
-  LoRaSerial.end();
-  
-  // Re-open serial at 115200 baud (as configured in REG0)
-  LoRaSerial.begin(NORMAL_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
-
-  // 4. Create the FreeRTOS Queue for outgoing transmissions
+  // 3. Create the FreeRTOS Queue for outgoing transmissions
   txQueue = xQueueCreate(TX_QUEUE_SIZE, sizeof(LoRaTxMessage));
   if (txQueue == nullptr) {
     Log_error("LoRaTransport::begin - Failed to create TX Queue!");
   }
 
-  // 5. Create the statistics mutex
+  // 4. Create the statistics mutex
   statsMutex = xSemaphoreCreateMutex();
   if (statsMutex == nullptr) {
     Log_error("LoRaTransport::begin - Failed to create stats mutex!");
   }
 
-  // 6. Spawn background transceiver task (TASK_CREATE pins task to Core 1 on dual-core)
+  // 5. Spawn background transceiver task (TASK_CREATE pins task to Core 1 on dual-core)
   TASK_CREATE(loraTransportTask, "LoRaTransTask", TASK_STACK_SIZE, this, TASK_PRIORITY, &transportTaskHandle);
   TaskRegistry.add("LoRaTransTask", transportTaskHandle, TASK_STACK_SIZE);
 
@@ -365,6 +412,18 @@ void LoRaTransportClass::loraTransportTask(void* param) {
     if (rxIndex > 0 && (millis() - rxLastByteMs) > RX_FRAME_TIMEOUT_MS) {
       Log_debug("LoRa RX: framer stall timeout (%u bytes buffered), resetting", (unsigned)rxIndex);
       rxIndex = 0;
+    }
+
+    // Apply a pending register change (e.g. new air rate). This task owns UART2, so the
+    // rewrite happens here. Queued TX frames wait; incoming frames during the ~100 ms of
+    // Mode 3 are lost, which is expected while the link parameters change.
+    if (self->reconfigRequested.exchange(false)) {
+      if (self->configureE220()) {
+        Log_info("LoRa runtime reconfiguration applied (air rate %s)", airRateName(LoRaConfig.getAirRate()));
+      } else {
+        Log_error("LoRa runtime reconfiguration failed - module keeps its previous registers");
+      }
+      rxIndex = 0;   // drop any half-received frame from before the switch
     }
 
     // 2. Process TX (drain outgoing queue and transmit)

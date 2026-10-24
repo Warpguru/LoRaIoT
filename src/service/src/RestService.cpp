@@ -28,6 +28,7 @@
  */
 
 static constexpr size_t ERROR_BODY_SIZE = 128;   // Buffer for a formatted JSON error response
+static constexpr size_t AIR_RATE_BODY_SIZE = 32; // Buffer for {"airRate":"62.5k"} (longest label "19.2k"/"38.4k"/"62.5k")
 static constexpr size_t ECHO_TEXT_MAX   = sizeof(loraiot_Echo::text) - 1;  // Max user text (175 chars, null excluded)
 
 // ---- Last echo result (set by POST /api/lora/nodes/echo, read by GET /api/lora/echo/result) ----
@@ -104,6 +105,44 @@ void RestService::registerRoutes() {
         json += String(LoRaConfig.getChannel());
         json += "}";
         request->send(HTTP_STATUS_OK, "application/json", json);
+      });
+
+  // GET /api/lora/airrate - get active LoRa air data rate (available on all nodes).
+  // Plain snprintf into a stack buffer: no JsonDocument or String heap use for a one-field reply.
+  server->on("/api/lora/airrate", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/lora/airrate");
+    char body[AIR_RATE_BODY_SIZE];
+    snprintf(body, sizeof(body), "{\"airRate\":\"%s\"}", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+    request->send(HTTP_STATUS_OK, "application/json", body);
+  });
+
+  // PUT /api/lora/airrate - set the LoRa air data rate (available on all nodes).
+  // Persists the rate in NVS and asks loraTransportTask (sole owner of UART2) to rewrite the
+  // E220 registers right away, so the new rate is active without a reboot.
+  server->on(
+      "/api/lora/airrate", HTTP_PUT,
+      [](AsyncWebServerRequest* request) {},
+      nullptr,
+      [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        LoRaTransportClass::AirRate rate;
+        if (err || !doc["airRate"].is<const char*>() ||
+            !LoRaTransportClass::airRateFromName(doc["airRate"].as<const char*>(), rate)) {
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                        "{\"error\":\"Expected {\\\"airRate\\\":\\\"2.4k|4.8k|9.6k|19.2k|38.4k|62.5k\\\"}\"}");
+          return;
+        }
+
+        LoRaConfig.setAirRate(rate);
+        LoRaConfig.save();
+        LoRaTransport.requestReconfigure();
+
+        Log_info("LoRa air rate changed via API to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+
+        char body[AIR_RATE_BODY_SIZE];
+        snprintf(body, sizeof(body), "{\"airRate\":\"%s\"}", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+        request->send(HTTP_STATUS_OK, "application/json", body);
       });
 
   // GET /api/lora/address - get active LoRa address (available on all nodes).

@@ -120,6 +120,66 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
+    "/api/lora/airrate": {
+      "get": {
+        "tags": ["Gateway"],
+        "summary": "Get active LoRa air data rate",
+        "description": "Returns the active LoRa air data rate. Available on both tiers.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "airRate": { "type": "string", "enum": ["2.4k", "4.8k", "9.6k", "19.2k", "38.4k", "62.5k"], "description": "The active air data rate in kbps" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Gateway"],
+        "summary": "Set active LoRa air data rate",
+        "description": "Sets the air data rate, persists it in NVS and immediately rewrites the E220 registers (about 100 ms in config mode; frames during that time are lost). Both nodes must use the same rate, so change REMOTE first, then LOCAL. Lower rates give more range but longer air time. Available on both tiers.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["airRate"],
+                "properties": {
+                  "airRate": { "type": "string", "enum": ["2.4k", "4.8k", "9.6k", "19.2k", "38.4k", "62.5k"], "description": "New air data rate in kbps" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Air rate changed; the E220 reconfiguration was requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "airRate": { "type": "string", "description": "The new active air data rate" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, field missing, or not one of the supported rates",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
     "/api/lora/address": {
       "get": {
         "tags": ["Gateway"],
@@ -352,7 +412,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
       "get": {
         "tags": ["Diagnostics"],
         "summary": "Clear WiFi credentials and all NVS settings, then reboot",
-        "description": "Erases WiFi credentials and all NVS settings (tier, log level, channel, address, CPU freq), then reboots into the captive portal.",
+        "description": "Erases WiFi credentials and all NVS settings (tier, log level, channel, air rate, address, CPU freq), then reboots into the captive portal.",
         "responses": {
           "200": {
             "description": "Settings cleared; ESP32 is rebooting",
@@ -778,6 +838,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
  *   %s  Gateway tier name for display             (banner)
  *   %u  LoRa key, decimal (0 = disabled)          (banner)
  *   %s  LoRa key state "on" / "off"               (banner)
+ *   %s  LoRa air data rate, e.g. "62.5k"          (banner)
  *   %s  Build timestamp __DATE__ " " __TIME__     (banner)
  *   %s  Gateway tier name for JS TIER variable    (x-tier filter)
  *
@@ -803,6 +864,7 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
   " | SSID: <b>%s</b>"
   " | Tier: <b>%s</b>"
   " | Key: <b>%u (%s)</b>"
+  " | Air: <b>%s</b>"
   " | Built: <b>%s</b>"
   "</div>"
   "<div id='swagger-ui'></div>"

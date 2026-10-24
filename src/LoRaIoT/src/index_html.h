@@ -52,6 +52,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <li><a href="/api/diag/e220"><code>GET /api/diag/e220</code></a> - request E220 wiring check
         <span class="note">(result appears in /api/log after ~2 s)</span></li>
     <li><a href="/api/lora/channel"><code>GET /api/lora/channel</code></a> - active LoRa channel</li>
+    <li><a href="/api/lora/airrate"><code>GET /api/lora/airrate</code></a> - active LoRa air data rate</li>
     <li><a href="/api/lora/address"><code>GET /api/lora/address</code></a> - active LoRa node address</li>
     <li><a href="/api/system/cpu"><code>GET /api/system/cpu</code></a> - active CPU frequency</li>
   </ul>

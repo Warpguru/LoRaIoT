@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -92,6 +93,28 @@ class LoRaTransportClass {
   static constexpr uint8_t REG0_AIR_DATA_RATE_19K2           = 0x05;   // Binary: 00000101
   static constexpr uint8_t REG0_AIR_DATA_RATE_38K4           = 0x06;   // Binary: 00000110
   static constexpr uint8_t REG0_AIR_DATA_RATE_62K5           = 0x07;   // Binary: 00000111
+
+  // Selectable air data rates. The ordinal (not the REG0 bits) is what LoRaConfig persists in NVS,
+  // so the values are fixed: never renumber, only append. airRateReg0() maps them to REG0 bits 2-0.
+  enum AirRate : uint8_t {
+    AIR_RATE_2K4  = 0,
+    AIR_RATE_4K8  = 1,
+    AIR_RATE_9K6  = 2,
+    AIR_RATE_19K2 = 3,
+    AIR_RATE_38K4 = 4,
+    AIR_RATE_62K5 = 5,
+    AIR_RATE_COUNT          // Number of selectable rates; also the first invalid ordinal
+  };
+  static constexpr AirRate AIR_RATE_DEFAULT = AIR_RATE_62K5;   // Highest rate, shortest range
+
+  /** Short label of a rate ("2.4k" ... "62.5k"); used by logs, banner, portal and REST API. rate must be valid. */
+  static const char* airRateName(AirRate rate);
+
+  /** REG0 bits 2-0 for a rate. rate must be valid. */
+  static uint8_t airRateReg0(AirRate rate);
+
+  /** Parses a label returned by airRateName(). Returns false (out untouched) if it matches no rate. */
+  static bool airRateFromName(const char* name, AirRate& out);
 
   // --- E220 Register 1 (REG1) Bitfield Definitions ---
   // Sub-packet size (Bits 7-6)
@@ -198,6 +221,13 @@ class LoRaTransportClass {
   void resume();
 
   /**
+   * Asks loraTransportTask to rewrite the E220 registers from LoRaConfig (for example after
+   * LoRaConfig.setAirRate()). The task is the sole owner of UART2, so the rewrite happens there,
+   * shortly after this call returns. Thread-safe; does nothing before begin().
+   */
+  void requestReconfigure();
+
+  /**
    * Return a snapshot of the transport statistics counters. Thread-safe.
    * Used by GET /api/lora/stats.
    */
@@ -212,6 +242,7 @@ class LoRaTransportClass {
   LoRaReceiveCallback receiveCallback = nullptr;
   TaskHandle_t transportTaskHandle = nullptr;
   QueueHandle_t txQueue = nullptr;
+  std::atomic<bool> reconfigRequested{false};   // Set by requestReconfigure(), cleared by loraTransportTask
 
   // Statistics counters - incremented only inside loraTransportTask (single writer).
   // Read under statsMutex from other tasks/cores.
@@ -220,6 +251,13 @@ class LoRaTransportClass {
   uint32_t statsCrcErrors = 0;   // frames discarded due to CRC mismatch
   uint32_t statsAckLoss   = 0;   // ACK timeouts / unacknowledged DATA_ACK frames
   SemaphoreHandle_t statsMutex = nullptr;
+
+  /**
+   * Writes the E220 registers permanently in Mode 3 (retrying on a bad reply), then returns to
+   * Mode 0 and reopens UART2 at NORMAL_BAUD. Always leaves the module in normal mode.
+   * Returns false if no valid reply was received. UART2 must not be open when called at runtime.
+   */
+  bool configureE220();
 
   /**
    * Physically writes a raw frame over the UART2 interface, executing all mandatory E220

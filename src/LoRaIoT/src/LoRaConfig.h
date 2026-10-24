@@ -2,13 +2,16 @@
 
 #include <Arduino.h>
 
+#include "../../lora/src/LoRaTransport.h"   // AirRate enum
+
 /**
- * LoRaConfig.h - LoRa config persistence (channel, address, encryption key, CPU frequency).
+ * LoRaConfig.h - LoRa config persistence (channel, address, encryption key, air rate, CPU frequency).
  *
  * Persisted in NVS (namespace LORA_NVS_NAMESPACE).
  *
  * Defaults:
  *   - channel: LORA_DEFAULT_CHANNEL
+ *   - airRate: LoRaTransportClass::AIR_RATE_DEFAULT (62.5k)
  *   - address: LORA_DEFAULT_ADDR_LOCAL or LORA_DEFAULT_ADDR_REMOTE
  *   - key:     LORA_DEFAULT_KEY (0 = E220 encryption disabled)
  */
@@ -18,6 +21,7 @@ static constexpr const char* LORA_CHANNEL_KEY   = "loraChannel";
 static constexpr const char* LORA_ADDR_KEY      = "loraAddr";
 static constexpr const char* LORA_CPU_FREQ_KEY  = "cpuFreq";
 static constexpr const char* LORA_KEY_KEY       = "loraKey";
+static constexpr const char* LORA_AIR_RATE_KEY  = "loraAirRate";   // Stores the LoRaTransportClass::AirRate ordinal
 
 // Default configuration constants
 static constexpr uint8_t LORA_MIN_CHANNEL         = 0;      // Lowest E220 channel (410.125 MHz)
@@ -70,11 +74,15 @@ class LoRaConfigClass {
   uint32_t getCpuFreq() const;
   void setCpuFreq(uint32_t freq);
 
+  LoRaTransportClass::AirRate getAirRate() const;
+  void setAirRate(LoRaTransportClass::AirRate rate);
+
  private:
   uint8_t  channel = LORA_DEFAULT_CHANNEL;
   uint8_t  address = LORA_DEFAULT_ADDR_LOCAL;
   uint16_t key     = LORA_DEFAULT_KEY;
   uint32_t cpuFreq = LORA_CPU_FREQ_DEFAULT;
+  LoRaTransportClass::AirRate airRate = LoRaTransportClass::AIR_RATE_DEFAULT;
 };
 
 // Global singleton instance exported for direct use across the application.
