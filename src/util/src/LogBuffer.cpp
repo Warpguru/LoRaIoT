@@ -60,6 +60,10 @@ const LogLevel& LogBufferClass::DEFAULT_LEVEL = LogLevel::INFO;
 
 // ---- Helpers ---------------------------------------------------------------
 
+// Line terminator sent to Serial together with the text in ONE write (see append()).
+static constexpr char   SERIAL_EOL[]  = "\r\n";
+static constexpr size_t SERIAL_EOL_LEN = sizeof(SERIAL_EOL) - 1;
+
 // Strip directory prefix from __FILE__ so only the filename appears in output.
 static const char* fileBasename(const char* path) {
   const char* result = path;
@@ -211,12 +215,19 @@ void LogBufferClass::append(const LogLevel& logLevel, const char* file, int line
   char message[LOG_BUFFER_LINE_LEN];
   vsnprintf(message, sizeof(message), format, formatArgs);
 
-  char logLine[LOG_BUFFER_LINE_LEN];
-  snprintf(logLine, sizeof(logLine), "[%-5s][%s:%d] %s",
+  // SERIAL_EOL_LEN spare bytes: the terminator is appended in place for the Serial write only.
+  char logLine[LOG_BUFFER_LINE_LEN + SERIAL_EOL_LEN];
+  snprintf(logLine, LOG_BUFFER_LINE_LEN, "[%-5s][%s:%d] %s",
            logLevel.name(), fileBasename(file), line, message);
 
   // Print to Serial (UART0) - no hooks, no build flags required.
-  Serial.println(logLine);
+  // Text and "\r\n" go out in a single write. Serial.println() sends them as two writes,
+  // so another task logging in between (e.g. the LoRa transport task right after the
+  // broker) glued two lines together and left an empty line behind.
+  const size_t lineLen = strlen(logLine);
+  memcpy(logLine + lineLen, SERIAL_EOL, SERIAL_EOL_LEN);
+  Serial.write(reinterpret_cast<const uint8_t*>(logLine), lineLen + SERIAL_EOL_LEN);
+  logLine[lineLen] = '\0';   // drop the terminator again before the line is stored in the ring buffer
 
   // Append to ring buffer under mutex.
   if (mutex == nullptr) {

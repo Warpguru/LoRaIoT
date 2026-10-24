@@ -14,8 +14,8 @@ Log_info("fmt", ...)
   -> LogBuffer.logInfo(__FILE__, __LINE__, "fmt", ...)
      -> append(LogLevel::INFO, file, line, "fmt", va_list)
         -> vsnprintf(message, sizeof(message), format, formatArgs)   // stack buffer, 160 B
-        -> snprintf(logLine, sizeof(logLine), "[%-5s][%s:%d] %s", ...)
-        -> Serial.println(logLine)
+        -> snprintf(logLine, LOG_BUFFER_LINE_LEN, "[%-5s][%s:%d] %s", ...)
+        -> Serial.write(logLine + "\r\n")   // one write, so lines from different tasks cannot interleave
         -> strncpy into ring buffer (128 x 160 B static BSS)
 ```
 

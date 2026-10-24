@@ -6,7 +6,8 @@
  * LogBuffer.h - Levelled logger with in-RAM ring buffer and Serial output.
  *
  * Replaces all ESP_LOG* calls throughout the codebase. Each log call:
- *   1. Prints a formatted line to UART0 via Serial.println() - always works,
+ *   1. Prints a formatted line to UART0 via one Serial.write() of text + CRLF (a single
+ *      write keeps the line whole when several tasks log at once) - always works,
  *      regardless of Arduino IDE / PlatformIO / build flags.
  *   2. Appends the same line to a fixed-size ring buffer accessible via
  *      GET /api/log, so logs are retrievable without a USB connection.

@@ -30,7 +30,7 @@
  *
  * The onboard LED (hardwired to GPIO 2 on most DevKit PCBs) cannot be used
  * because the USB-serial bridge drives GPIO 2 as an RX activity indicator
- * in hardware - it flickers on every Serial.println() regardless of firmware.
+ * in hardware - it flickers on every serial output (e.g. each log line) regardless of firmware.
  */
 static constexpr int STATUS_LED_PIN = 21;
 
