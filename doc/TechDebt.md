@@ -761,13 +761,12 @@ Each node needs one **owner** table and one **cache** table.
 
 Notes:
 
-- **Naming.** "ControlRegistry" would mean the owner on LOCAL but the cache on REMOTE if one name is
-  used for both. Name the classes by role (for example `ControlRegistry` for the LOCAL owner and
-  `ControlCache` for the REMOTE cache) so the code is not confusing. The final names are an open point
-  (section 8.12).
+- **Naming.** Resolved, see "Resolved implementation" below. The names are not role names. The role
+  (owner or cache) depends on the tier and is hidden behind two accessors.
 - **Same shape.** All four hold devices, metrics, values and a revision. Reuse one implementation where
   possible instead of writing a second copy. Today the owner (`SensorRegistry`, plain structs) and the
-  cache (`DeviceRegistry`, nanopb structs) are written differently, so some refactoring is needed.
+  cache (`DeviceRegistry`, nanopb structs) are written differently, so some refactoring is needed. The
+  resolved design below does this with one class.
 - **LOCAL's owner table is per target node.** Each REMOTE gets its own control devices. The table is
   keyed by node address. REMOTE's cache has only one peer (LOCAL).
 - **No name clash.** `Data.device = 1` from REMOTE and `Data.device = 1` from LOCAL are different
@@ -780,10 +779,88 @@ Notes:
   checks this when a metric is registered. `ControlRegistry` must do the same check, because LOCAL
   answers Describe with the same message.
 - **Capacity.** `DEVICE_REGISTRY_MAX_NODES` is 3 and a `NodeEntry` is about 2 KB. A per-node control
-  table on LOCAL and a new cache on REMOTE add RAM. Measure free heap (`GET /status`) before choosing
-  the constants. Stack risk: `getNode()` copies a whole `NodeEntry` (about 2 KB) by value, and
+  table on LOCAL and a new cache on REMOTE add RAM. The constants are fixed (see "Resolved
+  implementation" below); measure free heap (`GET /status`) after each step. Stack risk: `getNode()`
+  copies a whole `NodeEntry` (about 2 KB) by value, and
   `loraTransportTask` has a 4096 B stack. The same risk applies to the new tables, so do not copy whole
   entries on small task stacks (use accessors that return only what is needed).
+
+#### Resolved implementation
+
+Decided in `push-control-plan.md` (Step 1). It replaces the "four different classes" idea by one shared
+building block.
+
+- **One class `DeviceTable`** (4 devices x 8 metrics; per metric: id, name, unit, scale, value, time of
+  the value, `hasValue`; plus the revision `rev`) replaces both the plain structs of today's
+  `SensorRegistry` and the nanopb structs of today's `DeviceRegistry`. Owner functions: `registerMetric()`
+  (with the payload size check). Cache functions: `applyDevice()` and `applyData()`. Common:
+  `storeValue()`, `toProtoDevice()`, `toProtoData()`. The owner counts `rev`, the cache copies it. The
+  table has no mutex; the registry that owns it locks.
+- **`PeerEntry`** wraps one `DeviceTable` plus the peer liveness fields: `addr`, `bootId`, `pendingRev`,
+  `lastSeenMs`, `online`, `crawlPending`.
+- **`PeerRegistry`** holds 3 `PeerEntry` slots and one mutex. It offers the owner and cache operations
+  per peer address.
+- **Two global instances on both nodes**: `SensorRegistry` and `ControlRegistry`, both of class
+  `PeerRegistry`. Their role depends on the tier:
+
+  | Accessor | On LOCAL | On REMOTE |
+  |---|---|---|
+  | `ownedRegistry()` (answers Describe and Read, pushes values) | `ControlRegistry` | `SensorRegistry` |
+  | `cachedRegistry()` (crawled by Describe, filled by pushes) | `SensorRegistry` | `ControlRegistry` |
+
+  The accessors hide the role per tier, so LoRa code never branches on the tier. Only the REST layer
+  uses the names `SensorRegistry` and `ControlRegistry` directly. On REMOTE both registries use the single
+  peer key `LORA_DEFAULT_ADDR_LOCAL` (0x01).
+- **Capacity (fixed):** 3 peer slots, 4 devices per peer, 8 metrics per device. REMOTE uses 1 peer slot
+  and wastes the other two; a tier-dependent allocation was rejected as not worth the complexity. Verify
+  with `GET /status` against the baseline (Step 0 of the plan).
+- **No whole-table copies.** No function returns or copies a whole table or registry. Accessors copy one
+  `DeviceSlot` (about 340 B) or a few scalars.
+- **Partial pushes.** A pushed `Data` updates only the metrics it names. Every value stores its own time
+  (`millis() - age_ms` at arrival), so `age_ms` on a later read is correct end to end. Today's
+  `DeviceRegistry.storeData()` replaces the whole `lastData` of a device and would erase the other values.
+- **Unknown device or metric.** `applyData()` does not apply such a `Data` and returns `UNKNOWN_DEVICE`
+  or `UNKNOWN_METRIC`; the caller schedules a crawl. Applying a changed `Device` keeps the values of
+  metrics whose id, unit and scale did not change and clears the others.
+
+```mermaid
+classDiagram
+    class MetricSlot {
+        id, name, unit, scale
+        value, valueMs, hasValue
+    }
+    class DeviceSlot {
+        index, name
+        metricCount
+        MetricSlot metrics[8]
+    }
+    class DeviceTable {
+        DeviceSlot devices[4]
+        deviceCount
+        rev
+        registerMetric()  owner
+        applyDevice()     cache
+        storeValue()
+        applyData()       cache
+        toProtoDevice()
+        toProtoData()
+        getDevice()
+    }
+    class PeerEntry {
+        addr, bootId, pendingRev
+        lastSeenMs, online, crawlPending
+        DeviceTable table
+    }
+    class PeerRegistry {
+        PeerEntry peers[3]
+        mutex
+        owner and cache operations per peer address
+    }
+    DeviceSlot "1" *-- "8" MetricSlot
+    DeviceTable "1" *-- "4" DeviceSlot
+    PeerEntry "1" *-- "1" DeviceTable
+    PeerRegistry "1" *-- "3" PeerEntry
+```
 
 ### 8.4 Who talks to whom
 
@@ -837,8 +914,13 @@ BEACON goes only from REMOTE to LOCAL. LOCAL needs a way to say "my control defi
 
 - The `Beacon` message already has the optional field `registry_rev`. LOCAL's **PING** carries it for
   the target node: the revision of the control table for that REMOTE.
-- This needs no change in the `.proto` file. It does change the rule in `doc/LoRaProtocol.md` section 10
-  ("a PING sets only `boot_id`"). Change the rule and also the check "by TYPE" in the firmware.
+- This needs no change in the `.proto` file (R6: the wire format does not change at all, no nanopb
+  regeneration; optional `registry_rev`, `Ack.status` and `DATA_ACK` already exist). It does change the
+  rule in `doc/LoRaProtocol.md` section 10 ("a PING sets only `boot_id`"). Change the rule and also the
+  check "by TYPE" in the firmware.
+- **Only for nodes with control devices (R4).** LOCAL puts `registry_rev` into a PING only for a node that
+  has control devices. A node without control data needs no crawl and no airtime. Broadcast PINGs stay
+  unchanged.
 - LOCAL sends a PING in reply to every BEACON (`PingTask`). That covers the normal case and a reboot of
   REMOTE.
 - When the control table of a node changes (new device or new metric, or a changed unit or scale), LOCAL
@@ -853,15 +935,23 @@ BEACON goes only from REMOTE to LOCAL. LOCAL needs a way to say "my control defi
 Problem today: when `Data` arrives for an unknown device, the values are thrown away and a crawl starts
 (`Application.cpp`, DATA case). The first value is lost.
 
-Rule: **after the owner has answered a `Describe` for a device, it pushes the current values of that
-device** (a normal `DATA`). The cache side then has definition and values together. This works in both
-directions: LOCAL for control, REMOTE for sensors. It also solves the lost first value.
+Rule (refinement R1): **when the owner answers the end of a crawl (it sees `Describe` for index count+1
+and answers `BAD_REQUEST`), it then pushes the current values of all its devices** (`DATA_ACK` frames, so
+a lost value is repeated). The cache side then has definitions and values together. This works in both
+directions: LOCAL for control, REMOTE for sensors. It also solves the lost first value. The push is done
+**once at the end of the crawl, not after every `Describe` answer**, because a push in the middle of a
+crawl would collide with the peer's next `Describe` request on the half-duplex link.
+
+Refinement R5: background pushes (end of crawl, node back online) run in a **dedicated small task with a
+queue** (`PushTask`, on both nodes). The receive callback only queues an item `{peerAddr, reason}`. It
+must never send the push itself, because it runs on `loraTransportTask` and cannot wait for an `ACK` that
+the same task has to receive. A full queue drops the item; the next event queues it again.
 
 Reboot cases:
 
 | Event | What happens |
 |---|---|
-| **REMOTE reboots** | Its RAM caches are empty. It sends the fast BEACON. LOCAL sees a new `boot_id` (`updateNodeMeta()` clears the cached sensor data of that node and schedules a crawl) and replies with a PING that carries the control revision. REMOTE has nothing cached, so it crawls LOCAL. LOCAL answers each Describe and then pushes the values of that device (rule above). **This is the "LOCAL re-pushes all control values after a new REMOTE `boot_id`" rule from the discussion.** It must happen after REMOTE knows the definitions, otherwise REMOTE drops the values and only starts a crawl. |
+| **REMOTE reboots** | Its RAM caches are empty. It sends the fast BEACON. LOCAL sees a new `boot_id` (`updateNodeMeta()` clears the cached sensor data of that node and schedules a crawl) and replies with a PING that carries the control revision. REMOTE has nothing cached, so it crawls LOCAL. When LOCAL answers the end of that crawl it pushes the values of all control devices for that node (rule above). **This is the "LOCAL re-pushes all control values after a new REMOTE `boot_id`" rule from the discussion.** It must happen after REMOTE knows the definitions, otherwise REMOTE drops the values and only starts a crawl. |
 | **LOCAL reboots** | The control table is RAM only, so it is empty. Index numbers are assigned in order of the first POST, so they may differ from before. REMOTE learns about the reboot from the new LOCAL `boot_id` (LOCAL pings at boot and after every BEACON). **REMOTE must clear the whole control cache for LOCAL**, because old index numbers may now mean other devices. The consumer then sees "no control data" and must fail safe. The REST client must POST the control values again. LOCAL does not restore them (D8). |
 | **A REMOTE was offline but did not reboot** | Pushes sent while it was away were lost. When LOCAL sees the node come back (`markSeen()` returns true, log line "is back online"), LOCAL re-pushes all control values for that node. |
 | **A control push gets no ACK** | The POST is answered with 504. LOCAL keeps the value in its owner table as the desired state and re-pushes it on the events above. |
@@ -884,10 +974,27 @@ Where the `boot_id` of LOCAL is tracked on REMOTE: `LoRaState` already detects a
   PING only. Build the sender (with retry), the receiver and the `ACK` reply on both nodes. Check how
   `LoRaBroker` (single in-flight slot, types PING, Echo, Read) should wait for it: either add a broker
   request type or give the control push its own wait.
-- Duplicate handling already exists (section 6 of the protocol): a duplicate `DATA_ACK` is ACKed again
-  but not processed again.
+- Duplicate handling is required by section 6 of the protocol: a duplicate `DATA_ACK` is ACKed again
+  but not processed again. Today `onLoRaReceive` returns before any reply for a duplicate, so this must be
+  fixed together with the `DATA_ACK` receiver.
 - The POST handler runs on Core 0 and must not touch Serial2. It posts the work and waits on a
   semaphore (the existing pattern with `LoRaBroker`).
+- **Unknown device (R2).** A node that receives a `DATA_ACK` for a device (or metric) it does not know
+  answers `ACK{status=BAD_REQUEST}` and starts a crawl of the sender. `Ack.status` already defines
+  `BAD_REQUEST` as "received but not accepted", so no `.proto` change is needed.
+- **HTTP answers of the control POST (R3).** The first value of a new device cannot be accepted before the
+  crawl has finished, so the POST distinguishes three outcomes:
+
+  | Answer | When |
+  |---|---|
+  | `200` | `ACK{OK}` received for every changed device. |
+  | `202` | Deferred: the sender only learned that the peer does not know the device yet (`ACK{BAD_REQUEST}`), or the schema changed in this request and the PING with the new revision has just been sent. The crawl is triggered and the value is pushed at its end (section 8.7). |
+  | `504` | No `ACK` after all attempts. LOCAL keeps the value as the desired state. |
+
+  If the broker slot is busy the handler returns `503`, as the other endpoints do.
+- **Background pushes (R5).** Pushes that are not caused by a REST call (end of crawl, node back online)
+  are sent by the separate `PushTask` with its queue (section 8.7), never from the receive callback. The
+  `ACK` for those pushes is received by `loraTransportTask` and completes the pending broker slot.
 
 ### 8.9 REST API changes
 
@@ -947,15 +1054,18 @@ Rules for the POST on LOCAL:
 - Validate the JSON (device is a string, metrics is an object, name lengths 12 and 5, scale not zero).
 - `addr` must be a known node, otherwise 404.
 - Registration fails with 400 if the encoded `Device` would not fit one frame (same as REMOTE).
-- Existing `POST /api/lora/nodes/data?addr=` is a raw test endpoint that queues a `Data` frame. Decide
-  whether it stays (as a debug tool) or is removed because control replaces it (section 8.12).
+- Existing `POST /api/lora/nodes/data?addr=` is a raw test endpoint that queues a `Data` frame. Resolved
+  (open point 3): it **stays as a debug endpoint** until the end of the work and is removed in Step 15 of
+  `push-control-plan.md`. Until then it becomes a framed debug endpoint on the reliable `DATA_ACK` path
+  (`ack=true|false`) instead of the unframed `sendRaw()` stub.
 
 ### 8.10 What REMOTE returns to the consumer
 
 REMOTE does not know what a value means, so it must give the consumer what it needs to decide:
 
 - For every value: `age_ms` (time since it was received).
-- A link indicator, for example the time since the last frame from LOCAL.
+- A link indicator: `peer_last_seen_ms_ago`, the time since the last frame from LOCAL. REMOTE only reports
+  this time. It does not set `online=false` for LOCAL by itself (resolved in section 8.12).
 - No control data (empty answer) after a LOCAL reboot until LOCAL pushes again (section 8.7).
 
 The consumer must define its own fail-safe: if data is too old or missing, return the converter to a safe
@@ -976,32 +1086,58 @@ voltage. REMOTE cannot do this because it does not know which value controls wha
   forgets entries stays correct for the lifetime of one boot.
 - **RAM.** See the capacity note in section 8.3.
 
-### 8.12 Open points to decide before coding
+### 8.12 Open points (all resolved)
 
-1. Final class names for the four tables (suggestion: role names, section 8.3).
-2. (Resolved) REMOTE paths are the same as on LOCAL, see section 8.9.
-3. Keep or remove the raw `POST /api/lora/nodes/data?addr=`.
-4. Keep `REQUEST(Read)` for on-demand use (current proposal: keep, section D4).
-5. Whether the control POST waits for the `ACK` (current proposal: yes, 504 on timeout).
-6. Capacity constants for the new tables after measuring free heap.
+All open points were decided in Step 1 of `push-control-plan.md`.
+
+1. **Class names - resolved.** `DeviceTable` (shared building block), `PeerEntry`, `PeerRegistry`. Two
+   global instances on both nodes: `SensorRegistry` and `ControlRegistry` (both `PeerRegistry`).
+   Accessors `ownedRegistry()` and `cachedRegistry()` hide the role per tier (section 8.3).
+2. **REMOTE paths - resolved.** Same as on LOCAL, see section 8.9.
+3. **Raw `POST /api/lora/nodes/data?addr=` - resolved.** Keep it as a debug endpoint, remove it in Step 15.
+4. **`REQUEST(Read)` - resolved.** Kept for on-demand use only (D4, confirmed).
+5. **Control POST waits for the `ACK` - resolved.** `200` after `ACK{OK}`, `202` when deferred (the peer
+   did not know the device yet, R3), `504` on timeout (section 8.8).
+6. **Capacity - resolved.** 3 peer slots (fixed), 4 devices per peer, 8 metrics per device (section 8.3).
+7. **REMOTE's view of LOCAL - resolved.** REMOTE only reports `peer_last_seen_ms_ago` (section 8.10). It
+   does not set `online=false` for LOCAL by itself.
+8. **Old plan files - resolved.** `RestPlan.md`, `loraiot-plan.md` and `ping-ack-poc-plan.md` are
+   handled in Step 15 (the developer is asked whether to delete them, as was done for `ms6-plan.md`).
 
 ### 8.13 Suggested implementation order
 
+The detailed plan is `push-control-plan.md` (derived from this chapter; `ms6-plan.md` was outdated and has
+been deleted). The refinements R1 to R6 of that plan are incorporated in sections 8.3, 8.6 to 8.9 and in
+this list:
+
+| # | Refinement | Where |
+|---|---|---|
+| R1 | Push values once at the end of a crawl, not after every device | 8.7 |
+| R2 | `DATA_ACK` for an unknown device is answered with `ACK{BAD_REQUEST}` and starts a crawl | 8.8 |
+| R3 | Control POST answers `202` (deferred), `200` (`ACK{OK}`) or `504` (no ACK) | 8.8 |
+| R4 | LOCAL puts `registry_rev` in a PING only for a node that has control devices | 8.6 |
+| R5 | Background pushes run in a small task with a queue | 8.7, 8.8 |
+| R6 | The wire format does not change (no `.proto` change, no nanopb regeneration) | 8.6, 8.13 |
+
+Order (the plan step numbers are in brackets):
+
 1. Update the spec: `doc/LoRaProtocol.md` sections 5, 8, 9 (remove "LOCAL may poll cyclically"), 10 (PING
    carries `registry_rev`), 12 (both directions, crawl start at 1), 15 (diagrams) and 17 (REST). Update
-   `src/lora/proto/loraiot.proto` comments only (no field changes expected).
-2. Write a new implementation plan file derived from this chapter. (`ms6-plan.md` was outdated and has
-   been deleted.)
-3. Shared registry implementation: owner and cache, then `ControlRegistry` (LOCAL) and the cache
-   (REMOTE).
-4. `DATA_ACK` sender with retry, receiver and `ACK` reply (both nodes).
-5. Make the crawler per peer and role independent. Remove the `isLocal` limits in `onLoRaReceive`.
-   Answer Describe and Read on LOCAL.
+   `src/lora/proto/loraiot.proto` comments only (no field changes, R6). [Step 2]
+2. Implementation plan: `push-control-plan.md` and the design decisions of this chapter. [Steps 0 and 1,
+   done]
+3. Shared registry implementation: `DeviceTable`, then `SensorRegistry` and `DeviceRegistry` rebuilt on
+   it, then the merge into `PeerRegistry` with the two instances `SensorRegistry` and `ControlRegistry`.
+   No behavior change. [Steps 3 to 6]
+4. Role-independent receive path and crawler: make the crawler per peer, remove the `isLocal` limits in
+   `onLoRaReceive`, answer Describe and Read on LOCAL. [Step 7]
+5. REST renames and views (section 8.9), `nodes/control` GET and POST on LOCAL (registration only), then
+   OpenAPI, `RestApi.md` and `index_html.h`. [Step 8]
 6. PING with `registry_rev`, immediate PING on control change, REMOTE crawl trigger, LOCAL `boot_id`
-   handling on REMOTE (clear cache).
-7. Push values after answering Describe, and re-push on "back online".
-8. REST (section 8.9): rename `snapshot` to `nodes/sensor`, rename `/api/sensor/data` to
-   `/api/lora/sensor/data`, add `nodes/control` GET and POST on LOCAL, add `nodes/sensor` and
-   `nodes/control` GET on REMOTE, then update OpenAPI, `RestApi.md` and `index_html.h`.
-9. Tests with two nodes: sensor and control round trip, reboot of each side, both nodes crawling at once,
-   lost frames, and the consumer view after a LOCAL reboot.
+   handling on REMOTE (clear cache). [Step 9]
+7. `DATA_ACK` sender with retry, receiver and `ACK` reply (both nodes), then the control values pushed on
+   POST (`200`, `202`, `504`). [Steps 10 and 11]
+8. `PushTask`: push values at the end of a crawl and re-push on "back online". [Step 12]
+9. Age, link indicator, `live` and `refresh` on the cache views [Step 13], tests with two nodes (sensor
+   and control round trip, reboot of each side, both nodes crawling at once, lost frames, the consumer
+   view after a LOCAL reboot) [Step 14], and cleanup and final docs [Step 15].

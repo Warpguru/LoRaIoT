@@ -60,6 +60,7 @@ enum class BrokerRequestType : uint8_t {
   PING     = 1,
   READ     = 2,
   DESCRIBE = 3,
+  DATA_ACK = 4,
 };
 
 /**
@@ -137,7 +138,7 @@ void loraBrokerOnResponse(const loraiot_Response& response);
  * Called by the LoRa receive/decode layer when a PING ACK (Ack frame for a
  * PING) arrives. Stores the responder address and RTT, then unblocks the
  * waiting handler. The Ack message carries no boot_id (doc/LoRaProtocol.md
- * section 6.1), so callers that need it read it from DeviceRegistry.
+ * section 6.1), so callers that need it read it from SensorRegistry.
  * No-op if no PING is pending.
  */
 void loraBrokerOnPingAck(uint8_t srcAddr, uint32_t rttMs);
@@ -151,3 +152,35 @@ struct PingResult {
   uint32_t rttMs;
 };
 const PingResult& loraBrokerGetPingResult();
+
+/**
+ * Called by the LoRa receive/decode layer when a DATA_ACK ACK (Ack frame for a
+ * DATA_ACK frame) arrives. Stores the responder address and ACK status, then unblocks
+ * the waiting handler.
+ * No-op if no DATA_ACK is pending.
+ */
+void loraBrokerOnDataAck(uint8_t srcAddr, loraiot_Status ackStatus);
+
+/**
+ * After a successful DATA_ACK wait, retrieve the ack result.
+ */
+struct AckResult {
+  uint8_t        addr;
+  loraiot_Status status;
+};
+const AckResult& loraBrokerGetAckResult();
+
+/**
+ * Send a loraiot_Data payload reliably to dstAddr using DATA_ACK frames with retry.
+ *
+ * - Sends DATA_ACK frame, waits LORA_ACK_TIMEOUT_MS (200 ms).
+ * - Up to LORA_MAX_RETRIES + 1 (4) attempts total.
+ * - Retransmissions reuse the same SEQ.
+ * - Delays random(LORA_BACKOFF_MIN_MS, LORA_BACKOFF_MAX_MS) before retries.
+ * - If ACK received: fills outStatus and returns BrokerResult::OK.
+ * - If all retries fail: calls LoRaTransport.incrementAckLoss(), sets outStatus = STATUS_BAD_REQUEST,
+ *   returns BrokerResult::TIMEOUT.
+ * - If broker mutex is held / pendingActive: returns BrokerResult::BUSY immediately.
+ */
+BrokerResult loraSendDataReliable(uint8_t dstAddr, const loraiot_Data& data,
+                                  loraiot_Status& outStatus);

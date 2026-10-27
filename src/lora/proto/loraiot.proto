@@ -89,10 +89,11 @@ message Beacon {
                                      // Absent in a PING
   optional uint32 uptime_s = 3;      // Seconds since the REMOTE booted. Absent in a PING
   optional uint32 registry_rev = 4;  // Counter that increases whenever a Device or a Metric is
-                                     // added or changed. If LOCAL sees a new value it re-reads
-                                     // the definitions with Describe. The definitions themselves
-                                     // are NOT in the beacon. Absent in a PING ("optional" lets
-                                     // LOCAL tell "absent" from a real 0)
+                                     // added or changed. Present in a BEACON (REMOTE to LOCAL)
+                                     // and MAY be present in a PING (LOCAL to REMOTE, when LOCAL
+                                     // has control devices for that node). A new value triggers a
+                                     // Describe crawl. Absent when there are no devices to report
+                                     // ("optional" lets the receiver tell "absent" from a real 0)
 }
 
 // ======================================================================
@@ -107,8 +108,9 @@ message Read {
 
 // "Tell me what this device is and what it reports." The answer is a Device.
 message Describe {
-  uint32 device = 1;  // Device index to describe. LOCAL asks 0, 1, 2, ... until it gets
-                      // STATUS_BAD_REQUEST, which means there are no more devices
+  uint32 device = 1;  // Device index to describe. The asker starts at 1 and goes 1, 2, ... until
+                      // it gets STATUS_BAD_REQUEST, which means there are no more devices.
+                      // Index 0 is reserved and always answers STATUS_BAD_REQUEST
 }
 
 // "Send my text back". Used for link testing and for measuring the payload limit.

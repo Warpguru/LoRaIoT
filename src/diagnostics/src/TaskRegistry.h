@@ -41,5 +41,5 @@ class TaskRegistryClass {
   TaskRegistryEntry    entries[TASK_REGISTRY_MAX] = {};
 };
 
-/** Global singleton — extern declared here, defined in TaskRegistry.cpp. */
+/** Global singleton - extern declared here, defined in TaskRegistry.cpp. */
 extern TaskRegistryClass TaskRegistry;

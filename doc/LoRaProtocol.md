@@ -135,7 +135,7 @@ error frame (this avoids storms).
 
 | Code | Name | Reply | Purpose |
 |---|---|---|---|
-| `0x01` | PING | ACK | Liveness check, unicast or broadcast. Payload is a `Beacon` with only `boot_id` |
+| `0x01` | PING | ACK | Liveness check, unicast or broadcast. Payload is a `Beacon` with `boot_id` and optionally `registry_rev` |
 | `0x02` | BEACON | none | "I'm here", REMOTE to LOCAL. Payload is a `Beacon` with all fields |
 | `0x03` | ACK | none | Confirms one DATA_ACK or one PING |
 | `0x04` | DATA | none | Data, fire and forget |
@@ -148,6 +148,8 @@ error frame (this avoids storms).
 - A REQUEST is answered by its RESPONSE, which carries `request_seq`. There is no separate ACK.
 - The ACK payload names the acknowledged TYPE and SEQ. The acknowledged message's sender is
   the ACK's DST, so it is not repeated in the payload.
+- A `DATA_ACK` received for an unknown device is answered with `ACK{status=BAD_REQUEST}`, and the
+  receiver schedules a Describe crawl for that peer.
 - Codes `0x08` - `0x7F` are reserved, `0x80` - `0xFF` are free for experiments.
 
 ---
@@ -216,7 +218,16 @@ LOCAL:
 - Registry entry per REMOTE: address, last-seen timestamp, boot_id, online flag.
 - Any frame from a REMOTE updates its last-seen.
 - On a BEACON from an unknown REMOTE or with a changed `boot_id`, LOCAL replies with a PING.
+- LOCAL's PING reply MAY carry `registry_rev` (the revision of LOCAL's control table for that node).
+  LOCAL only includes `registry_rev` when it has at least one control device registered for that
+  node (R4).
+- When LOCAL's control table for a node changes (new device, new metric, changed unit or scale),
+  LOCAL sends an immediate PING to that node, not only on the next beacon.
 - LOCAL sends a keep-alive PING to every REMOTE idle for 60 s.
+- REMOTE runs the same keep-alive towards LOCAL (the same `PingTask` code on both tiers). LOCAL
+  answers every PING with an ACK. After the idle threshold and three unanswered PINGs the peer is
+  marked offline in the cache registry (`online:false` in the REST views); any received frame
+  from it revives it.
 - An entry is purged after 180 s without any frame (3 missed slow beacons). The REMOTE
   re-enters through its fast beacon.
 
@@ -226,7 +237,8 @@ LOCAL:
 
 There is no scheduler. Either side may transmit at any time (LBT off), and collisions are
 resolved by §7. A node that waits for an ACK or RESPONSE sends no new frames except replies.
-LOCAL may poll cyclically by sending REQUEST(Read). The interval is configurable (M6).
+Values are pushed by their owner (`DATA` or `DATA_ACK`). `REQUEST(Read)` is an on-demand fetch only
+(for example `?live=true` in REST); nothing sends it on a timer.
 
 ---
 
@@ -323,10 +335,11 @@ message Beacon {
                                      // Absent in a PING
   optional uint32 uptime_s = 3;      // Seconds since the REMOTE booted. Absent in a PING
   optional uint32 registry_rev = 4;  // Counter that increases whenever a Device or a Metric is
-                                     // added or changed. If LOCAL sees a new value it re-reads
-                                     // the definitions with Describe. The definitions themselves
-                                     // are NOT in the beacon. Absent in a PING ("optional" lets
-                                     // LOCAL tell "absent" from a real 0)
+                                     // added or changed. Present in a BEACON (REMOTE to LOCAL)
+                                     // and MAY be present in a PING (LOCAL to REMOTE, when LOCAL
+                                     // has control devices for that node). A new value triggers a
+                                     // Describe crawl. Absent when there are no devices to report
+                                     // ("optional" lets the receiver tell "absent" from a real 0)
 }
 
 // ======================================================================
@@ -341,8 +354,9 @@ message Read {
 
 // "Tell me what this device is and what it reports." The answer is a Device.
 message Describe {
-  uint32 device = 1;  // Device index to describe. LOCAL asks 0, 1, 2, ... until it gets
-                      // STATUS_BAD_REQUEST, which means there are no more devices
+  uint32 device = 1;  // Device index to describe. The asker starts at 1 and goes 1, 2, ... until
+                      // it gets STATUS_BAD_REQUEST, which means there are no more devices.
+                      // Index 0 is reserved and always answers STATUS_BAD_REQUEST
 }
 
 // "Send my text back". Used for link testing and for measuring the payload limit.
@@ -384,9 +398,9 @@ message Response {
 Rules:
 - Sender, receiver and version are never in the payload (header only). `boot_id` is the single exception
   because it describes the sender's lifetime, not its identity.
-- A BEACON must set all four `Beacon` fields. A PING sets only `boot_id`. The firmware checks this by TYPE,
-  not by the schema. nanopb generates `has_fw_version`, `has_uptime_s` and `has_registry_rev` for the
-  `optional` fields.
+- A BEACON must set all four `Beacon` fields. A PING sets `boot_id` and MAY set `registry_rev` (the revision
+  of the sender's control table for the target node). The firmware checks this by TYPE, not by the schema.
+  nanopb generates `has_fw_version`, `has_uptime_s` and `has_registry_rev` for the `optional` fields.
 - Unknown fields are ignored (forward compatibility).
 - A `Measurement` whose `metric_id` or `Data.device` is not in the LOCAL cache is shown in REST as
   `device_<n>/metric_<id>` and triggers a `Describe` (§12).
@@ -427,20 +441,30 @@ The wire format supports both deployments:
 - Custom code on the REMOTE itself (for example a Modbus meter on the GPIO pins) reports as `device = 0`.
 - An external device that posts to the REMOTE's SoftAP REST API is addressed as `device = 1..N`.
 
-The REMOTE owns the device table and each device's metric table. A new device name in a REST post is
-assigned the next free index (indices are contiguous). A new JSON key from a known device is assigned the
-next free metric id (starting at 1) with the unit and scale taken from the post.
+The owner of a device table defines devices, assigns indices, and pushes values. The other node (cache
+side) learns the definitions via `Describe` and receives values via pushes. For sensor data the REMOTE is
+the owner and LOCAL is the cache; for control data LOCAL is the owner and the REMOTE is the cache. The
+full design is in `TechDebt.md`.
 
-`Beacon.registry_rev` increments whenever either table changes. LOCAL keeps a cache per REMOTE and
-device, and fills it with the `Describe` crawl:
+The owner assigns each new device name the next free index (indices are contiguous, starting at 1). A new
+JSON key from a known device is assigned the next free metric id (starting at 1) with the unit and scale
+taken from the post.
 
-1. LOCAL sees a new `boot_id` or a new `registry_rev` in a BEACON.
-2. It sends `REQUEST(Describe{0})`, then `Describe{1}`, `Describe{2}`, and so on.
-3. The REMOTE answers each with `RESPONSE(Device)`. It answers `STATUS_BAD_REQUEST` for a device
+`Beacon.registry_rev` (and `registry_rev` in a PING, §8) increments whenever either table changes. The
+cache side keeps a cache per peer and device, and fills it with the `Describe` crawl:
+
+1. The cache side sees a new `boot_id` or a new `registry_rev` in a BEACON or PING.
+2. It sends `REQUEST(Describe{1})`, then `Describe{2}`, and so on. Index 0 is reserved and answers
+   `STATUS_BAD_REQUEST`.
+3. The owner answers each with `RESPONSE(Device)`. It answers `STATUS_BAD_REQUEST` for a device
    that does not exist, which ends the crawl.
-4. A lost frame is only a timeout, so LOCAL retries (§7) and does not end the crawl early.
+4. A lost frame is only a timeout, so the cache side retries (§7) and does not end the crawl early.
 
-LOCAL drops the whole cache of a REMOTE when its `boot_id` changes. It also runs `Describe` for a
+After the owner answers `STATUS_BAD_REQUEST` for the first nonexistent device index (end of crawl), it
+pushes the current values of all its devices as `DATA` or `DATA_ACK` frames. This ensures the cache side
+has definitions and values together.
+
+The cache side drops the whole cache of a peer when its `boot_id` changes. It also runs `Describe` for a
 single device when a `Data` frame mentions a device or metric it does not know.
 
 An AP device pushes its data, so a live read of such a device returns the last posted values with
@@ -506,13 +530,62 @@ sequenceDiagram
     participant L as LOCAL
     R->>L: BEACON(boot_id, registry_rev=3)
     Note over L: new boot_id or registry_rev
-    L->>R: REQUEST(Describe 0)
-    R-->>L: RESPONSE(Device 0 "Node", metrics)
     L->>R: REQUEST(Describe 1)
     R-->>L: RESPONSE(Device 1 "Sensor A", metrics)
     L->>R: REQUEST(Describe 2)
     R-->>L: RESPONSE(BAD_REQUEST)
-    Note over L: cache complete, DATA can now be named
+    Note over L: cache complete
+    R->>L: DATA(device=1, values)
+    Note over L: values arrive together with definitions
+```
+
+Push after crawl (R1) - the owner pushes values after the crawl ends:
+
+```mermaid
+sequenceDiagram
+    participant owner as Owner node
+    participant cache as Cache node
+    Note over cache: new boot_id or registry_rev from owner
+    cache->>owner: REQUEST(Describe 1)
+    owner-->>cache: RESPONSE(Device 1 "Sensor A", metrics)
+    cache->>owner: REQUEST(Describe 2)
+    owner-->>cache: RESPONSE(BAD_REQUEST)
+    Note over owner: crawl complete - push all current values
+    owner->>cache: DATA / DATA_ACK (device=1, values)
+```
+
+Control data flow (LOCAL to REMOTE):
+
+```mermaid
+sequenceDiagram
+    participant C as REST client
+    participant L as LOCAL (owner)
+    participant R as REMOTE (cache)
+    C->>L: POST /api/lora/nodes/control?addr=2
+    L->>R: DATA_ACK(device=1, values)
+    R-->>L: ACK(acked_type=5, acked_seq, status=OK)
+    L-->>C: 200 OK
+    Note over R: control cache updated
+```
+
+PING with registry_rev (§8):
+
+```mermaid
+sequenceDiagram
+    participant R as REMOTE
+    participant L as LOCAL
+    R->>L: BEACON(boot_id, registry_rev=3)
+    Note over L: new boot_id
+    L->>R: PING(boot_id, registry_rev=5)
+    R-->>L: ACK(acked_type=1, acked_seq)
+    Note over R: registry_rev=5 is new - crawl LOCAL
+    R->>L: REQUEST(Describe 1)
+    L-->>R: RESPONSE(Device 1 "Output V", metrics)
+    R->>L: REQUEST(Describe 2)
+    L-->>R: RESPONSE(BAD_REQUEST)
+    Note over L: crawl complete - push control values
+    L->>R: DATA_ACK(device=1, values)
+    R-->>L: ACK(status=OK)
 ```
 
 Liveness:
@@ -536,42 +609,43 @@ This is a deterrent, not security. The key is stored in NVS and must not be hard
 
 ---
 
-## 17. REST mapping (implemented - Phase 2/3 of RestPlan.md)
+## 17. REST mapping (target - push-control-plan.md Steps 7/8)
 
-The final contract is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
-
-URLs use query parameters (not path parameters) - rationale in `doc/TechDebt.md §2`.
-Blocking calls use `LoRaBroker` (`src/LoRaIoT/src/LoRaBroker.h`); frame encoding is a
-Phase 2 stub pending the frame protocol layer.
+Forward-looking design, not yet implemented. The source of truth for the implemented API is
+`src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
 
 ### LOCAL endpoints
 
-| Method | Endpoint | LoRa action |
-|---|---|---|
-| `GET` | `/api/lora/nodes` | Registry read (no LoRa) |
-| `GET` | `/api/lora/nodes/snapshot` | All nodes: cached schema + values (no LoRa) |
-| `GET` | `/api/lora/nodes/snapshot?addr=` | One node: cached schema + values; `?device=` filters to one device; `?refresh=true` re-runs the Describe crawl (§12) |
-| `GET` | `/api/lora/nodes/snapshot?addr=&device=&live=true&timeout=ms` | `REQUEST(Read)` -> wait for `RESPONSE(Data)` via LoRaBroker |
-| `GET,POST` | `/api/lora/nodes/ping?addr=` | `PING` -> wait for `ACK`; returns RTT and `boot_id` |
-| `GET` | `/api/lora/ping` | Broadcast `PING` (dst=0xFF) -> first `ACK` |
-| `POST` | `/api/lora/nodes/echo?addr=` | `REQUEST(Echo)` -> wait for `RESPONSE(Echo)`; REMOTE reverses the text |
-| `POST` | `/api/lora/nodes/data?addr=&ack=true\|false` | `DATA` or `DATA_ACK` (fire and forget) |
-| `POST` | `/api/lora/beacon` | Broadcast `BEACON` (fire and forget) |
-| `GET` | `/api/lora/stats` | TX/RX/CRC/ACK counters from `LoRaTransport` (no LoRa) |
+| Method | Endpoint | Role | LoRa action |
+|---|---|---|---|
+| `GET` | `/api/lora/nodes` | - | Registry read (no LoRa) |
+| `GET` | `/api/lora/nodes/sensor` | cache | All or one REMOTE: cached schema + values (`?addr=`, `?device=`); `?live=true` sends `REQUEST(Read)`; `?refresh=true` re-runs Describe crawl |
+| `GET` | `/api/lora/nodes/control` | owner | Content of LOCAL's `ControlRegistry`; `?addr=` selects the target node |
+| `POST` | `/api/lora/nodes/control?addr=` | owner | Create/update control device and push values to node `addr` via `DATA_ACK`; `200` after `ACK{OK}`, `202` when deferred (peer unknown - crawl triggered), `504` on timeout |
+| `GET,POST` | `/api/lora/nodes/ping?addr=` | - | `PING` -> wait for `ACK`; returns RTT and `boot_id` |
+| `GET` | `/api/lora/ping` | - | Broadcast `PING` (dst=0xFF) -> first `ACK` |
+| `POST` | `/api/lora/nodes/echo?addr=` | - | `REQUEST(Echo)` -> `RESPONSE(Echo)` |
+| `POST` | `/api/lora/nodes/data?addr=&ack=true\|false` | - | Debug: `DATA` or `DATA_ACK` (fire and forget); removed in Step 15 |
+| `POST` | `/api/lora/beacon` | - | Broadcast `BEACON` (fire and forget) |
+| `GET` | `/api/lora/stats` | - | TX/RX/CRC/ACK counters (no LoRa) |
 
-### REMOTE endpoint
+### REMOTE endpoints
 
-| Method | Endpoint | Action |
-|---|---|---|
-| `POST` | `/api/sensor/data` | SoftAP sensor ingestion; updates `SensorRegistry`; increments `registry_rev` on schema change |
+| Method | Endpoint | Role | Action |
+|---|---|---|---|
+| `POST` | `/api/lora/sensor/data` | owner | Sensor ingestion (renamed from `/api/sensor/data`); updates `SensorRegistry`; increments `registry_rev` on schema change |
+| `GET` | `/api/lora/nodes/sensor` | owner | Content of REMOTE's `SensorRegistry` (own devices and values) |
+| `GET` | `/api/lora/nodes/control` | cache | Content of LOCAL's control cache: definitions, values and `age_ms` per value |
 
 ### Behaviour notes
 
 - All blocking calls return `503` when the broker is busy (one request already in flight).
 - All blocking calls return `504` when no response arrives within the timeout (default 3 s).
 - `{device}` accepts the index (integer) or the device name string.
-- Handlers never touch Serial2 directly; blocking ones post to LoRaBroker and wait on a semaphore.
-- Unsolicited DATA and DATA_ACK frames update the LOCAL cache via `DeviceRegistry.storeData()` and may be pushed over WebSocket (not yet wired).
+- Handlers never touch Serial2 directly; blocking ones post to `LoRaBroker` and wait on a semaphore.
+- `?live=true` and `?refresh=true` are only valid on cache views (LOCAL `.../sensor`, REMOTE `.../control`). On owner views they return `400`.
+- REMOTE has exactly one peer (LOCAL) and does not accept `?addr=`; a request that sends it returns `400`.
+- The source of truth for the implemented API is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
 
 ---
 

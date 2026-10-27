@@ -44,7 +44,7 @@ int8_t LoRaStateClass::findOrCreateEntry(uint8_t src) {
   int8_t idx = findEntry(src);
   if (idx >= 0) return idx;
 
-  if (entryCount >= DEVICE_REGISTRY_MAX_NODES) {
+  if (entryCount >= LORA_MAX_PEERS) {
     // Table full: evict the oldest entry (smallest lastSeenMs).
     uint8_t oldest = 0;
     for (uint8_t i = 1; i < entryCount; i++) {
@@ -53,7 +53,7 @@ int8_t LoRaStateClass::findOrCreateEntry(uint8_t src) {
       }
     }
     Log_warn("LoRaState: registry full (%u entries); evicting oldest src=0x%02X",
-             DEVICE_REGISTRY_MAX_NODES, entries[oldest].src);
+             LORA_MAX_PEERS, entries[oldest].src);
     idx = static_cast<int8_t>(oldest);
   } else {
     idx = static_cast<int8_t>(entryCount++);

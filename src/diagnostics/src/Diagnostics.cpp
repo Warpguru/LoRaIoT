@@ -12,6 +12,7 @@
 #include "../../lora/src/nanopb/pb_decode.h"
 #include "../../lora/src/nanopb/pb_encode.h"
 #include "../../lora/src/nanopb/loraiot.pb.h"
+#include "../../registry/src/DeviceTable.h"
 
 /**
  * Diagnostics.cpp - E220 wiring and register read/write check.
@@ -479,6 +480,222 @@ static bool runFrameCodecCheck() {
   return true;
 }
 
+// ---- DeviceTable self-check ------------------------------------------------
+
+/**
+ * Exercises DeviceTable in both the owner role and the cache role without any
+ * FreeRTOS or radio involvement. Pure software: runs at boot alongside the
+ * protobuf and frame codec checks.
+ *
+ * Scenarios covered:
+ *   1. Register two devices, each with two metrics. Read back and verify.
+ *   2. Device table full: a fifth registration must be rejected.
+ *   3. Name too long: a metric with a 13-char name must be rejected.
+ *   4. Partial applyData: updating one metric leaves the other unchanged.
+ *   5. Unknown device in applyData returns UNKNOWN_DEVICE.
+ *   6. Unknown metric in applyData returns UNKNOWN_METRIC; known metrics still applied.
+ *   7. applyDevice with changed scale clears the value of that metric only;
+ *      metrics whose definition is unchanged keep their value.
+ */
+static bool runDeviceTableCheck() {
+  Log_info("DeviceTable diag: ===== DeviceTable self-check =====");
+
+  DeviceTable t;
+
+  // --- Check 1: register two devices, two metrics each -----------------------
+  {
+    // SensorA: 1 new device (rev=1) + 2 new metrics (rev=2, 3)
+    uint32_t dIdx1, mId1a, mId1b;
+    if (!t.registerMetric("SensorA", "Voltage", "V", 100, dIdx1, mId1a) ||
+        !t.registerMetric("SensorA", "Temp",    "C", 10,  dIdx1, mId1b)) {
+      Log_error("DeviceTable diag:   FAIL register SensorA metrics");
+      return false;
+    }
+    if (dIdx1 != 1 || mId1a != 1 || mId1b != 2) {
+      Log_error("DeviceTable diag:   FAIL unexpected SensorA indices: d1=%u m1a=%u m1b=%u",
+                (unsigned)dIdx1, (unsigned)mId1a, (unsigned)mId1b);
+      return false;
+    }
+    if (t.getDeviceCount() != 1 || t.getRev() != 3) {
+      Log_error("DeviceTable diag:   FAIL after SensorA: deviceCount=%u rev=%u, expected 1 / 3",
+                (unsigned)t.getDeviceCount(), (unsigned)t.getRev());
+      return false;
+    }
+
+    // SensorB: 1 new device (rev=4) + 1 new metric (rev=5)
+    uint32_t dIdx2, mId2;
+    if (!t.registerMetric("SensorB", "Pressure", "Pa", 1, dIdx2, mId2)) {
+      Log_error("DeviceTable diag:   FAIL register SensorB metric");
+      return false;
+    }
+    if (dIdx2 != 2 || mId2 != 1) {
+      Log_error("DeviceTable diag:   FAIL unexpected SensorB indices: d2=%u m2=%u",
+                (unsigned)dIdx2, (unsigned)mId2);
+      return false;
+    }
+    if (t.getDeviceCount() != 2 || t.getRev() != 5) {
+      Log_error("DeviceTable diag:   FAIL after SensorB: deviceCount=%u rev=%u, expected 2 / 5",
+                (unsigned)t.getDeviceCount(), (unsigned)t.getRev());
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS register and read back (2 devices, 5 schema changes)");
+  }
+
+  // --- Check 2: device table full --------------------------------------------
+  // Register two more devices to fill all four slots, then verify the fifth is rejected.
+  {
+    uint32_t d, m;
+    t.registerMetric("SensorC", "X", "", 1, d, m);
+    t.registerMetric("SensorD", "Y", "", 1, d, m);
+    if (t.getDeviceCount() != 4) {
+      Log_error("DeviceTable diag:   FAIL expected 4 devices after filling table, got %u",
+                (unsigned)t.getDeviceCount());
+      return false;
+    }
+    if (t.registerMetric("SensorE", "Z", "", 1, d, m)) {
+      Log_error("DeviceTable diag:   FAIL fifth device was incorrectly accepted");
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS device table full: fifth device correctly rejected");
+  }
+
+  // --- Check 3: name too long ------------------------------------------------
+  {
+    DeviceTable t2;
+    uint32_t d, m;
+    // 13-char name (max is 12 + NUL = 13 buffer, so exactly 13 visible chars is one over)
+    if (t2.registerMetric("SensorA", "TooLongNameXX", "V", 1, d, m)) {
+      Log_error("DeviceTable diag:   FAIL over-length metric name was accepted");
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS over-length name correctly rejected");
+  }
+
+  // --- Check 4: partial applyData leaves other metrics unchanged -------------
+  {
+    DeviceTable t3;
+    uint32_t d, m1, m2;
+    t3.registerMetric("Dev", "Alpha", "V", 1, d, m1);
+    t3.registerMetric("Dev", "Beta",  "A", 1, d, m2);
+
+    // Store an initial value for both metrics via storeValue
+    const uint32_t nowMs = 1000;
+    t3.storeValue(d, m1, 42, nowMs);
+    t3.storeValue(d, m2, 99, nowMs);
+
+    // applyData with only metric m1 updated
+    loraiot_Data data = loraiot_Data_init_zero;
+    data.device              = d;
+    data.values_count        = 1;
+    data.values[0].metric_id = m1;
+    data.values[0].value     = 77;
+    data.age_ms              = 0;
+
+    DeviceTableResult r = t3.applyData(data, nowMs + 500);
+    if (r != DeviceTableResult::OK) {
+      Log_error("DeviceTable diag:   FAIL applyData returned %u, expected OK",
+                (unsigned)r);
+      return false;
+    }
+
+    DeviceSlot slot;
+    t3.copyDevice(d, slot);
+    bool m1Updated = (slot.metrics[0].value == 77 && slot.metrics[0].hasValue);
+    bool m2Intact  = (slot.metrics[1].value == 99 && slot.metrics[1].hasValue);
+    if (!m1Updated || !m2Intact) {
+      Log_error("DeviceTable diag:   FAIL partial update: m1.value=%d (want 77) m2.value=%d (want 99)",
+                slot.metrics[0].value, slot.metrics[1].value);
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS partial applyData: updated metric=77, untouched metric=99");
+  }
+
+  // --- Check 5: unknown device in applyData ----------------------------------
+  {
+    DeviceTable t4;
+    loraiot_Data data = loraiot_Data_init_zero;
+    data.device              = 1;
+    data.values_count        = 1;
+    data.values[0].metric_id = 1;
+    data.values[0].value     = 5;
+    if (t4.applyData(data, 0) != DeviceTableResult::UNKNOWN_DEVICE) {
+      Log_error("DeviceTable diag:   FAIL expected UNKNOWN_DEVICE for empty table");
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS unknown device returns UNKNOWN_DEVICE");
+  }
+
+  // --- Check 6: unknown metric in applyData; known metrics still applied -----
+  {
+    DeviceTable t5;
+    uint32_t d, m1;
+    t5.registerMetric("Dev", "Voltage", "V", 1, d, m1);
+
+    loraiot_Data data = loraiot_Data_init_zero;
+    data.device              = d;
+    data.values_count        = 2;
+    data.values[0].metric_id = m1;   // known
+    data.values[0].value     = 55;
+    data.values[1].metric_id = 99;   // unknown
+    data.values[1].value     = 0;
+    data.age_ms              = 0;
+
+    DeviceTableResult r = t5.applyData(data, 0);
+    if (r != DeviceTableResult::UNKNOWN_METRIC) {
+      Log_error("DeviceTable diag:   FAIL expected UNKNOWN_METRIC, got %u", (unsigned)r);
+      return false;
+    }
+    DeviceSlot slot;
+    t5.copyDevice(d, slot);
+    if (slot.metrics[0].value != 55 || !slot.metrics[0].hasValue) {
+      Log_error("DeviceTable diag:   FAIL known metric value=%d (want 55)", slot.metrics[0].value);
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS unknown metric returns UNKNOWN_METRIC; known metric still applied");
+  }
+
+  // --- Check 7: applyDevice with changed scale clears value; unchanged keeps it
+  {
+    DeviceTable t6;
+    uint32_t d, m1, m2;
+    t6.registerMetric("Dev", "Alpha", "V", 100, d, m1);
+    t6.registerMetric("Dev", "Beta",  "A", 10,  d, m2);
+    t6.storeValue(d, m1, 42, 0);
+    t6.storeValue(d, m2, 99, 0);
+
+    // applyDevice: Alpha keeps scale=100 (value should survive), Beta gets scale=20 (value cleared)
+    loraiot_Device dev = loraiot_Device_init_zero;
+    dev.device = d;
+    strncpy(dev.name, "Dev", sizeof(dev.name) - 1);
+    dev.metrics_count    = 2;
+    dev.metrics[0].id    = m1;  dev.metrics[0].scale = 100;
+    strncpy(dev.metrics[0].name, "Alpha", sizeof(dev.metrics[0].name) - 1);
+    strncpy(dev.metrics[0].unit, "V",     sizeof(dev.metrics[0].unit)  - 1);
+    dev.metrics[1].id    = m2;  dev.metrics[1].scale = 20;   // changed
+    strncpy(dev.metrics[1].name, "Beta",  sizeof(dev.metrics[1].name) - 1);
+    strncpy(dev.metrics[1].unit, "A",     sizeof(dev.metrics[1].unit)  - 1);
+
+    if (t6.applyDevice(dev) != DeviceTableResult::OK) {
+      Log_error("DeviceTable diag:   FAIL applyDevice returned non-OK");
+      return false;
+    }
+
+    DeviceSlot slot;
+    t6.copyDevice(d, slot);
+    bool alphaKept   = (slot.metrics[0].hasValue && slot.metrics[0].value == 42);
+    bool betaCleared = (!slot.metrics[1].hasValue);
+    if (!alphaKept || !betaCleared) {
+      Log_error("DeviceTable diag:   FAIL value preservation: alpha.hasValue=%d alpha.value=%d beta.hasValue=%d",
+                slot.metrics[0].hasValue, slot.metrics[0].value, slot.metrics[1].hasValue);
+      return false;
+    }
+    Log_info("DeviceTable diag:   PASS applyDevice: unchanged metric value preserved, changed scale clears value");
+  }
+
+  Log_info("DeviceTable diag: ===== RESULT: PASS. All DeviceTable checks passed =====");
+  return true;
+}
+
 // ---- Public entry points ---------------------------------------------------
 
 // Set at boot so the first diagnosticsLoop() call runs the check. Atomic because
@@ -505,5 +722,8 @@ void diagnosticsLoop() {
   }
   if (!runFrameCodecCheck()) {
     Log_error("Frame diag: ===== RESULT: FAIL. See the FAIL line above =====");
+  }
+  if (!runDeviceTableCheck()) {
+    Log_error("DeviceTable diag: ===== RESULT: FAIL. See the FAIL line above =====");
   }
 }

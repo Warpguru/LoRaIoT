@@ -127,7 +127,7 @@ local buffer consumes 15% of it - well within the safe range.
 
 The LoRaIoT firmware runs on two node types - LOCAL and REMOTE - from a single
 shared codebase. Several API endpoints are only meaningful on one tier (e.g.
-`GET /api/lora/nodes` only works on LOCAL; `POST /api/sensor/data` only works
+`GET /api/lora/nodes` only works on LOCAL; `POST /api/lora/sensor/data` only works
 on REMOTE). Without filtering, the Swagger UI on a REMOTE node shows LOCAL-only
 endpoints that will always return 400 or do nothing.
 

@@ -4,21 +4,21 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-#include "../../LoRaIoT/src/DeviceRegistry.h"
+#include "../../registry/src/PeerRegistry.h"
 
 /**
  * LoRaState.h - Mutex-protected per-SRC link state (doc/LoRaProtocol.md §6, §8).
  *
  * Responsibilities:
- *   - LRU registry of known remote addresses (capacity = DEVICE_REGISTRY_MAX_NODES)
+ *   - LRU registry of known remote addresses (capacity = LORA_MAX_PEERS)
  *   - Per-SRC last SEQ and last boot_id for duplicate detection and reboot detection
  *   - Purge of entries unseen for LORA_STATE_STALE_MS (180 s)
  *
  * Used on both LOCAL and REMOTE (both sides track their peer's SEQ and boot_id).
- * On LOCAL, DeviceRegistry additionally holds the cached device/metric definitions;
+ * On LOCAL, SensorRegistry (PeerRegistry) additionally holds the cached device/metric definitions;
  * LoRaState is the lower-level link-layer state only.
  *
- * Capacity is intentionally tied to DEVICE_REGISTRY_MAX_NODES (currently 3): both
+ * Capacity is intentionally tied to LORA_MAX_PEERS (currently 3): both
  * registries track the same set of remote nodes so they must stay in sync.
  *
  * ARDUINO SINGLETON PATTERN:
@@ -93,7 +93,7 @@ class LoRaStateClass {
   uint8_t listRemotes(uint8_t* outBuf, uint8_t maxCount) const;
 
  private:
-  LoRaRemoteEntry entries[DEVICE_REGISTRY_MAX_NODES];
+  LoRaRemoteEntry entries[LORA_MAX_PEERS];
   uint8_t         entryCount = 0;
   SemaphoreHandle_t mutex    = nullptr;
 

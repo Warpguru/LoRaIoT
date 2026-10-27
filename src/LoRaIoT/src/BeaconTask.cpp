@@ -10,7 +10,7 @@
 #include "Application.h"
 #include "LoRaConfig.h"
 #include "LoRaBroker.h"
-#include "SensorRegistry.h"
+#include "../../registry/src/PeerRegistry.h"
 #include "../../lora/src/LoRaFrame.h"
 #include "../../lora/src/LoRaTransport.h"
 #include "../../lora/src/nanopb/pb_encode.h"
@@ -60,7 +60,7 @@ static void sendBeacon() {
     beacon.has_uptime_s     = true;
     beacon.uptime_s         = (uint32_t)(millis() / 1000UL);
     beacon.has_registry_rev = true;
-    beacon.registry_rev     = SensorRegistry.getRegistryRev();
+    beacon.registry_rev     = SensorRegistry.getRegistryRev(LORA_DEFAULT_ADDR_LOCAL);
 
     // 2. Encode into a stack buffer.
     uint8_t payloadBuf[loraiot_Beacon_size];

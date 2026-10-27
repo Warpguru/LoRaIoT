@@ -8,11 +8,14 @@
 #include "../../util/src/LogBuffer.h"
 #include "../../util/src/TaskUtils.h"
 #include "Application.h"
-#include "DeviceRegistry.h"
+#include "../../registry/src/PeerRegistry.h"
 #include "LoRaBroker.h"
 
 /**
- * PingTask.cpp - LOCAL link-liveness task. See PingTask.h for the overall design.
+ * PingTask.cpp - link-liveness task, identical on LOCAL and REMOTE. See PingTask.h for the
+ * overall design. The only tier difference is data, not code: the peers it watches live in
+ * cachedRegistry() (SensorRegistry on LOCAL, ControlRegistry on REMOTE), and only LOCAL ever
+ * receives BEACONs, so only LOCAL's beacon queue ever fills.
  *
  * The task has two triggers, both handled in one loop so that only one PING is ever
  * in flight from this task (the broker has a single slot anyway):
@@ -31,6 +34,9 @@
 // Beacon notifications from loraTransportTask. Items are node addresses.
 static QueueHandle_t beaconQueue = nullptr;
 
+// Control change notifications from RestService. Items are node addresses.
+static QueueHandle_t controlChangeQueue = nullptr;
+
 // When each node was last pinged by this task, to enforce PING_MIN_GAP_MS.
 // Only the ping task touches this table, so it needs no lock. It has one slot per
 // tracked node; a slot with addr == 0 (the invalid address) is unused.
@@ -38,18 +44,18 @@ struct PingStamp {
     uint8_t  addr;
     uint32_t pingedMs;
 };
-static PingStamp pingStamps[DEVICE_REGISTRY_MAX_NODES];
+static PingStamp pingStamps[LORA_MAX_PEERS];
 
 // ---- Static helpers ---------------------------------------------------------
 
 /**
  * Return the stamp slot for addr. Reuses the slot already assigned to addr, then an
  * unused slot, and finally the slot pinged longest ago. The last case only happens
- * after DeviceRegistry evicted an offline node to make room for a new address.
+ * after cachedRegistry() evicted an offline node to make room for a new address.
  */
 static PingStamp& stampFor(uint8_t addr) {
     PingStamp* oldest = &pingStamps[0];
-    for (uint8_t i = 0; i < DEVICE_REGISTRY_MAX_NODES; i++) {
+    for (uint8_t i = 0; i < LORA_MAX_PEERS; i++) {
         if (pingStamps[i].addr == addr) {
             return pingStamps[i];
         }
@@ -104,9 +110,19 @@ static void replyToBeacon(uint8_t addr) {
 }
 
 /**
+ * Answer a control change notification for addr with an immediate PING without
+ * enforcing PING_MIN_GAP_MS.
+ */
+static void replyToControlChange(uint8_t addr) {
+    BrokerResult result = pingOnce(addr);
+    Log_debug("PingTask: control change PING to 0x%02X -> %s", addr,
+              result == BrokerResult::OK ? "ACK" : (result == BrokerResult::BUSY ? "busy" : "no ACK"));
+}
+
+/**
  * Decide whether an idle node is really gone: up to PING_OFFLINE_ATTEMPTS PINGs with
  * PING_ATTEMPT_GAP_MS between failures. One ACK proves the node is alive (the receive
- * path already refreshed lastSeenMs via DeviceRegistry.markSeen), so we stop at once.
+ * path already refreshed lastSeenMs via cachedRegistry().markSeen), so we stop at once.
  * Only when every attempt got a real timeout is the node marked offline.
  */
 static void checkIdleNode(uint8_t addr) {
@@ -140,23 +156,23 @@ static void checkIdleNode(uint8_t addr) {
         }
     }
 
-    DeviceRegistry.markOffline(addr);
+    cachedRegistry().markOffline(addr);
     Log_warn("PingTask: node 0x%02X did not answer %u PINGs - marked offline",
              addr, PING_OFFLINE_ATTEMPTS);
 }
 
 /**
  * Check every online node for idleness. Uses getLiveness(), which does not copy the
- * ~2 KB NodeEntry, because this task only has a 4 KB stack.
+ * ~1.4 KB PeerEntry, because this task only has a 4 KB stack.
  */
 static void sweepIdleNodes() {
-    uint8_t addrs[DEVICE_REGISTRY_MAX_NODES];
-    const uint8_t count = DeviceRegistry.listNodes(addrs, DEVICE_REGISTRY_MAX_NODES);
+    uint8_t addrs[LORA_MAX_PEERS];
+    const uint8_t count = cachedRegistry().listPeers(addrs, LORA_MAX_PEERS);
 
     for (uint8_t i = 0; i < count; i++) {
         uint32_t lastSeenMs = 0;
         bool     online     = false;
-        if (!DeviceRegistry.getLiveness(addrs[i], lastSeenMs, online)) {
+        if (!cachedRegistry().getLiveness(addrs[i], lastSeenMs, online)) {
             continue;
         }
         // Offline nodes are not pinged: it would only waste air time. The next BEACON
@@ -179,11 +195,21 @@ static void pingTask(void* /*param*/) {
 
     for (;;) {
         uint8_t addr = 0;
-        // Waiting on the queue doubles as the sweep timer: a beacon wakes us at once,
-        // otherwise we wake after PING_SWEEP_INTERVAL_MS.
+        // Priority 1: process any pending control-change notifications first
+        while (xQueueReceive(controlChangeQueue, &addr, 0) == pdTRUE) {
+            replyToControlChange(addr);
+        }
+
+        // Priority 2: wait for a beacon notification (doubles as sweep timer)
         if (xQueueReceive(beaconQueue, &addr, pdMS_TO_TICKS(PING_SWEEP_INTERVAL_MS)) == pdTRUE) {
             replyToBeacon(addr);
         }
+
+        // Process any control change that arrived during beacon reply or queue wait
+        while (xQueueReceive(controlChangeQueue, &addr, 0) == pdTRUE) {
+            replyToControlChange(addr);
+        }
+
         sweepIdleNodes();
     }
 }
@@ -191,8 +217,9 @@ static void pingTask(void* /*param*/) {
 // ---- Public interface -------------------------------------------------------
 
 void pingTaskBegin() {
-    beaconQueue = xQueueCreate(PING_QUEUE_LENGTH, sizeof(uint8_t));
-    if (beaconQueue == nullptr) {
+    beaconQueue        = xQueueCreate(PING_QUEUE_LENGTH, sizeof(uint8_t));
+    controlChangeQueue = xQueueCreate(PING_QUEUE_LENGTH, sizeof(uint8_t));
+    if (beaconQueue == nullptr || controlChangeQueue == nullptr) {
         Log_error("PingTask: queue creation failed - keep-alive disabled");
         return;
     }
@@ -209,4 +236,12 @@ void pingTaskNotifyBeacon(uint8_t addr) {
     // Timeout 0: never block the receive path. A full queue drops this notification;
     // the node beacons again, so the only cost is a later switch to the slow rate.
     xQueueSend(beaconQueue, &addr, 0);
+}
+
+void pingTaskNotifyControlChange(uint8_t addr) {
+    if (controlChangeQueue == nullptr) {
+        return;
+    }
+    // Timeout 0: never block the HTTP handler.
+    xQueueSend(controlChangeQueue, &addr, 0);
 }

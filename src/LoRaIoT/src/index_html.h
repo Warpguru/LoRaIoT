@@ -60,7 +60,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
   <h2>LoRa Nodes <span class="note">(LOCAL only)</span></h2>
   <ul>
     <li><a href="/api/lora/nodes"><code>GET /api/lora/nodes</code></a> - list all known remote nodes</li>
-    <li><a href="/api/lora/nodes/snapshot?addr=2"><code>GET /api/lora/nodes/snapshot?addr=2</code></a> - full device + metric snapshot for node 0x02</li>
+    <li><a href="/api/lora/nodes/sensor"><code>GET /api/lora/nodes/sensor</code></a> - sensor schema + values for all nodes</li>
+    <li><a href="/api/lora/nodes/sensor?addr=2"><code>GET /api/lora/nodes/sensor?addr=2</code></a> - sensor schema + values for node 0x02</li>
+    <li><a href="/api/lora/nodes/control"><code>GET /api/lora/nodes/control</code></a> - control schema + values</li>
+    <li><a href="/api/lora/nodes/control?addr=2"><code>GET /api/lora/nodes/control?addr=2</code></a> - control schema + values for node 0x02</li>
     <li><a href="/api/lora/nodes/ping?addr=2"><code>GET /api/lora/nodes/ping?addr=2</code></a> - ping node 0x02</li>
     <li><a href="/api/lora/ping"><code>GET /api/lora/ping</code></a> - broadcast ping</li>
     <li><a href="/api/lora/stats"><code>GET /api/lora/stats</code></a> - TX/RX/CRC/ACK counters</li>

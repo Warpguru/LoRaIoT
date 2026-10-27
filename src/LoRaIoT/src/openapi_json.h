@@ -435,27 +435,74 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
-    "/api/lora/nodes/snapshot": {
+    "/api/lora/nodes/sensor": {
       "get": {
-        "x-tier": "LOCAL",
         "tags": ["LoRa-Nodes"],
-        "summary": "Unified device schema and metric snapshot",
-        "description": "Returns cached device definitions and metric values for one or all nodes in a single call. Use `addr` to target one node, `device` to filter to one device, `live=true` (requires `addr`+`device`) to send a REQUEST(Read) before responding.",
+        "summary": "Unified device schema and metric sensor view",
+        "description": "On LOCAL: returns cached device definitions and sensor metric values for one or all nodes. Use `addr` to target one node, `device` to filter to one device, `live=true` (requires `addr`+`device`) to send a REQUEST(Read) before responding, `refresh=true` (requires `addr`) to schedule a Describe crawl and return 202. On REMOTE: returns own sensor device definitions and values (`addr`, `live` and `refresh` return 400). Every node carries `online` and `peer_last_seen_ms_ago`; every device carries `age_ms`.",
         "parameters": [
-          { "name": "addr",    "in": "query", "required": false, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address. Omit for all known nodes" },
-          { "name": "device",  "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Device index filter. Only valid when addr is present" },
-          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to send REQUEST(Read) before responding. Requires both addr and device" },
-          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 4000, "default": 3000 }, "description": "Live read timeout in ms (max 4000 - constrained by async_tcp WDT). Only used with live=true" }
+          { "name": "addr",    "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 254 }, "description": "Node LoRa address. Omit for all known nodes (LOCAL only)" },
+          { "name": "device",  "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Device index filter" },
+          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to send REQUEST(Read) before responding. Requires both addr and device (LOCAL only)" },
+          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 4000, "default": 3000 }, "description": "Live read timeout in ms (max 4000 - constrained by async_tcp WDT). Only used with live=true" },
+          { "name": "refresh", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to schedule a Describe crawl of the node and return 202 at once. Requires addr (LOCAL only)" }
         ],
         "responses": {
           "200": {
             "description": "OK",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeSnapshotResponse" } } }
           },
+          "202": { "description": "refresh=true: Describe crawl scheduled", "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string" }, "addr": { "type": "integer" } } } } } },
           "400": { "description": "Invalid parameter combination", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "404": { "description": "addr specified but node not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "503": { "description": "LoRa broker busy (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "504": { "description": "No response from remote node within timeout (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/lora/nodes/control": {
+      "get": {
+        "tags": ["LoRa-Nodes"],
+        "summary": "Unified device schema and metric control view",
+        "description": "On LOCAL: returns own control device definitions and values from ControlRegistry (`live` and `refresh` return 400). Use `addr` to target one node, `device` to filter to one device. On REMOTE: returns cached control device definitions and values from LOCAL (`addr` returns 400); `live=true` (requires `device`) sends a REQUEST(Read) to LOCAL before responding, `refresh=true` schedules a Describe crawl of LOCAL and returns 202. Every node carries `online` and `peer_last_seen_ms_ago`; every device carries `age_ms`.",
+        "parameters": [
+          { "name": "addr",   "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 254 }, "description": "Node LoRa address. Omit for all nodes (LOCAL only)" },
+          { "name": "device", "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Device index filter" },
+          { "name": "live",    "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to send REQUEST(Read) to LOCAL before responding. Requires device (REMOTE only)" },
+          { "name": "timeout", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 200, "maximum": 4000, "default": 3000 }, "description": "Live read timeout in ms. Only used with live=true" },
+          { "name": "refresh", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Set true to schedule a Describe crawl of LOCAL and return 202 at once (REMOTE only)" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeSnapshotResponse" } } }
+          },
+          "202": { "description": "refresh=true: Describe crawl scheduled", "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string" } } } } } },
+          "400": { "description": "Invalid parameter combination", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "addr specified but node not found, or live=true and LOCAL returned an error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "No response from LOCAL within timeout (live=true only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "x-tier": "LOCAL",
+        "tags": ["LoRa-Control"],
+        "summary": "Register control devices, store setpoint values, and push to remote",
+        "description": "Registers devices and metrics in ControlRegistry for the specified node `addr`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK. Returns accepted/rejected metrics, registry revision, and delivery status.",
+        "parameters": [
+          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Target remote node LoRa address" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataPayload" } } }
+        },
+        "responses": {
+          "200": { "description": "All metrics accepted and remote acknowledged with STATUS_OK. Body includes delivery=ok.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
+          "202": { "description": "Metrics accepted but delivery deferred - schema changed (PING sent, REMOTE may not have crawled yet) or REMOTE answered BAD_REQUEST (crawl scheduled). Body includes delivery=after_describe.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
+          "400": { "description": "Invalid JSON, missing fields, or all metrics rejected. No delivery attempted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
+          "404": { "description": "Target node addr not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
+          "504": { "description": "No ACK from remote node after all retries", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } }
         }
       }
     },
@@ -480,7 +527,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "summary": "Echo test to a remote node",
         "description": "Sends REQUEST(Echo) to the node; REMOTE returns the text reversed. Blocks until RESPONSE arrives or timeout.",
         "parameters": [
-          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" }
+          { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 254 }, "description": "Node LoRa address" }
         ],
         "requestBody": {
           "required": true,
@@ -552,12 +599,12 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     },
     "/api/lora/nodes/data": {
       "post": {
-        "x-tier": "LOCAL",
+        "x-tier": "ALL",
         "tags": ["LoRa-Control"],
-        "summary": "Send a Data frame to a remote node",
-        "description": "Queues a Data frame to the node. `ack=true` for reliable DATA_ACK, `ack=false` for fire-and-forget DATA. Returns 202 immediately.",
+        "summary": "Send a Data frame to a peer node",
+        "description": "Sends a Data frame to the node. `ack=true` for reliable DATA_ACK with retries (blocks until ACK or timeout, returning 200 with ack_status or 504 on timeout), `ack=false` for fire-and-forget DATA (returns 202 immediately).",
         "parameters": [
-          { "name": "addr", "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Remote node LoRa address" },
+          { "name": "addr", "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 1, "maximum": 254 }, "description": "Peer node LoRa address" },
           { "name": "ack",  "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true = reliable DATA_ACK, false = unreliable DATA" }
         ],
         "requestBody": {
@@ -565,12 +612,15 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataPayload" } } }
         },
         "responses": {
-          "202": { "description": "Frame queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataDispatchResponse" } } } },
-          "400": { "description": "Missing addr or invalid body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+          "200": { "description": "DATA_ACK acknowledged by peer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataAckResponse" } } } },
+          "202": { "description": "DATA frame queued (fire-and-forget)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataDispatchResponse" } } } },
+          "400": { "description": "Missing addr or invalid body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "LoRa broker busy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "504": { "description": "Timeout waiting for DATA_ACK ACK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
-    "/api/sensor/data": {
+    "/api/lora/sensor/data": {
       "post": {
         "x-tier": "REMOTE",
         "tags": ["Sensor"],
@@ -671,7 +721,8 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "addr":         { "type": "integer" },
           "boot_id":      { "type": "integer" },
           "registry_rev": { "type": "integer" },
-          "online":       { "type": "boolean" },
+          "online":       { "type": "boolean", "description": "false when the consumer-side liveness tracker presumes the peer dead (3 unanswered keep-alive PINGs); false also when the peer is not yet known" },
+          "peer_last_seen_ms_ago": { "type": "integer", "description": "Milliseconds since the last frame from the peer, read from the liveness tracker; 0 when the peer is not yet known. Use together with online and the per-device age_ms for a fail-safe" },
           "devices":      { "type": "array", "items": { "$ref": "#/components/schemas/SnapshotDevice" } }
         }
       },
@@ -760,6 +811,13 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "addr":  { "type": "integer" },
           "ack":   { "type": "boolean", "description": "true = DATA_ACK (reliable), false = DATA (unreliable)" },
           "bytes": { "type": "integer", "description": "Encoded nanopb payload length in bytes" }
+        }
+      },
+      "DataAckResponse": {
+        "type": "object",
+        "properties": {
+          "addr":       { "type": "integer" },
+          "ack_status": { "type": "string", "enum": ["OK", "BAD_REQUEST"], "description": "OK = peer stored values, BAD_REQUEST = unknown device or schema" }
         }
       },
       "SensorDataPayload": {

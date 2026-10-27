@@ -229,12 +229,23 @@ LoRaStats LoRaTransportClass::getStats() const {
 }
 
 void LoRaTransportClass::resetStats() {
-  if (statsMutex == nullptr) return;
+  if (statsMutex == nullptr) {
+    return;
+  }
   xSemaphoreTake(statsMutex, portMAX_DELAY);
   statsTxFrames  = 0;
   statsRxFrames  = 0;
   statsCrcErrors = 0;
   statsAckLoss   = 0;
+  xSemaphoreGive(statsMutex);
+}
+
+void LoRaTransportClass::incrementAckLoss() {
+  if (statsMutex == nullptr) {
+    return;
+  }
+  xSemaphoreTake(statsMutex, portMAX_DELAY);
+  statsAckLoss++;
   xSemaphoreGive(statsMutex);
 }
 

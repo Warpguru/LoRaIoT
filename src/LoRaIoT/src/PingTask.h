@@ -6,7 +6,7 @@
 #include "../../lora/src/LoRaTransport.h"
 
 /**
- * PingTask.h - LOCAL link-liveness task (FreeRTOS).
+ * PingTask.h - link-liveness task (FreeRTOS), the same code on LOCAL and REMOTE.
  *
  * Replaces the PoC "PING every 2 s" loop. REMOTE nodes already prove they are
  * alive by beaconing (every ~60 s once discovered), so LOCAL only has to pay for
@@ -21,13 +21,20 @@
  *                       (longer than one beacon interval plus jitter, so at least
  *                       one beacon was missed) is pinged up to PING_OFFLINE_ATTEMPTS
  *                       times. If every attempt fails the node is marked offline
- *                       in DeviceRegistry. Offline nodes are not pinged again;
- *                       any received frame (typically the next BEACON) revives them.
+ *                       in cachedRegistry(). Offline nodes are not pinged again;
+ *                       any received frame revives them.
+ *
+ * Both tiers run the keep-alive (item 2) so each side can fail safe on its own:
+ * LOCAL watches REMOTEs in SensorRegistry, REMOTE watches LOCAL in ControlRegistry.
+ * Item 1 only ever triggers on LOCAL, because only REMOTE nodes send BEACONs. The
+ * peer answers every PING with an ACK (see onLoRaReceive()). On REMOTE, LOCAL's
+ * beacon-reply PINGs arrive about once per beacon interval, so a healthy LOCAL
+ * is never idle for PING_IDLE_THRESHOLD_MS.
  *
  * All pings go through the LoRaBroker (single in-flight slot), so the task only
  * ever blocks itself while waiting; reception keeps running in loraTransportTask.
  *
- * LOCAL only. Call pingTaskBegin() after loraBrokerBegin() and DeviceRegistry.begin().
+ * Call pingTaskBegin() after loraBrokerBegin() and the registries' begin().
  */
 
 // ---- Timing and sizing constants --------------------------------------------
@@ -68,12 +75,19 @@ static constexpr UBaseType_t PING_TASK_PRIORITY = 1;
 // ---- Public interface -------------------------------------------------------
 
 /**
- * Start the ping task. Call once from applicationSetup() on LOCAL only.
+ * Start the ping task. Call once from applicationSetup() on both tiers.
  */
 void pingTaskBegin();
 
 /**
- * Tell the ping task that a BEACON arrived from addr, so it answers with a PING.
+ * Tell the ping task that a BEACON arrived from addr, so it answers with a PING (LOCAL only,
+ * REMOTE never receives BEACONs).
  * Never blocks; safe to call from loraTransportTask (the receive callback).
  */
 void pingTaskNotifyBeacon(uint8_t addr);
+
+/**
+ * Tell the ping task that a control change occurred for addr, so it sends an immediate PING.
+ * Does not enforce PING_MIN_GAP_MS. Never blocks; safe to call from HTTP handlers.
+ */
+void pingTaskNotifyControlChange(uint8_t addr);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../lora/src/nanopb/loraiot.pb.h"
+#include "../../registry/src/PeerRegistry.h"
 
 /**
  * Application.h - LoRaIoT application entry points.
@@ -27,3 +28,15 @@ bool loraIsReady();
  * No-op if LoRa transport is not yet initialised.
  */
 void loraPushData(uint8_t dstAddr, const loraiot_Data& data);
+
+/**
+ * Registry this node OWNS (answers Describe/Read, pushes values).
+ *   LOCAL: ControlRegistry   REMOTE: SensorRegistry
+ */
+PeerRegistry& ownedRegistry();
+
+/**
+ * Registry this node CACHES (crawled by Describe, filled by pushes).
+ *   LOCAL: SensorRegistry    REMOTE: ControlRegistry (unused until Step 9)
+ */
+PeerRegistry& cachedRegistry();

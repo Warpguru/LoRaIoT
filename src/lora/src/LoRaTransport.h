@@ -238,6 +238,12 @@ class LoRaTransportClass {
    */
   void resetStats();
 
+  /**
+   * Increment the ackLoss counter by one. Thread-safe.
+   * Called by loraSendDataReliable when all DATA_ACK retry attempts fail.
+   */
+  void incrementAckLoss();
+
  private:
   LoRaReceiveCallback receiveCallback = nullptr;
   TaskHandle_t transportTaskHandle = nullptr;

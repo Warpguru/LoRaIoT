@@ -8,11 +8,14 @@
 #include "../../lora/src/LoRaTransport.h"
 #include "../../lora/src/nanopb/pb_encode.h"
 #include "../../lora/src/nanopb/loraiot.pb.h"
-#include "DeviceRegistry.h"
+#include "../../registry/src/PeerRegistry.h"
+#include "Application.h"
 #include "LoRaConfig.h"
 
 /**
- * DescribeCrawler.cpp - LOCAL node Describe crawl state machine.
+ * DescribeCrawler.cpp - Describe crawl state machine.
+ *
+ * Runs on both nodes; on each node it crawls the peer's owned registry via cachedRegistry().
  *
  * State machine overview:
  *
@@ -88,11 +91,11 @@ static uint16_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
 // ---- Public API -------------------------------------------------------------
 
 void describeCrawlerSchedule(uint8_t addr) {
-  // DeviceRegistry.updateNodeMeta() already set crawlPending before this is called.
+  // updatePeerMeta() on the cached registry already set crawlPending before this is called.
   // describeCrawlerLoop() picks it up on the next applicationLoop tick.
   // This function must NOT touch any mutex: it is called from loraTransportTask
   // (the receive callback), and crawlerMutex is owned by describeCrawlerLoop()
-  // which runs on the applicationLoop task — taking it here would deadlock.
+  // which runs on the applicationLoop task - taking it here would deadlock.
   Log_info("DescribeCrawler: crawl scheduled for node 0x%02X", addr);
 }
 
@@ -110,12 +113,11 @@ void describeCrawlerLoop() {
 
   if (ctx.state == CrawlState::IDLE) {
     // Scan for a node with a pending crawl
-    uint8_t nodeAddrs[DEVICE_REGISTRY_MAX_NODES];
-    uint8_t count = DeviceRegistry.listNodes(nodeAddrs, DEVICE_REGISTRY_MAX_NODES);
+    uint8_t nodeAddrs[LORA_MAX_PEERS];
+    uint8_t count = cachedRegistry().listPeers(nodeAddrs, LORA_MAX_PEERS);
 
     for (uint8_t i = 0; i < count; i++) {
-      NodeEntry node;
-      if (DeviceRegistry.getNode(nodeAddrs[i], node) && node.crawlPending) {
+      if (cachedRegistry().isCrawlPending(nodeAddrs[i])) {
         ctx.state       = CrawlState::REQUESTING;
         ctx.targetAddr  = nodeAddrs[i];
         ctx.deviceIdx   = DESCRIBE_FIRST_DEVICE_IDX;
@@ -166,17 +168,22 @@ void describeCrawlerOnResponse(uint8_t srcAddr, const loraiot_Response& response
     return;
   }
 
+  // Ignore late responses to earlier retries (Finding 10)
+  if (response.request_seq != ctx.inFlightSeq) {
+    Log_warn("DescribeCrawler: ignoring late RESPONSE from 0x%02X request_seq=%u (expected %u)",
+             srcAddr, response.request_seq, ctx.inFlightSeq);
+    xSemaphoreGive(crawlerMutex);
+    return;
+  }
+
   if (response.status == loraiot_Status_STATUS_BAD_REQUEST) {
     // STATUS_BAD_REQUEST on a Describe means no more devices exist.
     // Retrieve pendingRev from the registry to record what rev we just crawled.
-    NodeEntry node;
     uint32_t crawledRev = 0;
-    if (DeviceRegistry.getNode(srcAddr, node)) {
-      crawledRev = node.pendingRev;
-    }
+    cachedRegistry().getPendingRev(srcAddr, crawledRev);
     Log_info("DescribeCrawler: crawl complete for node 0x%02X (%u devices found, rev=%u)",
              srcAddr, ctx.deviceIdx, crawledRev);
-    DeviceRegistry.markCrawlComplete(srcAddr, crawledRev);
+    cachedRegistry().markCrawlComplete(srcAddr, crawledRev);
     ctx.state = CrawlState::IDLE;
     xSemaphoreGive(crawlerMutex);
     return;
@@ -184,7 +191,7 @@ void describeCrawlerOnResponse(uint8_t srcAddr, const loraiot_Response& response
 
   // Successful Describe response: store the Device definition
   if (response.which_result == loraiot_Response_def_tag) {
-    DeviceRegistry.storeDevice(srcAddr, response.result.def);
+    cachedRegistry().storeDevice(srcAddr, response.result.def);
     ctx.deviceIdx++;
     ctx.retryCount  = 0;
     ctx.sentAtMs    = millis();

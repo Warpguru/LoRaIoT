@@ -16,7 +16,8 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/openapi` | `Server.cpp` | Both | OpenAPI 3.0 specification (JSON, from PROGMEM) |
 | GET | `/openapi/ui` | `Server.cpp` | Both | Swagger UI explorer (fetches JS/CSS from unpkg CDN) |
 | GET | `/status` | `Server.cpp` | Both | ESP32 hardware diagnostics |
-| GET | `/reset` | `Server.cpp` | Both | Clear WiFi and all persisted NVS settings, then reboot |
+| GET | `/reboot` | `Server.cpp` | Both | Reboot the ESP32, all settings preserved (use this to restart a node) |
+| GET | `/reset` | `Server.cpp` | Both | DESTRUCTIVE: clear WiFi and all persisted NVS settings, then reboot. Never call from automation or agents |
 | GET | `/api/log` | `Server.cpp` | Both | Read (and optionally clear) the log ring buffer |
 | PUT | `/api/log/level` | `Server.cpp` | Both | Change the active log level |
 | GET | `/api/tier` | `RestService.cpp` | Both | Return the active gateway tier (LOCAL / REMOTE) |
@@ -30,14 +31,16 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/api/system/cpu` | `RestService.cpp` | Both | Get active CPU frequency |
 | PUT | `/api/system/cpu` | `RestService.cpp` | Both | Set active CPU frequency (80, 160, 240 MHz) |
 | GET | `/api/lora/nodes` | `RestService.cpp` | LOCAL | List all known remote nodes |
-| GET | `/api/lora/nodes/snapshot` | `RestService.cpp` | LOCAL | Unified device + metric snapshot (`?addr=`, `?device=`, `?live=true`, `?timeout=ms`) |
+| GET | `/api/lora/nodes/sensor` | `RestService.cpp` | Both | Unified device + metric sensor view (`?addr=`, `?device=`, `?live=true`, `?timeout=ms`, `?refresh=true`) |
+| GET | `/api/lora/nodes/control` | `RestService.cpp` | Both | Unified device + metric control view (`?addr=`, `?device=`; REMOTE also `?live=true`, `?timeout=ms`, `?refresh=true`) |
+| POST | `/api/lora/nodes/control` | `RestService.cpp` | LOCAL | Register control devices and store setpoint values (`?addr=`) |
 | GET | `/api/lora/stats` | `RestService.cpp` | LOCAL | LoRa transport TX/RX/CRC/ACK counters |
 | POST | `/api/lora/nodes/echo` | `RestService.cpp` | LOCAL | Echo test to a remote node (`?addr=`) |
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
 | GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
 | POST | `/api/lora/beacon` | `RestService.cpp` | LOCAL | Trigger an immediate manual BEACON |
-| POST | `/api/lora/nodes/data` | `RestService.cpp` | LOCAL | Send a Data frame (`?addr=`, `?ack=true\|false`) |
-| POST | `/api/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from a SoftAP IoT device |
+| POST | `/api/lora/nodes/data` | `RestService.cpp` | Both | Send a Data frame (`?addr=`, `?ack=true\|false`) |
+| POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from a SoftAP IoT device |
 | WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s) |
 
 ---
@@ -50,7 +53,21 @@ Returns ESP32 hardware diagnostics as JSON (fields come from `fillESPInfo()` in 
 
 ---
 
+## GET /reboot
+
+Reboots the ESP32 about 200 ms after the response is sent. WiFi credentials and all NVS settings (tier, log
+level, LoRa channel, air rate, address, CPU frequency) are preserved, so the node comes back with the same
+configuration within a few seconds. **This is the endpoint to use whenever a node has to be restarted.**
+
+**Response:** `200 text/plain`
+
+---
+
 ## GET /reset
+
+> **WARNING - DESTRUCTIVE. Never call this endpoint from scripts, tests, skills or agents.** It wipes the
+> node's WiFi credentials and configuration, and the developer must re-provision the node by hand through
+> the captive portal. To restart a node use [`GET /reboot`](#get-reboot) instead.
 
 Clears the stored WiFi credentials and every application setting persisted in NVS, then reboots into the
 WiFiManager captive portal. The erased settings are the gateway tier, the log level, the LoRa channel,
@@ -339,28 +356,123 @@ slots are taken and a new node appears.
 
 ---
 
-## GET /api/lora/nodes/snapshot
+## GET /api/lora/nodes/sensor
 
-Returns cached device definitions and metric values for one or all nodes in a single call. LOCAL only.
+Returns device definitions and sensor metric values. Available on all nodes.
+- **LOCAL (cache view):** returns cached sensor definitions and values received from REMOTE nodes. Supports `?addr=`, `?device=`, `?live=true`, `?timeout=ms`, `?refresh=true`.
+- **REMOTE (owner view):** returns own sensor definitions and values from `SensorRegistry`. `addr`, `live`, and `refresh` return 400.
 
 | Query parameter | Required | Description |
 |---|---|---|
-| `addr` | No | Remote node LoRa address (2-254). Omit for all known nodes |
-| `device` | No | Filter to one device index. Only valid when `addr` is present |
-| `live` | No | `true` to send a REQUEST(Read) before responding. Requires both `addr` and `device` |
+| `addr` | No | Node LoRa address (1-254). Omit for all known nodes (LOCAL only) |
+| `device` | No | Filter to one device index |
+| `live` | No | `true` to send a REQUEST(Read) before responding. Requires both `addr` and `device` (LOCAL only) |
 | `timeout` | No | Live read timeout in ms (200-4000, default 3000). Only used with `live=true` |
+| `refresh` | No | `true` to schedule a Describe crawl of the node and return 202 at once. Requires `addr` (LOCAL only) |
 
 | Status | Meaning |
 |---|---|
 | `200` | OK. Body: `NodeSnapshotResponse` |
-| `400` | Invalid parameter combination (e.g. `device` without `addr`, `live=true` without both `addr` and `device`) |
+| `202` | `refresh=true`: crawl scheduled. Body: `{"status":"crawl_scheduled","addr":2}` |
+| `400` | Invalid parameter combination (e.g. `device` without `addr` on LOCAL, `refresh` without `addr`, or `addr`/`live`/`refresh` on REMOTE) |
 | `404` | `addr` specified but node not found |
 | `503` | LoRa broker busy (only when `live=true`) |
 | `504` | No response from remote node within timeout (only when `live=true`) |
 
 ```json
-{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":6,"online":true,"devices":[{"device":1,"name":"PMon A","has_data":true,"age_ms":820,"alert":false,"metrics":[{"id":1,"name":"Voltage","unit":"V","scale":10,"value":2311},{"id":2,"name":"Current","unit":"A","scale":100,"value":380}]},{"device":2,"name":"EnvMon B","has_data":false,"age_ms":0,"alert":false,"metrics":[{"id":1,"name":"Temperature","unit":"C","scale":10,"value":null},{"id":2,"name":"Humidity","unit":"%","scale":10,"value":null}]}]}]}
+{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":6,"online":true,"peer_last_seen_ms_ago":4120,"devices":[{"device":1,"name":"PMon A","has_data":true,"age_ms":820,"alert":false,"metrics":[{"id":1,"name":"Voltage","unit":"V","scale":10,"value":2311},{"id":2,"name":"Current","unit":"A","scale":100,"value":380}]},{"device":2,"name":"EnvMon B","has_data":false,"age_ms":0,"alert":false,"metrics":[{"id":1,"name":"Temperature","unit":"C","scale":10,"value":null},{"id":2,"name":"Humidity","unit":"%","scale":10,"value":null}]}]}]}
 ```
+
+---
+
+## GET /api/lora/nodes/control
+
+Returns device definitions and control metric values. Available on all nodes.
+- **LOCAL (owner view):** returns own control device definitions and setpoints from `ControlRegistry`. Supports `?addr=` and `?device=`. `live` and `refresh` return 400.
+- **REMOTE (cache view):** returns cached control definitions and setpoints received from LOCAL. `addr` returns 400.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | No | Target node LoRa address (1-254). Omit for all nodes (LOCAL only) |
+| `device` | No | Filter to one device index |
+| `live` | No | `true` to send a REQUEST(Read) to LOCAL before responding. Requires `device` (REMOTE only; LOCAL returns 400) |
+| `timeout` | No | Live read timeout in ms (200-4000, default 3000). Only used with `live=true` |
+| `refresh` | No | `true` to schedule a Describe crawl of LOCAL and return 202 at once (REMOTE only; LOCAL returns 400) |
+
+| Status | Meaning |
+|---|---|
+| `200` | OK. Body: `NodeSnapshotResponse` |
+| `202` | `refresh=true`: crawl scheduled. Body: `{"status":"crawl_scheduled"}` |
+| `400` | Invalid parameter combination (e.g. `device` without `addr` on LOCAL, `live` without `device`, `addr` on REMOTE, or `live`/`refresh` on LOCAL) |
+| `404` | `addr` specified but node not found, or `live=true` and LOCAL returned an error |
+| `503` | LoRa broker busy (only when `live=true`) |
+| `504` | No response from LOCAL within timeout (only when `live=true`) |
+
+```json
+{"nodes":[{"addr":2,"boot_id":305419896,"registry_rev":1,"online":true,"peer_last_seen_ms_ago":2100,"devices":[{"device":1,"name":"Charger","has_data":true,"age_ms":120,"alert":false,"metrics":[{"id":1,"name":"VoltageSet","unit":"V","scale":100,"value":333}]}]}]}
+```
+
+### Freshness fields: `age_ms` and `peer_last_seen_ms_ago`
+
+Both views on both nodes carry the same two freshness signals, so a consumer (for example
+a REMOTE that applies a LOCAL setpoint) can build its own fail-safe:
+
+| Field | Level | Meaning |
+|---|---|---|
+| `age_ms` | device | Milliseconds since the oldest metric value of the device was stored. `0` with `has_data:false` means no value yet. |
+| `online` | node | `false` after 3 unanswered keep-alive PINGs, or when the peer is not yet known. |
+| `peer_last_seen_ms_ago` | node | Milliseconds since the last valid frame from the peer (any frame type). `0` when the peer is not yet known (then `online` is `false`). |
+
+Owner views report the liveness of the consumer peer as tracked by the other registry on the
+same node (LOCAL control owner view: `SensorRegistry`; REMOTE sensor owner view: `ControlRegistry`).
+
+Recommended consumer rule: treat a value as trustworthy only when `online` is `true`,
+`has_data` is `true`, `age_ms` is below your own staleness limit, and `peer_last_seen_ms_ago`
+is below your link-loss limit. `age_ms` says how old the value is; `peer_last_seen_ms_ago`
+says whether the source is still reachable. A small `age_ms` with a large
+`peer_last_seen_ms_ago` is a recent value from a peer that has since gone quiet. Otherwise
+fall back to your safe state, optionally after `?refresh=true` or `?live=true&device=N`.
+
+---
+
+## POST /api/lora/nodes/control
+
+LOCAL only. Registers control devices and metrics in `ControlRegistry[addr]`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK with retry.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `addr` | Yes | Target remote node LoRa address (2-254) |
+
+**Request body:** `application/json`
+
+```json
+{"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | Metrics accepted and remote acknowledged (`delivery: "ok"`) |
+| `202` | Metrics accepted but delivery deferred: schema changed (PING sent, REMOTE may not have crawled yet) or REMOTE answered BAD_REQUEST (crawl scheduled). `delivery: "after_describe"` |
+| `400` | Invalid JSON, missing `addr`/`device`/`metrics`, or all metrics rejected. No delivery attempted. |
+| `404` | Target node `addr` not found |
+| `503` | LoRa broker busy (`delivery: "busy"`) |
+| `504` | No ACK from remote node after all retries (`delivery: "timeout"`) |
+
+**Response body** (`200`, `202`, `503`, `504`):
+
+```json
+{"accepted":[{"metric":"VoltageSet","device_idx":1,"metric_id":1}],"rejected":[],"registry_rev":1,"delivery":"ok"}
+```
+
+`delivery` values: `"ok"` | `"after_describe"` | `"busy"` | `"timeout"`
+
+**Response body** (`400`):
+
+```json
+{"accepted":[],"rejected":["BadMetric"],"registry_rev":1}
+```
+
+LOCAL stores the setpoint value regardless of delivery outcome. The remote will receive the latest value once the crawl completes (Step 12).
 
 ---
 
@@ -382,7 +494,7 @@ Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns i
 
 | Query parameter | Required | Description |
 |---|---|---|
-| `addr` | Yes | Remote node LoRa address (2-254) |
+| `addr` | Yes | Node LoRa address (1-254) |
 
 **Request body:** `application/json`
 
@@ -444,11 +556,13 @@ Queues an immediate manual BEACON frame for broadcast transmission. Returns 202 
 
 ## POST /api/lora/nodes/data
 
-Encodes a `loraiot_Data` payload and queues it for transmission to a remote node. LOCAL only.
+Sends a `loraiot_Data` payload to a peer node. Both nodes.
+- `ack=true`: reliable `DATA_ACK` transmission with up to 4 attempts (200 ms timeout per attempt, random 20-200 ms backoff). Blocks until ACK received or timeout.
+- `ack=false`: fire-and-forget `DATA` frame. Returns 202 immediately.
 
 | Query parameter | Required | Description |
 |---|---|---|
-| `addr` | Yes | Remote node LoRa address (2-254) |
+| `addr` | Yes | Peer node LoRa address (1-254) |
 | `ack` | No | `true` = DATA_ACK (reliable), `false` = DATA (unreliable). Default `false` |
 
 **Request body:** `application/json`
@@ -459,12 +573,15 @@ Encodes a `loraiot_Data` payload and queues it for transmission to a remote node
 
 | Status | Meaning |
 |---|---|
-| `202` | Frame queued. Body: `{"addr":2,"ack":false,"bytes":12}` |
-| `400` | Missing `addr`, invalid body, or nanopb encode failed |
+| `200` | Reliable DATA_ACK delivered and acknowledged. Body: `{"addr":2,"ack_status":"OK"}` or `{"addr":2,"ack_status":"BAD_REQUEST"}` |
+| `202` | Unreliable DATA frame queued. Body: `{"addr":2,"ack":false,"bytes":12}` |
+| `400` | Missing `addr`, addr out of range (1-254), invalid body, or nanopb encode failed |
+| `503` | LoRa broker busy (another request in flight) |
+| `504` | Gateway timeout (no ACK received after all retry attempts) |
 
 ---
 
-## POST /api/sensor/data
+## POST /api/lora/sensor/data
 
 REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
 

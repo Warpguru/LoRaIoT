@@ -13,7 +13,7 @@ This is an ESP32 embedded firmware project (Arduino C++, FreeRTOS). The Maven/Ec
 - **`ESP/`** is a **symlink to a read-only reference project** - never write to anything under `ESP/`. Use it only to copy proven patterns (FreeRTOS task wiring, logging, NVS persistence).
 - All firmware for this project lives at the repository root (`LoRaIoT.ino`, `LoRaIoT.cpp`, `platformio.ini`, `src/`).
 - Project overview, source layout, libraries, and wiring are documented in `README.md`, `platformio.ini`, and `doc/Feasibility.md` - do not duplicate them here.
-- Dependency direction (one-way only): `service` and `LoRaIoT` → `diagnostics` → `util`.
+- Dependency direction (one-way only): `service` and `LoRaIoT` → `registry` → `lora` → `util`; `service` and `LoRaIoT` → `diagnostics` → `util`. The `lora` library must never include upward into `LoRaIoT` or `registry`.
 - `LogBuffer`, `StatusLed`, and `ESPInfo.h` originate from `ESP/SerialController/` - update both if the shared components need changes.
 
 ## Build and Tooling Constraints
@@ -79,7 +79,8 @@ StatusLed ledTask (priority 1, tskNO_AFFINITY)
 - **API documentation:** every endpoint must be added to both `src/LoRaIoT/src/openapi_json.h` (source of truth, served at `GET /openapi`) and `doc/RestApi.md` (human-readable companion) in the same change that registers it.
 - **Manual-use endpoints must be `GET`** so they work from a browser address bar or a link on the index page. Add a link for each one to `index_html.h`.
 - **WiFi failure:** `statusLed.setState(LedState::FAULT)` then `vTaskSuspend(NULL)` - ledTask drives SOS forever.
-- **Diagnostics endpoints** (already wired in `Server.cpp`): `GET /api/log`, `PUT /api/log/level`, `GET /status`, `GET /reset`.
+- **Diagnostics endpoints** (already wired in `Server.cpp`): `GET /api/log`, `PUT /api/log/level`, `GET /status`, `GET /reboot`.
+- **NEVER call `GET /reset`.** It erases the WiFi credentials and ALL NVS settings (tier, LoRa channel, address, log level, CPU frequency) and reboots into the captive portal, so the developer has to re-provision the node by hand. The agent must never call it, not for testing, not to "restart" a node, not for any reason. To restart a node use `GET /reboot` (`curl -s http://<node-ip>/reboot`), which keeps all NVS settings. If a task seems to need a factory reset, ask the developer instead.
 - **Log level** is persisted in NVS (`sc_prefs` / `logLevel`) and survives reboots. Set via captive-portal form or `PUT /api/log/level`.
 
 ### Known node addresses (manual testing)
