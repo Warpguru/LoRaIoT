@@ -35,10 +35,10 @@
 static constexpr int STATUS_LED_PIN = 21;
 
 enum class LedState {
-  BOOTING,   // steady ON
-  NO_DEVICE, // slow blink 1 s / 1 s
-  READY,     // off
-  FAULT      // SOS, loops forever
+  BOOTING,   ///< Steady ON - held from begin() until server and devices are ready.
+  NO_DEVICE, ///< Slow blink 1 s on / 1 s off - server up, but no converter found.
+  READY,     ///< LED off - server up and converter communicating normally.
+  FAULT      ///< SOS blink pattern, loops forever - unrecoverable error.
 };
 
 /**
@@ -64,11 +64,14 @@ public:
   void setState(LedState state);
 
 private:
-  static void ledTask(void *param);
+  /** FreeRTOS task body - drives the LED blink state machine. */
+  static void ledTask(void* param);
+
+  /** Execute the SOS Morse pattern once (blocking, must be called from ledTask only). */
   static void blinkSOS(int pin);
 
-  volatile LedState ledState = LedState::BOOTING;
-  TaskHandle_t taskHandle = nullptr;
+  volatile LedState ledState = LedState::BOOTING;  ///< Current LED state; written by setState(), read by ledTask.
+  TaskHandle_t taskHandle = nullptr;               ///< Handle of the ledTask FreeRTOS task.
 };
 
 /** Global singleton instance exported for direct use across the application. */

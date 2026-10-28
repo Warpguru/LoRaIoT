@@ -32,19 +32,17 @@
 // ---- Captive portal form sizes ----------------------------------------------
 
 static constexpr size_t PORTAL_MAX_SELECT_ENTRIES   = 8;    // Max tiers / log levels listed in a portal dropdown
-static constexpr size_t PORTAL_OPTION_SIZE          = 60;   // One <option> element of the tier / level dropdown
+static constexpr size_t PORTAL_OPTION_SIZE          = 80;   // One <option> element of the tier / level dropdown
 static constexpr size_t PORTAL_CHANNEL_OPTION_SIZE  = 80;   // One <option> element of the channel dropdown
-static constexpr size_t PORTAL_TIER_OPTIONS_SIZE    = 200;  // All tier <option> elements
-static constexpr size_t PORTAL_LEVEL_OPTIONS_SIZE   = 300;  // All log level <option> elements
-static constexpr size_t PORTAL_TIER_HTML_SIZE       = 280;  // Custom HTML of the tier parameter
-static constexpr size_t PORTAL_LEVEL_HTML_SIZE      = 350;  // Custom HTML of the log level parameter
-static constexpr size_t PORTAL_NAME_VALUE_LEN       = 8;    // Max value length of the tier / log level parameter
+static constexpr size_t PORTAL_TIER_OPTIONS_SIZE    = 512;  // All tier <option> elements
+static constexpr size_t PORTAL_LEVEL_OPTIONS_SIZE   = 384;  // All log level <option> elements
+static constexpr size_t PORTAL_TIER_HTML_SIZE       = 1024; // Custom HTML of the tier parameter
+static constexpr size_t PORTAL_LEVEL_HTML_SIZE      = 512;  // Custom HTML of the log level parameter
+static constexpr size_t PORTAL_NAME_VALUE_LEN       = 32;   // Max value length of the tier / log level parameter
 static constexpr size_t PORTAL_CHANNEL_VALUE_LEN    = 4;    // Max value length of the channel parameter (incl. terminator)
 static constexpr size_t PORTAL_AIR_RATE_VALUE_LEN   = 8;    // Max value length of the air rate parameter ("62.5k" + terminator)
 static constexpr size_t PORTAL_KEY_VALUE_LEN        = 6;    // Max value length of the loraKey parameter (0-65535 + terminator)
-static constexpr size_t PORTAL_KEY_HTML_SIZE        = 220;  // Custom HTML of the loraKey parameter
-static constexpr size_t PORTAL_ADDR_VALUE_LEN       = 4;    // Max value length of the loraAddr parameter (2-254 + terminator)
-static constexpr size_t PORTAL_ADDR_HTML_SIZE       = 260;  // Custom HTML of the loraAddr parameter
+static constexpr size_t PORTAL_KEY_HTML_SIZE        = 300;  // Custom HTML of the loraKey parameter
 
 // ---- Global server objects -------------------------------------------------
 
@@ -164,7 +162,7 @@ static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
            LoRaConfig.getKey() ? "on" : "off",          // %s key state in banner
            LoRaTransportClass::airRateName(LoRaConfig.getAirRate()),   // %s air data rate in banner
            __DATE__ " " __TIME__,  // %s build timestamp in banner
-           Gateway.getTierName()); // %s TIER JS variable for x-tier filter
+           Gateway.isLocal() ? "LOCAL" : "REMOTE"); // %s TIER JS variable for x-tier filter
   // snprintf returns the length it wanted to write, so written >= buffer size means truncation.
   Log_info("GET /openapi/ui: banner needs %d of %u buffer bytes%s",
            written, (unsigned)sizeof(buf), (written >= (int)sizeof(buf)) ? " (TRUNCATED)" : "");
@@ -215,11 +213,13 @@ void setupServer() {
   //    the closing '>', the output would render as "</select>>", causing a literal '>'
   //    to appear as unformatted text right before the "Save" button in the browser GUI.
 
-  // -- Tier selector (LOCAL / REMOTE) --
+  // -- Tier selector (LOCAL / REMOTE nodes) --
   size_t tierCount;
   const Tier* const* tiers = Tier::values(tierCount);
   const char* tierNames[PORTAL_MAX_SELECT_ENTRIES];
-  for (size_t i = 0; i < tierCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) tierNames[i] = tiers[i]->name();
+  for (size_t i = 0; i < tierCount && i < PORTAL_MAX_SELECT_ENTRIES; i++) {
+    tierNames[i] = tiers[i]->name();
+  }
   // Build the <select> options; the wrapping <select name='tier'> is supplied
   // by WiFiManager when it renders the customHTML around the registered id.
   // We use a full <select> override via customHTML so the dropdown appears
@@ -323,23 +323,7 @@ void setupServer() {
   WiFiManagerParameter keyParam("loraKey", "", keyStr, PORTAL_KEY_VALUE_LEN, keyCustomHtml);
   wm.addParameter(&keyParam);
 
-  // -- LoRa address (REMOTE only; always visible, saveCallback ignores value for LOCAL) --
-  char addrStr[PORTAL_ADDR_VALUE_LEN];
-  snprintf(addrStr, sizeof(addrStr), "%d",
-           (LoRaConfig.getAddress() >= LORA_DEFAULT_ADDR_REMOTE) ? LoRaConfig.getAddress() : LORA_DEFAULT_ADDR_REMOTE);
-  char addrCustomHtml[PORTAL_ADDR_HTML_SIZE];
-  snprintf(addrCustomHtml, sizeof(addrCustomHtml),
-           " type='hidden'><br/>"
-           "<label for='loraAddr'>LoRa Node Address (REMOTE only, 2-254; ignored for LOCAL)</label>"
-           "<input id='loraAddrInput' type='number' min='2' max='254' value='%s'"
-           " onchange=\"document.getElementById('loraAddr').value=this.value\">",
-           addrStr);
-  addrCustomHtml[strlen(addrCustomHtml) - 1] = '\0';
-  strncat(addrCustomHtml, "</input", sizeof(addrCustomHtml) - strlen(addrCustomHtml) - 1);
-  WiFiManagerParameter addrParam("loraAddr", "", addrStr, PORTAL_ADDR_VALUE_LEN, addrCustomHtml);
-  wm.addParameter(&addrParam);
-
-  auto saveCallback = [&tierParam, &levelParam, &channelParam, &airRateParam, &keyParam, &addrParam]() {
+  auto saveCallback = [&tierParam, &levelParam, &channelParam, &airRateParam, &keyParam]() {
     const char* chosenTier    = tierParam.getValue();
     const char* chosenLevel   = levelParam.getValue();
     const char* chosenChannel = channelParam.getValue();
@@ -399,29 +383,11 @@ void setupServer() {
       }
     }
 
-    // LoRa address - applied only for REMOTE; LOCAL is always 0x01.
+    // LoRa address is derived automatically from the selected tier (LOCAL=0x01, REMOTE 1=0x02, etc.).
     if (Gateway.isConfigured()) {
-      if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
-        const char* chosenAddr = addrParam.getValue();
-        if (chosenAddr != nullptr && chosenAddr[0] != '\0') {
-          int addr = atoi(chosenAddr);
-          if (addr >= LORA_DEFAULT_ADDR_REMOTE && addr <= LORA_MAX_ADDR_REMOTE) {
-            LoRaConfig.setAddress((uint8_t)addr);
-            Log_info("LoRa address set from portal to 0x%02X", LoRaConfig.getAddress());
-          } else {
-            Log_warn("Portal returned invalid LoRa address '%s' - using default 0x%02X",
-                     chosenAddr, LORA_DEFAULT_ADDR_REMOTE);
-            LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
-          }
-        } else {
-          LoRaConfig.setAddress(LORA_DEFAULT_ADDR_REMOTE);
-          Log_info("LoRa address defaulted to 0x%02X (REMOTE, no value entered)", LORA_DEFAULT_ADDR_REMOTE);
-        }
-      } else {
-        LoRaConfig.setAddress(LORA_DEFAULT_ADDR_LOCAL);
-        Log_info("LoRa address fixed to 0x%02X (LOCAL)", LORA_DEFAULT_ADDR_LOCAL);
-      }
+      LoRaConfig.setAddress(Gateway.defaultAddress());
       LoRaConfig.save();
+      Log_info("LoRa address set to 0x%02X (%s)", Gateway.defaultAddress(), Gateway.getTierName());
     }
   };
   wm.setSaveParamsCallback(saveCallback);

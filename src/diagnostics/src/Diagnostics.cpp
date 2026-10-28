@@ -26,7 +26,7 @@
  *     - ESP32 TX (GPIO17) -> E220 RXD
  *     - E220 TXD -> ESP32 RX (GPIO16)
  *     - AUX -> GPIO15 (it must go HIGH after every mode change)
- *   It does NOT prove the antenna or the RF path. That is Milestone 5.
+ *   It does NOT prove the antenna or the RF path (no radio transmission is triggered).
  *
  * SEQUENCE (each step logs PASS or FAIL)
  *   1. Mode 0 idle: AUX should read HIGH

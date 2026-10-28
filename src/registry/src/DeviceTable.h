@@ -54,23 +54,23 @@ enum class DeviceTableResult : uint8_t {
  * MetricSlot - one metric definition plus its most recent stored value.
  */
 struct MetricSlot {
-  uint32_t id;                            // Stable metric_id (1-based, unique within device)
-  char     name[DEVICE_TABLE_NAME_LEN];  // Human-readable key, e.g. "Voltage"
-  char     unit[DEVICE_TABLE_UNIT_LEN];  // Unit string, e.g. "V". May be empty
-  uint32_t scale;                         // Divisor: real = value / scale (0 treated as 1)
-  int32_t  value;                         // Most recent scaled integer value
-  uint32_t valueMs;                       // millis() when value was stored
-  bool     hasValue;                      // true once at least one value has been stored
+  uint32_t id;                            ///< Stable metric_id (1-based, unique within device).
+  char     name[DEVICE_TABLE_NAME_LEN];  ///< Human-readable metric name, e.g. "Voltage".
+  char     unit[DEVICE_TABLE_UNIT_LEN];  ///< Unit string, e.g. "V". May be empty string.
+  uint32_t scale;                         ///< Divisor for real-value reconstruction: real = value / scale (0 treated as 1).
+  int32_t  value;                         ///< Most recent scaled integer value received.
+  uint32_t valueMs;                       ///< millis() when value was last stored.
+  bool     hasValue;                      ///< True once at least one value has been stored.
 };
 
 /**
  * DeviceSlot - one device definition and all its metric slots.
  */
 struct DeviceSlot {
-  uint32_t   index;                               // Stable device index (1-based)
-  char       name[DEVICE_TABLE_NAME_LEN];         // Device name, e.g. "Sensor A"
-  uint8_t    metricCount;
-  MetricSlot metrics[DEVICE_TABLE_MAX_METRICS];
+  uint32_t   index;                               ///< Stable device index (1-based).
+  char       name[DEVICE_TABLE_NAME_LEN];         ///< Device name, e.g. "Sensor A".
+  uint8_t    metricCount;                         ///< Number of occupied metric slots (0..DEVICE_TABLE_MAX_METRICS).
+  MetricSlot metrics[DEVICE_TABLE_MAX_METRICS];   ///< Metric definitions and values.
 };
 
 /**
@@ -81,6 +81,7 @@ struct DeviceSlot {
  */
 class DeviceTable {
  public:
+  /** Constructs an empty table with zero device slots and rev = 0. */
   DeviceTable();
 
   // ---- Owner functions (caller creates entries via REST/SoftAP) --------------

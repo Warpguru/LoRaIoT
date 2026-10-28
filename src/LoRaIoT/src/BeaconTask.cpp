@@ -82,8 +82,9 @@ static void sendBeacon() {
 
     // 4. Enqueue for transmission.
     if (LoRaTransport.sendFrame(frame)) {
-        Log_info("BeaconTask: BEACON sent seq=%u uptime=%us registry_rev=%u",
-                 frame.seq, beacon.uptime_s, beacon.registry_rev);
+        Log_info("BeaconTask: BEACON sent seq=%u uptime=%us registry_rev=%u airRate=%s",
+                 frame.seq, beacon.uptime_s, beacon.registry_rev,
+                 LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
     } else {
         Log_error("BeaconTask: sendFrame failed for seq=%u", frame.seq);
     }

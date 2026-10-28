@@ -82,13 +82,13 @@ static constexpr uint8_t LORA_TYPE_MAX = static_cast<uint8_t>(LoRaFrameType::RES
 
 /** One decoded (or to be encoded) frame. */
 struct LoRaFrame {
-  uint8_t       ver;
-  LoRaFrameType type;
-  uint8_t       src;
-  uint8_t       dst;
-  uint16_t      seq;
-  uint8_t       len;                              // payload length, 0..LORA_MAX_PAYLOAD_LEN
-  uint8_t       payload[LORA_MAX_PAYLOAD_LEN];
+  uint8_t       ver;                              ///< Protocol version byte (LORA_PROTOCOL_VER = 0x01).
+  LoRaFrameType type;                             ///< Frame type (PING, BEACON, ACK, DATA, DATA_ACK, REQUEST, RESPONSE).
+  uint8_t       src;                              ///< Source node address (0x01-0xFE).
+  uint8_t       dst;                              ///< Destination node address (0x01-0xFE unicast, 0xFF broadcast).
+  uint16_t      seq;                              ///< Frame sequence number (big-endian on wire, host order here).
+  uint8_t       len;                              ///< Payload length in bytes (0..LORA_MAX_PAYLOAD_LEN).
+  uint8_t       payload[LORA_MAX_PAYLOAD_LEN];    ///< Protobuf-encoded payload bytes.
 };
 
 /** Outcome of decodeFrame(). Only BAD_CRC is counted as a CRC error by the transport. */

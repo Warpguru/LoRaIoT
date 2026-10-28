@@ -1,6 +1,6 @@
 # LoRaIoT - Technical Debt and Improvement Notes
 
-Tracked improvements that are not urgent enough to block current milestones but
+Tracked improvements that are not urgent enough to address immediately but
 should be revisited before a production release.
 
 ---
@@ -30,10 +30,9 @@ LogBuffer static array:   ~20 KB  (.bss)
 nanopb TX scratch (§4):    ~1 KB  (.bss, static locals in Application.cpp)
 TaskRegistry:             <0.1 KB (.bss)
 Other static globals:      ~3 KB  (.bss)
-Phase 1 registries:        ~7 KB  (.bss)
+SensorRegistry + ControlRegistry: ~7 KB  (.bss)
 ─────────────────────────────────
-Estimated free heap:     ~145 KB  (live measurement via GET /status after M6 tasks added;
-                                   was ~166 KB estimate before M6 task stacks and .bss growth)
+Estimated free heap:     ~145 KB  (live measurement via GET /status)
 ```
 
 The single largest controllable cost in `.bss` is `LogBuffer` - see §1 below for
@@ -125,8 +124,7 @@ char*    buf;                         // single heap alloc at begin(), e.g. 6 KB
 ### Recommendation
 
 Apply **Option A** immediately if DRAM pressure is felt. Implement **Option C**
-as a dedicated task once Phase 2-3 of the REST plan are complete and total heap
-usage is stable.
+as a dedicated task once the REST API stabilises and total heap usage is stable.
 
 ---
 
@@ -134,7 +132,7 @@ usage is stable.
 
 ### Context
 
-The Phase 2 REST endpoints address variable resources: a specific remote node
+The registry REST endpoints address variable resources: a specific remote node
 (`addr`), a specific device on that node (`device`), and so on. Two URL styles
 were considered.
 
@@ -163,11 +161,10 @@ system with no external API consumers this complexity has no payoff.
 ### Option B - Query parameters (chosen)
 
 ```
-GET /api/lora/nodes/snapshot?addr=2&device=1
-GET /api/lora/nodes/snapshot?addr=2&device=1&live=true&timeout=2000
+GET /api/lora/nodes/sensor?addr=2&device=1
+GET /api/lora/nodes/sensor?addr=2&device=1&live=true&timeout=2000
 POST /api/lora/nodes/echo?addr=2
 GET  /api/lora/nodes/ping?addr=2
-POST /api/lora/nodes/data?addr=2&ack=true
 ```
 
 `ESPAsyncWebServer` handles query parameters natively via `hasArg`/`arg`
@@ -188,22 +185,24 @@ identifiers. For a firmware API used only by `curl`, Home Assistant, and the
 built-in Swagger UI, query parameters are indistinguishable from path parameters
 in every observable way.
 
-### Full Phase 2 URL reference
+### Current URL reference (as implemented)
 
 | Method | Path | Query params | Node |
 |---|---|---|---|
 | `GET` | `/api/lora/nodes` | - | LOCAL |
-| `GET` | `/api/lora/nodes/snapshot` | - (all nodes) | LOCAL |
-| `GET` | `/api/lora/nodes/snapshot` | `addr`, `?device` | LOCAL |
-| `GET` | `/api/lora/nodes/snapshot` | `addr`, `device`, `?live=true`, `?timeout=ms` | LOCAL |
-| `POST` | `/api/lora/nodes/data` | `addr`, `?ack=true\|false` | LOCAL |
+| `GET` | `/api/lora/nodes/sensor` | - (all nodes) | LOCAL (cache view) |
+| `GET` | `/api/lora/nodes/sensor` | `addr`, `?device` | LOCAL (cache view) |
+| `GET` | `/api/lora/nodes/sensor` | `addr`, `device`, `?live=true`, `?timeout=ms`, `?refresh=true` | LOCAL (cache view) |
+| `GET` | `/api/lora/nodes/control` | `?addr`, `?device` | LOCAL (owner view) |
+| `POST` | `/api/lora/nodes/control?addr=` | - | LOCAL |
 | `POST` | `/api/lora/nodes/echo` | `addr` | LOCAL |
 | `GET` | `/api/lora/nodes/ping` | `addr` | LOCAL |
 | `POST` | `/api/lora/nodes/ping` | `addr` | LOCAL |
 | `GET` | `/api/lora/ping` | - | LOCAL (broadcast) |
-| `POST` | `/api/lora/beacon` | - | LOCAL |
-| `GET` | `/api/lora/stats` | - | LOCAL |
-| `POST` | `/api/sensor/data` | - | REMOTE |
+| `GET` | `/api/lora/stats` | - | both |
+| `POST` | `/api/lora/sensor/data` | - | REMOTE |
+| `GET` | `/api/lora/nodes/sensor` | `?device` | REMOTE (owner view) |
+| `GET` | `/api/lora/nodes/control` | `?device`, `?live=true`, `?refresh=true` | REMOTE (cache view) |
 
 ---
 
@@ -222,7 +221,7 @@ had a real browser GUI that consumed the 1 s push to drive a live data table.
 
 ### Why WebSockets only make sense with a browser GUI
 
-REST polling (`GET /api/lora/nodes/snapshot`) works for any client. WebSockets
+REST polling (`GET /api/lora/nodes/sensor`) works for any client. WebSockets
 add value only for a browser page that must update without user-initiated
 reloads - a live dashboard. There is no device-to-device or server-push use
 case in this project that would justify WebSockets over plain HTTP.
@@ -261,7 +260,7 @@ the ESP32 API) rather than embedded in flash.
 
 Remove the WebSocket endpoint and service entirely. `GET /openapi/ui` (Swagger UI)
 already provides a fully interactive, self-documenting explorer for every endpoint.
-Cached and live metric reads are available via `GET /api/lora/nodes/snapshot`.
+Cached and live metric reads are available via `GET /api/lora/nodes/sensor` (LOCAL) or `GET /api/lora/nodes/control` (REMOTE).
 Neither requires a persistent connection.
 
 **What to remove:**
@@ -521,8 +520,7 @@ This is the Arduino-ESP32 / PlatformIO `default.csv` layout for a 4 MB flash.
 - No code uses SPIFFS, LittleFS or FFat (`grep` finds only a "(future)" remark in
   `doc/Feasibility.md`). The browser UI is served from PROGMEM (`INDEX_HTML`), which
   is part of the app image. The 1408 KB `spiffs` partition is therefore **dead flash**.
-- The application is not feature complete (Phase 2-3 REST endpoints, GUI, more
-  protocol handling), so the image will grow. 96 KB of headroom will not last.
+- The image will continue to grow as features are added. 96 KB of headroom will not last.
 - Partitions only affect flash. They do nothing for heap or `.bss` pressure.
 
 ### Conclusion
@@ -601,7 +599,7 @@ real number first (Arduino IDE build output, or `pio run -t size` / the `.map` f
 before spending effort on any of them.
 
 1. **Track image size against the new slot.** Treat 85% of 2,031,616 B
-   (~1.65 MB) as the next WARNING line, and re-check `/status` after each milestone.
+   (~1.65 MB) as the next WARNING line, and re-check `/status` after each significant change.
 2. **Lower the core debug level.** Arduino IDE: *Tools > Core Debug Level: None*.
    PlatformIO: `build_flags = -DCORE_DEBUG_LEVEL=0`. Removes ESP-IDF/Arduino log
    strings and call sites.
@@ -711,14 +709,22 @@ At a 60-second polling interval the radio blackout duty cycle is approximately 0
 Implement as a background periodic poll inside `loraTask` (or a thin wrapper on the
 existing `pause()` / `resume()` sequence), storing the last reading in a member
 variable exposed via `GET /api/lora/stats`. No new task is needed. Effort is low
-(~30-40 lines). Defer until after Milestone 6 so it does not interfere with the
-DATA / DATA_ACK / REQUEST / RESPONSE flow currently under development.
+(~30-40 lines). Implement when convenient; no blocking dependency.
 
 
 ## 8. Push-only data flow and control data from LOCAL to REMOTE
 
-Status: decided in discussion, not implemented. This chapter is the input for an implementation plan.
-Nothing described here exists in the code yet unless it says so.
+**Status: FULLY IMPLEMENTED (Steps 0-15 of `push-control-plan.md`).**
+
+### Implementation Summary & Final Names
+- **`DeviceTable`** (`src/registry/src/DeviceTable.h`): Unified building block storing device definitions and metric values.
+- **`PeerEntry`** (`src/registry/src/PeerEntry.h`): Per-peer state wrapper containing `DeviceTable` and peer metadata.
+- **`PeerRegistry`** (`src/registry/src/PeerRegistry.h`): Multi-peer container (3 peers fixed, 4 devices/peer, 8 metrics/device).
+- **Singletons**: Global `SensorRegistry` and `ControlRegistry` on both nodes (`src/LoRaIoT/src/Application.cpp`).
+- **Role abstraction**: `ownedRegistry()` and `cachedRegistry()` accessors (`src/LoRaIoT/src/Application.h`).
+- **Push pipeline**: `PushTask` (`src/LoRaIoT/src/PushTask.h/.cpp`) with dirty-bit queueing and reliable `loraSendDataReliable()` retries.
+- **Describe crawler**: `DescribeCrawler` (`src/LoRaIoT/src/DescribeCrawler.h/.cpp`) runs symmetrically on both nodes.
+- **REST Endpoints**: Unified symmetric routes `GET /api/lora/nodes/sensor`, `GET,POST /api/lora/nodes/control`, `POST /api/lora/sensor/data`.
 
 ### 8.1 Why this change
 
@@ -727,7 +733,7 @@ Nothing described here exists in the code yet unless it says so.
    traffic costs a lot and gives little. The old plan file that described it (`ms6-plan.md`) was outdated
    and has been deleted. A new implementation plan is to be derived from this chapter (section 8.13).
 2. **Push already carries the news.** A node that has a new value sends it. Every frame also counts as
-   "I am alive" (`DeviceRegistry.markSeen()`), so a pushing node never needs a keep-alive PING either.
+   "I am alive" (via `cachedRegistry().markSeen()`), so a pushing node never needs a keep-alive PING either.
 3. **LOCAL must also send data to REMOTE.** Example: set the output voltage of a DC/DC converter that
    charges a battery. REMOTE cannot drive such hardware itself (ESP32 resources are too small). A
    second ESP joins the access point that REMOTE opens and does the real sensor and control work. So
@@ -756,17 +762,14 @@ Each node needs one **owner** table and one **cache** table.
 
 | Role | Holds | On REMOTE | On LOCAL |
 |---|---|---|---|
-| Owner | Devices and metrics this node defines, plus their current values. REST creates entries. Answers Describe and Read. Counts `registry_rev`. | `SensorRegistry` (exists, `src/LoRaIoT/src/SensorRegistry.h`) | **`ControlRegistry` (new)** |
-| Cache | Definitions and values learned from the peer (Describe and pushed `Data`). | **control cache (new)** | `DeviceRegistry` (exists, `src/LoRaIoT/src/DeviceRegistry.h`) |
+| Owner | Devices and metrics this node defines, plus their current values. REST creates entries. Answers Describe and Read. Counts `registry_rev`. | `SensorRegistry` (`src/registry/src/PeerRegistry.cpp`) | `ControlRegistry` (`src/registry/src/PeerRegistry.cpp`) |
+| Cache | Definitions and values learned from the peer (Describe and pushed `Data`). | `ControlRegistry` (same instance, cache role) | `SensorRegistry` (same instance, cache role) |
 
 Notes:
 
 - **Naming.** Resolved, see "Resolved implementation" below. The names are not role names. The role
   (owner or cache) depends on the tier and is hidden behind two accessors.
-- **Same shape.** All four hold devices, metrics, values and a revision. Reuse one implementation where
-  possible instead of writing a second copy. Today the owner (`SensorRegistry`, plain structs) and the
-  cache (`DeviceRegistry`, nanopb structs) are written differently, so some refactoring is needed. The
-  resolved design below does this with one class.
+- **Same shape.** Both instances share the same `PeerRegistry` class backed by `DeviceTable`. The owner and cache roles are selected at runtime via `ownedRegistry()` and `cachedRegistry()` accessors.
 - **LOCAL's owner table is per target node.** Each REMOTE gets its own control devices. The table is
   keyed by node address. REMOTE's cache has only one peer (LOCAL).
 - **No name clash.** `Data.device = 1` from REMOTE and `Data.device = 1` from LOCAL are different
@@ -874,7 +877,7 @@ sequenceDiagram
     Note over S,C: Sensor data (REMOTE owns the definition)
     S->>R: POST /api/lora/sensor/data
     R->>L: DATA (device, metric, value)
-    Note over L: DeviceRegistry (cache). Unknown device: Describe crawl on R
+    Note over L: SensorRegistry (cache role). Unknown device: Describe crawl on R
 
     Note over S,C: Control data (LOCAL owns the definition)
     C->>L: POST /api/lora/nodes/control?addr=2
@@ -926,7 +929,7 @@ BEACON goes only from REMOTE to LOCAL. LOCAL needs a way to say "my control defi
 - When the control table of a node changes (new device or new metric, or a changed unit or scale), LOCAL
   sends a PING to that node at once (not only at the next beacon).
 - REMOTE compares the `registry_rev` from the PING with the revision it crawled last. A new value or a
-  new LOCAL `boot_id` starts a crawl (same logic as `DeviceRegistry.updateNodeMeta()` has today).
+  new LOCAL `boot_id` starts a crawl (same logic as `PeerRegistry.updateNodeMeta()` implements today).
 - A new device or metric inside a `Data` frame also starts a crawl, but a changed unit or scale of a
   known metric is only noticed through the revision. That is why the revision is needed.
 
@@ -1001,9 +1004,7 @@ Where the `boot_id` of LOCAL is tracked on REMOTE: `LoRaState` already detects a
 There are no existing callers, so renames are free. The API is deliberately the same on both nodes:
 the same paths exist on LOCAL and REMOTE, and `sensor` / `control` always names the **kind of data**
 (sensor data flows REMOTE to LOCAL, control data flows LOCAL to REMOTE). What differs is the role of the
-node for that kind (owner or cache, section 8.3). Nothing fundamental prevents this. The handler for a
-shared path branches on the tier, as `POST /api/sensor/data` already does today with its
-"only available on REMOTE" check.
+node for that kind (owner or cache, section 8.3). The handler for a shared path branches on the tier.
 
 | Node | Method and path | Role | Meaning |
 |---|---|---|---|
@@ -1041,31 +1042,21 @@ Notes:
   on REMOTE). LOCAL has to name its target node, REMOTE always sends to LOCAL. This is accepted.
 - All manual-use endpoints must be `GET` (browser address bar). The REMOTE views and the LOCAL control
   view are `GET`. The two POSTs have a body, so they cannot be `GET`.
-- Documents to update in the same change as the code: `src/LoRaIoT/src/openapi_json.h` (source of truth),
-  `doc/RestApi.md`, `doc/OpenAPI.md`, the links in `index_html.h`, and every mention of
-  `/api/sensor/data` or `/api/lora/nodes/snapshot` in `doc/LoRaProtocol.md` (section 17) and the older
-  plan files (`RestPlan.md`, `loraiot-plan.md`). The URL table in chapter 2 of this file lists the old
-  `POST /api/sensor/data` row and is history only.
-- Code that has to move: the route `/api/sensor/data` and the `snapshot` route in
-  `src/service/src/RestService.cpp`, and the new routes belong in `RestService::registerRoutes()`.
+- Documents updated in the same change as the code: `src/LoRaIoT/src/openapi_json.h`, `doc/RestApi.md`, `doc/OpenAPI.md`, `index_html.h`, `doc/LoRaProtocol.md` section 17.
 
 Rules for the POST on LOCAL:
 
 - Validate the JSON (device is a string, metrics is an object, name lengths 12 and 5, scale not zero).
 - `addr` must be a known node, otherwise 404.
 - Registration fails with 400 if the encoded `Device` would not fit one frame (same as REMOTE).
-- Existing `POST /api/lora/nodes/data?addr=` is a raw test endpoint that queues a `Data` frame. Resolved
-  (open point 3): it **stays as a debug endpoint** until the end of the work and is removed in Step 15 of
-  `push-control-plan.md`. Until then it becomes a framed debug endpoint on the reliable `DATA_ACK` path
-  (`ack=true|false`) instead of the unframed `sendRaw()` stub.
+- `POST /api/lora/nodes/data?addr=` was a raw debug endpoint. Resolved (open point 3): removed in Step 15.
 
 ### 8.10 What REMOTE returns to the consumer
 
 REMOTE does not know what a value means, so it must give the consumer what it needs to decide:
 
 - For every value: `age_ms` (time since it was received).
-- A link indicator: `peer_last_seen_ms_ago`, the time since the last frame from LOCAL. REMOTE only reports
-  this time. It does not set `online=false` for LOCAL by itself (resolved in section 8.12).
+- A link indicator: `peer_last_seen_ms_ago`, the time since the last frame from LOCAL, and `online`, which turns `false` after `PING_IDLE_THRESHOLD_MS` (90 s) of silence with no ACK from LOCAL (resolved in section 8.12 - REMOTE runs the same `PingTask` keep-alive as LOCAL since Step 13).
 - No control data (empty answer) after a LOCAL reboot until LOCAL pushes again (section 8.7).
 
 The consumer must define its own fail-safe: if data is too old or missing, return the converter to a safe
@@ -1094,15 +1085,13 @@ All open points were decided in Step 1 of `push-control-plan.md`.
    global instances on both nodes: `SensorRegistry` and `ControlRegistry` (both `PeerRegistry`).
    Accessors `ownedRegistry()` and `cachedRegistry()` hide the role per tier (section 8.3).
 2. **REMOTE paths - resolved.** Same as on LOCAL, see section 8.9.
-3. **Raw `POST /api/lora/nodes/data?addr=` - resolved.** Keep it as a debug endpoint, remove it in Step 15.
+3. **Raw `POST /api/lora/nodes/data?addr=` - resolved.** Removed in Step 15.
 4. **`REQUEST(Read)` - resolved.** Kept for on-demand use only (D4, confirmed).
 5. **Control POST waits for the `ACK` - resolved.** `200` after `ACK{OK}`, `202` when deferred (the peer
    did not know the device yet, R3), `504` on timeout (section 8.8).
 6. **Capacity - resolved.** 3 peer slots (fixed), 4 devices per peer, 8 metrics per device (section 8.3).
-7. **REMOTE's view of LOCAL - resolved.** REMOTE only reports `peer_last_seen_ms_ago` (section 8.10). It
-   does not set `online=false` for LOCAL by itself.
-8. **Old plan files - resolved.** `RestPlan.md`, `loraiot-plan.md` and `ping-ack-poc-plan.md` are
-   handled in Step 15 (the developer is asked whether to delete them, as was done for `ms6-plan.md`).
+7. **REMOTE's view of LOCAL - resolved.** REMOTE reports `peer_last_seen_ms_ago` and `online` (section 8.10). REMOTE runs the same `PingTask` keep-alive as LOCAL and marks LOCAL offline after 90 s + 3 failed PINGs (Step 13).
+8. **Old plan files - resolved.** `RestPlan.md`, `loraiot-plan.md` and `ping-ack-poc-plan.md` deleted in Step 15.
 
 ### 8.13 Suggested implementation order
 

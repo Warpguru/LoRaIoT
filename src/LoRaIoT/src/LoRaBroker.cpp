@@ -20,8 +20,8 @@
  * callback path when the matching RESPONSE (or PING ACK) arrives.
  *
  * PING frames are fully framed: Beacon{boot_id} -> pb_encode -> LoRaFrame ->
- * LoRaTransport.sendFrame(). REQUEST frames (ECHO, READ, DESCRIBE) keep the
- * Phase 2 unframed stub pending full M4 integration.
+ * LoRaTransport.sendFrame(). REQUEST frames (ECHO, READ) encode nanopb Request
+ * payloads and transmit as framed REQUEST messages.
  */
 
 // ---- Broker state -----------------------------------------------------------
@@ -203,10 +203,6 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
       case BrokerRequestType::READ:
         req.which_command = loraiot_Request_read_tag;
         if (payload) req.command.read = *static_cast<const loraiot_Read*>(payload);
-        break;
-      case BrokerRequestType::DESCRIBE:
-        req.which_command = loraiot_Request_describe_tag;
-        if (payload) req.command.describe = *static_cast<const loraiot_Describe*>(payload);
         break;
       default:
         break;

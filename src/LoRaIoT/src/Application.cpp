@@ -30,8 +30,6 @@
  */
 
 // ---- Application Constants -------------------------------------------------
-// PING_INTERVAL_MS (2000 ms, periodic PoC PING on LOCAL) is disabled together with the
-// PoC loop in applicationLoop(); see the comment block there before re-enabling.
 static constexpr uint32_t BOOT_DELAY_MS    = 1000;  // Safe boot startup delay
 
 // ---- LoRa readiness gate ---------------------------------------------------
@@ -47,11 +45,11 @@ bool loraIsReady() {
 
 // LOCAL owns control data and caches REMOTE's sensor data; REMOTE is the mirror image.
 PeerRegistry& ownedRegistry() {
-  return (strcmp(Gateway.getTierName(), "LOCAL") == 0) ? ControlRegistry : SensorRegistry;
+  return Gateway.isLocal() ? ControlRegistry : SensorRegistry;
 }
 
 PeerRegistry& cachedRegistry() {
-  return (strcmp(Gateway.getTierName(), "LOCAL") == 0) ? SensorRegistry : ControlRegistry;
+  return Gateway.isLocal() ? SensorRegistry : ControlRegistry;
 }
 
 // ---- PING/ACK helpers ------------------------------------------------------
@@ -386,7 +384,7 @@ static void sendEchoResponse(const LoRaFrame& req) {
  * All other frame types are logged at DEBUG and ignored.
  */
 static void onLoRaReceive(const LoRaFrame& frame) {
-  const bool isLocal = (strcmp(Gateway.getTierName(), "LOCAL") == 0);
+  const bool isLocal = Gateway.isLocal();
 
   // Extract boot_id for duplicate/reboot detection.
   // PING and BEACON carry a Beacon payload; all other types pass 0.
@@ -684,7 +682,7 @@ void applicationSetup() {
     loraBrokerBegin();
     // Only REMOTE beacons. Both tiers run the same keep-alive task: LOCAL answers
     // beacons and detects dead REMOTEs, REMOTE detects a dead LOCAL.
-    if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
+    if (Gateway.isRemote()) {
       beaconTaskBegin();
     }
     pingTaskBegin();
@@ -721,52 +719,6 @@ void applicationLoop() {
   // Drive the Describe crawl state machine (both tiers; no-op when nothing is pending)
   describeCrawlerLoop();
 
-  /*
-   * PoC PING/ACK loop - disabled (kept for reference).
-   *
-   * This was the initial proof of concept of the LoRa link: every PING_INTERVAL_MS (2 s)
-   * LOCAL sent a PING to the hardcoded address LORA_DEFAULT_ADDR_REMOTE (0x02) and waited
-   * for the ACK. It is replaced by:
-   *   - GET /api/lora/nodes/ping?addr=N  (on demand ping, returns the round trip time)
-   *   - PingTask (a PING in reply to every BEACON and a keep-alive PING for idle nodes)
-   *
-   * What happens if this block (and PING_INTERVAL_MS above) is uncommented again:
-   *   - LOCAL pings node 0x02 every 2 s, whatever nodes really exist (no multi-REMOTE support).
-   *   - loraBrokerWait() blocks the Arduino main task for up to LORA_REQUEST_TIMEOUT_MS per
-   *     cycle when the REMOTE is absent, which delays describeCrawlerLoop() and diagnosticsLoop().
-   *   - The broker has a single in-flight slot, so while a PING is pending, REST calls that
-   *     use the broker (live read, echo, ping) are answered with HTTP 503.
-   *   - Each exchange adds about 4 INFO lines (sent PING, TX hex, RX hex, PING ACK); the
-   *     128 line log buffer (GET /api/log) then only covers about a minute.
-   *   - The REMOTE sees a frame from LOCAL every 2 s and therefore stays DISCOVERED (60 s
-   *     beacon interval) even if LOCAL never registered it, which hides discovery problems.
-   *   - It competes with PingTask and with cyclic reads for the broker slot and the
-   *     half-duplex channel.
-   *
-  static unsigned long lastSendTime = 0;
-
-  // LOCAL Node: Periodically send a PING to REMOTE via the broker.
-  // loraBrokerSend() returns BUSY if a REST ping is already in flight - skip that tick silently.
-  if (strcmp(Gateway.getTierName(), "LOCAL") == 0) {
-    unsigned long now = millis();
-    if (now - lastSendTime >= PING_INTERVAL_MS) {
-      lastSendTime = now;
-
-      uint32_t seq = 0;
-      const BrokerResult res = loraBrokerSend(BrokerRequestType::PING, LORA_DEFAULT_ADDR_REMOTE, nullptr, seq);
-      if (res == BrokerResult::OK) {
-        // Block up to LORA_REQUEST_TIMEOUT_MS for the ACK (onLoRaReceive calls loraBrokerOnPingAck).
-        const BrokerResult waitRes = loraBrokerWait(LoRaTransportClass::LORA_REQUEST_TIMEOUT_MS);
-        if (waitRes == BrokerResult::TIMEOUT) {
-          Log_warn("PING seq=%u: no ACK within %ums", seq, (unsigned)LoRaTransportClass::LORA_REQUEST_TIMEOUT_MS);
-        }
-        // On OK, PING ACK was already logged by onLoRaReceive.
-      } else if (res == BrokerResult::BUSY) {
-        Log_debug("applicationLoop: PING skipped - broker busy (REST ping in flight)");
-      }
-    }
-  }
-  */
 
   // ESPAsyncWebServer is fully non-blocking; this is a no-op kept for symmetry.
   handleServerRequests();

@@ -27,8 +27,8 @@
  * in flight it receives BROKER_ERR_BUSY immediately.
  *
  * PING frames use LoRaTransport.sendFrame() with a proper LoRaFrame header and
- * nanopb-encoded Beacon payload. REQUEST frames (ECHO, READ, DESCRIBE) still use
- * the unframed Phase 2 stub pending the full M4 frame codec integration.
+ * nanopb-encoded Beacon payload. REQUEST frames (ECHO, READ) use nanopb-encoded
+ * Request payloads.
  */
 
 // Maximum time an HTTP handler will block waiting for a RESPONSE (ms).
@@ -59,7 +59,6 @@ enum class BrokerRequestType : uint8_t {
   ECHO     = 0,
   PING     = 1,
   READ     = 2,
-  DESCRIBE = 3,
   DATA_ACK = 4,
 };
 
@@ -94,7 +93,6 @@ bool loraBrokerPendingPing(uint16_t& seq, uint32_t& sentMs);
  *                ECHO:     const loraiot_Echo*
  *                PING:     nullptr  (PING is a BEACON-type frame, not REQUEST)
  *                READ:     const loraiot_Read*
- *                DESCRIBE: const loraiot_Describe*
  *   outSeq   - Set to the SEQ assigned to this request on success.
  *
  * Returns BrokerResult::BUSY if a prior request has not yet been answered.

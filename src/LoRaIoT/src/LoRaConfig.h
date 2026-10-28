@@ -59,22 +59,35 @@ static constexpr uint32_t LORA_CPU_FREQ_DEFAULT   = LORA_CPU_FREQ_240MHZ; // Def
  */
 class LoRaConfigClass {
  public:
+  /** Load persisted values from NVS. Call once from applicationSetup() before LoRaTransport.begin(). */
   void begin();
+
+  /** Write all current values back to NVS. Call after any set*() to make the change survive reboots. */
   void save() const;
 
+  /// Active LoRa channel (0-31, maps to 410.125-441.125 MHz in 1 MHz steps).
   uint8_t getChannel() const;
+  /// Set the LoRa channel. Does not write NVS; call save() afterwards.
   void setChannel(uint8_t chan);
 
+  /// Active LoRa node address (LOCAL = 0x01, REMOTE = 0x02-0xFE).
   uint8_t getAddress() const;
+  /// Set the LoRa node address. Does not write NVS; call save() afterwards.
   void setAddress(uint8_t addr);
 
+  /// Active E220 encryption key (0 = disabled).
   uint16_t getKey() const;
+  /// Set the E220 encryption key (CRYPT_H / CRYPT_L). Does not write NVS; call save() afterwards.
   void setKey(uint16_t k);
 
+  /// Active CPU frequency in MHz (80, 160, or 240).
   uint32_t getCpuFreq() const;
+  /// Set the CPU frequency. Applied at boot after the next reboot. Does not write NVS; call save() afterwards.
   void setCpuFreq(uint32_t freq);
 
+  /// Active LoRa air data rate.
   LoRaTransportClass::AirRate getAirRate() const;
+  /// Set the LoRa air data rate. Does not write NVS; call save() afterwards.
   void setAirRate(LoRaTransportClass::AirRate rate);
 
  private:

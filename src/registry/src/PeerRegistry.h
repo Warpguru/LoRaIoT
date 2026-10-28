@@ -22,17 +22,17 @@ static constexpr uint32_t PEER_REV_NONE = UINT32_MAX;
  * Holds liveness scalars plus one DeviceTable (definitions + values).
  */
 struct PeerEntry {
-  uint8_t     addr;           // LoRa node address (0x01..0xFE)
-  uint32_t    bootId;         // Last seen boot_id from PING/BEACON
-  uint32_t    registryRev;    // Last successfully crawled registry_rev
-  uint32_t    pendingRev;     // registry_rev from the latest BEACON/PING
-                              // (may differ from registryRev while a crawl is in progress)
-  uint32_t    lastSeenMs;     // millis() of the last received frame from addr
-  bool        online;         // false = presumed dead (keep-alive PING failed);
-                              // the entry and its cached definitions are kept and
-                              // the slot is only reused when the table is full
-  bool        crawlPending;   // true = a Describe crawl has been requested
-  DeviceTable table;          // Device/metric definitions and values for this peer
+  uint8_t     addr;           ///< LoRa node address (0x01..0xFE).
+  uint32_t    bootId;         ///< Last seen boot_id from a PING or BEACON frame.
+  uint32_t    registryRev;    ///< Last successfully completed Describe crawl revision.
+  uint32_t    pendingRev;     ///< registry_rev from the most recent BEACON or PING
+                              ///<  (may differ from registryRev while a crawl is in progress).
+  uint32_t    lastSeenMs;     ///< millis() of the last received frame from addr.
+  bool        online;         ///< False when presumed dead (keep-alive PING failed).
+                              ///<  The entry and cached definitions are kept; the slot is
+                              ///<  only reused when the table is full and no online slot is free.
+  bool        crawlPending;   ///< True when a Describe crawl has been requested for this peer.
+  DeviceTable table;          ///< Device/metric definitions and current values for this peer.
 };
 
 /**

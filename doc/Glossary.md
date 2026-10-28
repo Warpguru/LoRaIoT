@@ -121,8 +121,15 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 | **Collision** | | Two nodes send at the same time and both frames are lost. |
 | **RTT** | Round-Trip Time | Time from sending a request until its answer arrives. |
 | **LRU** | Least Recently Used | Registry of REMOTE nodes ordered by last-seen time; stale entries are purged. |
-| **Metric** | | Definition of one kind of value that a device reports: numeric id (unique per device), name, unit and scale. Defined by the REMOTE, so any sensor value can be sent. |
-| **Measurement** | | One measured value on the wire: a metric id and a scaled integer. Real value = value / scale. |
+| **Metric** | | Definition of one kind of value that a device reports: numeric id (unique per device), name, unit and scale. Defined by the owner node, so any value can be represented. |
+| **Measurement** | | One value on the wire: a metric id and a scaled integer. Real value = value / scale. |
+| **Owner** | | The node that defines a device, assigns its indices, and pushes its values (REMOTE owns sensors; LOCAL owns controls). |
+| **Cache** | | The registry side that learns definitions via Describe crawl and values via pushed Data frames (LOCAL caches sensors; REMOTE caches controls). |
+| **Peer** | | An over-the-air communication partner node identified by its LoRa address (e.g. REMOTE 0x02 from LOCAL's view, LOCAL 0x01 from REMOTE's view). |
+| **Sensor data** | | Telemetry data flowing from REMOTE (measurement source) to LOCAL (consumer). |
+| **Control data** | | Setpoint or command data flowing from LOCAL (desired state) to REMOTE (actuator target). |
+| **DeviceTable** | | Fixed-size RAM data structure storing up to 4 device definitions and up to 8 metric definitions and values per device. |
+| **PeerRegistry** | | Multi-peer container class managing up to 3 peer slots, each containing a DeviceTable and link metadata. Used for both SensorRegistry and ControlRegistry. |
 | **Protobuf** | Protocol Buffers | Compact binary data format. 4 to 5 times smaller than JSON. |
 | **nanopb** | | Protobuf library for microcontrollers (no heap, small code). |
 | **gRPC** | (Google) Remote Procedure Call | Framework that also uses protobuf. Only the protobuf encoding is used here, not the HTTP/2 transport. |
@@ -138,5 +145,4 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 | **TRACE / DEBUG / INFO / WARN / ERROR** | Log levels | From most to least verbose. Default `INFO`. Persisted in NVS. |
 | **SOS** | Morse distress signal | The status LED pattern shown after a fatal fault. |
 | **FF FF FF** | Error response | The E220 reply to a malformed configuration command. |
-| **PoC** | Proof of Concept | Milestone 0, the plain-text ping-pong test. |
-| **M0 .. M7** | Milestones 0 to 7 | Steps of the implementation plan in `loraiot-plan.md`. Not to be confused with the E220 pins M0/M1. |
+| **PoC** | Proof of Concept | The plain-text ping-pong test (now removed). |

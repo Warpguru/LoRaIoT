@@ -21,8 +21,19 @@
  * Results are reported only through the Log_* macros: visible on the serial
  * monitor and via GET /api/log.
  *
- * UART2 ownership: the check opens and closes UART2 itself. Remove it (and the
- * calls to it) when Milestone 3 adds the LoRaTransport task that owns UART2.
+ * UART2 ownership: the check borrows UART2 via LoRaTransport.pause()/resume()
+ * so it can coexist with the loraTransportTask that owns UART2 at runtime.
+ */
+/**
+ * Drive the diagnostics state machine. Call from applicationLoop() on every tick,
+ * before handleServerRequests(). Runs the E220 wiring check on the first call (boot)
+ * and on any subsequent call after diagnosticsRequest() has been invoked.
  */
 void diagnosticsLoop();
+
+/**
+ * Request a re-run of the E220 hardware check on the next diagnosticsLoop() tick.
+ * Thread-safe: safe to call from any core or task (e.g. from a REST handler).
+ * Does not access UART2 directly.
+ */
 void diagnosticsRequest();

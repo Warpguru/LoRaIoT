@@ -8,7 +8,7 @@
 /**
  * PingTask.h - link-liveness task (FreeRTOS), the same code on LOCAL and REMOTE.
  *
- * Replaces the PoC "PING every 2 s" loop. REMOTE nodes already prove they are
+ * REMOTE nodes already prove they are
  * alive by beaconing (every ~60 s once discovered), so LOCAL only has to pay for
  * a PING when that proof is missing or when a REMOTE needs to learn it was
  * discovered:

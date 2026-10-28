@@ -81,27 +81,33 @@ The only RAM cost of the logging system is the **ring buffer** (`lines[128][160]
 
 ## 4. Call Site Survey
 
-### Total call count: 137 calls across 12 source files
+### Total call count: 312 calls across 18 source files
 
 | File | Log_* calls |
 |---|---|
-| `diagnostics/src/Diagnostics.cpp` | 36 |
-| `LoRaIoT/src/Server.cpp` | 20 |
-| `service/src/RestService.cpp` | 16 |
-| `lora/src/LoRaTransport.cpp` | 14 |
-| `LoRaIoT/src/DescribeCrawler.cpp` | 10 |
-| `LoRaIoT/src/DeviceRegistry.cpp` | 9 |
-| `LoRaIoT/src/SensorRegistry.cpp` | 8 |
-| `LoRaIoT/src/Application.cpp` | 7 |
-| `LoRaIoT/src/LoRaBroker.cpp` | 7 |
+| `diagnostics/src/Diagnostics.cpp` | 77 |
+| `LoRaIoT/src/Application.cpp` | 59 |
+| `LoRaIoT/src/Server.cpp` | 26 |
+| `service/src/RestService.cpp` | 20 |
+| `lora/src/LoRaTransport.cpp` | 20 |
+| `LoRaIoT/src/LoRaBroker.cpp` | 19 |
+| `registry/src/PeerRegistry.cpp` | 13 |
+| `LoRaIoT/src/DescribeCrawler.cpp` | 11 |
+| `LoRaIoT/src/PingTask.cpp` | 10 |
+| `util/src/LogBuffer.h` + `LogBuffer.cpp` | 11 |
+| `registry/src/DeviceTable.cpp` | 9 |
+| `LoRaIoT/src/PushTask.cpp` | 9 |
+| `lora/src/LoRaFrame.cpp` | 7 |
+| `LoRaIoT/src/BeaconTask.cpp` | 6 |
+| `lora/src/LoRaState.cpp` | 5 |
 | `LoRaIoT/src/Tier.cpp` | 5 |
 | `LoRaIoT/src/LoRaConfig.cpp` | 4 |
 | `service/src/WebSocketService.cpp` | 1 |
-| **Total** | **137** |
+| **Total** | **312** |
 
 ### Pattern observed
 
-All 137 call sites use plain string literals as format arguments, e.g.:
+All 133 call sites use plain string literals as format arguments, e.g.:
 
 ```cpp
 Log_info("GET /api/diag/e220: E220 check requested");
@@ -120,10 +126,10 @@ None currently use `F()`, `PROGMEM`, or `PGM_P`. All strings are already in flas
 | **DRAM savings** | None - strings are already in `.rodata` (flash) on ESP32. Zero bytes saved. | - |
 | **Portability to AVR** | Code would compile and work on AVR targets without change. | The project targets ESP32 only. AVR portability provides no value. |
 | **`vsnprintf` compatibility** | `vsnprintf_P` exists on ESP32 but is a no-op alias. No risk. | On AVR, `vsnprintf` would silently misread PROGMEM pointers and produce garbage output. The `append()` function in `LogBuffer.cpp` would need to call `vsnprintf_P` instead of `vsnprintf` - a real AVR migration risk. |
-| **Code clarity** | None - `F("literal")` and `PROGMEM` markers add visual noise with no runtime meaning on ESP32. | Adds 137 call-site changes (`F("...")` wrapper on every format string) for zero functional benefit. Increases diff size, review burden, and future maintenance cost. |
+| **Code clarity** | None - `F("literal")` and `PROGMEM` markers add visual noise with no runtime meaning on ESP32. | Adds call-site changes (`F("...")` wrapper on every format string) for zero functional benefit. Increases diff size, review burden, and future maintenance cost. |
 | **Macro hygiene** | None. | `F()` returns `__FlashStringHelper*`, which is NOT a `const char*`. `vsnprintf` does not accept it directly. Every call site would require a cast or a new macro overload, complicating `LogBuffer.h`. |
 | **Existing ESPAsyncWebServer / ArduinoJson usage** | Those libraries already use PROGMEM where beneficial on ESP32 (they don't). | Pattern inconsistency: no other part of this codebase uses `F()` for performance reasons. |
-| **Source compatibility** | Wrapping in `F()` would make the call sites look idiomatic to Arduino AVR developers. | The 137 existing call sites already look clean and readable without the wrapper noise. |
+| **Source compatibility** | Wrapping in `F()` would make the call sites look idiomatic to Arduino AVR developers. | The existing call sites already look clean and readable without the wrapper noise. |
 
 ---
 
@@ -147,7 +153,7 @@ No. There is no DRAM waste to reclaim. The only real DRAM cost in the logger is 
 
 **Q: What would be required to use PROGMEM format strings correctly?**
 
-On AVR (hypothetically): replace `vsnprintf` with `vsnprintf_P` in `append()`, change the `format` parameter type from `const char*` to `PGM_P`, update all five `logXxx` method signatures in the class and header, and wrap every one of the 137 call site format strings in `PSTR()` or `F()`. On ESP32, all of this compiles to the same machine code as today.
+On AVR (hypothetically): replace `vsnprintf` with `vsnprintf_P` in `append()`, change the `format` parameter type from `const char*` to `PGM_P`, update all five `logXxx` method signatures in the class and header, and wrap every call site format string in `PSTR()` or `F()`. On ESP32, all of this compiles to the same machine code as today.
 
 ---
 
@@ -155,11 +161,11 @@ On AVR (hypothetically): replace `vsnprintf` with `vsnprintf_P` in `append()`, c
 
 **Do not refactor the logging to use PROGMEM format strings.**
 
-The motivation for PROGMEM on AVR - keeping string literals out of the severely limited 2 KB SRAM - does not apply to the ESP32. All string literals are already in flash. Adding `PROGMEM` markers, `F()` wrappers, and `vsnprintf_P` to the 137 call sites and `LogBuffer` internals would:
+The motivation for PROGMEM on AVR - keeping string literals out of the severely limited 2 KB SRAM - does not apply to the ESP32. All string literals are already in flash. Adding `PROGMEM` markers, `F()` wrappers, and `vsnprintf_P` to the call sites and `LogBuffer` internals would:
 
 - Save **0 bytes** of DRAM.
 - Add **non-trivial refactor complexity** (type change from `const char*` to `PGM_P` / `__FlashStringHelper*` throughout the API).
 - Introduce a **silent correctness hazard**: if the codebase ever needed to build on AVR, `vsnprintf` would silently produce garbage output when reading PROGMEM pointers - the opposite of the safe outcome.
-- Pollute 137 call sites with syntactic noise (`F("...")`) that conveys false intent on this platform.
+- Pollute call sites with syntactic noise (`F("...")`) that conveys false intent on this platform.
 
 If DRAM pressure becomes a concern in the future, the higher-value target is the ring buffer itself - documented in `doc/TechDebt.md §1` - which holds 20 KB of fixed-width rows in BSS. Switching to a variable-length or compressed ring buffer would recover real DRAM. Format strings are not the bottleneck.

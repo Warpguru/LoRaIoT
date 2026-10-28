@@ -10,7 +10,13 @@
  * are thin stubs that delegate setup() and loop() to these two functions.
  */
 
+/** Initialise all hardware, networking, and FreeRTOS tasks. Called once from setup(). */
 void applicationSetup();
+
+/**
+ * Main loop body. Called repeatedly from loop().
+ * Drains the WebSocket command queue and drives the DescribeCrawler state machine.
+ */
 void applicationLoop();
 
 /**
@@ -37,6 +43,6 @@ PeerRegistry& ownedRegistry();
 
 /**
  * Registry this node CACHES (crawled by Describe, filled by pushes).
- *   LOCAL: SensorRegistry    REMOTE: ControlRegistry (unused until Step 9)
+ *   LOCAL: SensorRegistry    REMOTE: ControlRegistry
  */
 PeerRegistry& cachedRegistry();

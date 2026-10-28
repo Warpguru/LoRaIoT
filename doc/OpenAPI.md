@@ -54,15 +54,18 @@ not under pressure at current usage levels; revisit only if flash exceeds ~95%.
 ### `OPENAPI_UI_TEMPLATE`
 
 An HTML/JS template also stored in PROGMEM. Approximate size: **~1,147 bytes**
-in flash. It contains four `%s` placeholders expanded at request time via
+in flash. It contains seven placeholders expanded at request time via
 `snprintf` into a stack-allocated buffer:
 
 | Placeholder | Value |
 |---|---|
 | `%s` (1st) | `WiFi.SSID()` - connected network name |
 | `%s` (2nd) | `Gateway.getTierName()` - tier shown in the banner |
-| `%s` (3rd) | `__DATE__ " " __TIME__` - firmware build timestamp |
-| `%s` (4th) | `Gateway.getTierName()` - tier injected as JS `TIER` variable |
+| `%u` (3rd) | `LoRaConfig.getKey()` - LoRa key value (decimal, 0 = disabled) |
+| `%s` (4th) | `"on"` or `"off"` - LoRa key enabled state |
+| `%s` (5th) | `LoRaTransportClass::airRateName(...)` - active air data rate |
+| `%s` (6th) | `__DATE__ " " __TIME__` - firmware build timestamp |
+| `%s` (7th) | `Gateway.isLocal() ? "LOCAL" : "REMOTE"` - tier injected as JS `TIER` variable |
 
 The IP address is **not** server-injected. Instead, a one-line JS snippet sets
 it from `location.hostname` at page load:
@@ -90,12 +93,15 @@ The replacement uses a fixed stack buffer:
 ```cpp
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   String ssid = WiFi.SSID();   // one small heap alloc for the SSID string
-  char buf[1250];              // stack - freed when function returns
+  char buf[1300];              // stack - freed when function returns
   snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
-           ssid.c_str(),
-           Gateway.getTierName(),
-           __DATE__ " " __TIME__,
-           Gateway.getTierName());
+           ssid.c_str(),                                          // %s SSID
+           Gateway.getTierName(),                                 // %s tier in banner
+           (unsigned)LoRaConfig.getKey(),                         // %u key decimal
+           LoRaConfig.getKey() ? "on" : "off",                   // %s key state
+           LoRaTransportClass::airRateName(LoRaConfig.getAirRate()), // %s air rate
+           __DATE__ " " __TIME__,                                 // %s build timestamp
+           Gateway.isLocal() ? "LOCAL" : "REMOTE");               // %s JS TIER variable
   request->send(HTTP_STATUS_OK, "text/html", buf);
 }
 ```
@@ -111,13 +117,16 @@ destructor runs immediately and frees the SSID heap allocation.
 | Template static content | ~1,147 |
 | Max SSID (32 chars) | 32 |
 | Tier name ("REMOTE", 6 chars) × 2 | 12 |
+| LoRa key value (5 digits max) | 5 |
+| Key state ("off", 3 chars) | 3 |
+| Air rate ("62.5k", 5 chars) | 5 |
 | Build timestamp (`__DATE__ " " __TIME__`, 20 chars) | 20 |
-| Worst-case total | ~1,211 |
-| `buf` allocated | 1,250 |
-| Headroom | ~39 |
+| Worst-case total | ~1,224 |
+| `buf` allocated | 1,300 |
+| Headroom | ~76 |
 
-The ESPAsyncWebServer request callback task has an 8 KB stack. A 1,250-byte
-local buffer consumes 15% of it - well within the safe range.
+The ESPAsyncWebServer request callback task has an 8 KB stack. A 1,300-byte
+local buffer consumes 16% of it - well within the safe range.
 
 ---
 
@@ -127,9 +136,9 @@ local buffer consumes 15% of it - well within the safe range.
 
 The LoRaIoT firmware runs on two node types - LOCAL and REMOTE - from a single
 shared codebase. Several API endpoints are only meaningful on one tier (e.g.
-`GET /api/lora/nodes` only works on LOCAL; `POST /api/lora/sensor/data` only works
-on REMOTE). Without filtering, the Swagger UI on a REMOTE node shows LOCAL-only
-endpoints that will always return 400 or do nothing.
+`GET /api/lora/nodes` and `POST /api/lora/nodes/control` only work on LOCAL;
+`POST /api/lora/sensor/data` only works on REMOTE). Without filtering, the Swagger UI
+on a REMOTE node shows LOCAL-only endpoints that will always return 400 or do nothing.
 
 ### OpenAPI extension field
 
@@ -149,13 +158,13 @@ operation level (inside the HTTP method object, not the path item):
 Valid values are `"LOCAL"` and `"REMOTE"`. Operations available on both tiers
 carry no `x-tier` field and are always shown.
 
-Current annotations:
+Current annotations (verify exact counts against `openapi_json.h`):
 
-| Value | Count | Tag |
+| Value | Examples | Tag |
 |---|---|---|
-| `"LOCAL"` | 11 operations | `LoRa-Nodes`, `LoRa-Control` |
-| `"REMOTE"` | 1 operation | `Sensor` |
-| *(none - universal)* | remaining operations | `Gateway`, `Diagnostics`, `System` |
+| `"LOCAL"` | `GET /api/lora/nodes`, `POST /api/lora/nodes/control`, `GET,POST /api/lora/nodes/ping` | `LoRa-Nodes`, `LoRa-Control` |
+| `"REMOTE"` | `POST /api/lora/sensor/data` | `Sensor` |
+| *(none - universal)* | `GET /api/lora/nodes/sensor`, `GET /api/lora/nodes/control`, `GET /api/lora/stats`, `GET /api/tier` | `Gateway`, `Diagnostics`, `System`, `LoRa-Nodes` |
 
 Tag descriptions in the `"tags"` array do **not** repeat tier information -
 that is redundant with `x-tier` on each operation. Tag descriptions are plain

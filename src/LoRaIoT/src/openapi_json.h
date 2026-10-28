@@ -30,7 +30,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
   "info": {
     "title": "LoRaIoT Gateway API",
     "version": "1.0.0",
-    "description": "REST API for the LoRaIoT dual-role ESP32 LoRa gateway. Two nodes (LOCAL and REMOTE) bridge a WiFi SoftAP to a local LAN via a 433 MHz LoRa P2P link. Interactive UI at /openapi/ui."
+    "description": "REST API for the LoRaIoT dual-role ESP32 LoRa gateway. Nodes bridge a WiFi SoftAP to a local WLAN via a 433 MHz LoRa P2P link. Interactive UI at /openapi/ui."
   },
   "servers": [
     { "url": "/", "description": "This device" }
@@ -541,6 +541,18 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
+    "/api/lora/echo/result": {
+      "get": {
+        "x-tier": "LOCAL",
+        "tags": ["LoRa-Control"],
+        "summary": "Return the result of the last echo test",
+        "description": "Returns the result of the last POST /api/lora/nodes/echo without blocking. The result is stored in RAM and survives until the next echo call replaces it or the node reboots.",
+        "responses": {
+          "200": { "description": "Result available", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EchoResultResponse" } } } },
+          "404": { "description": "No echo has been performed since boot", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
     "/api/lora/nodes/ping": {
       "get": {
         "x-tier": "LOCAL",
@@ -586,40 +598,6 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
-    "/api/lora/beacon": {
-      "post": {
-        "x-tier": "LOCAL",
-        "tags": ["LoRa-Control"],
-        "summary": "Trigger an immediate manual BEACON",
-        "description": "Queues a BEACON (boot_id, fw_version, uptime_s, registry_rev) for broadcast. Returns 202 immediately; sent asynchronously.",
-        "responses": {
-          "202": { "description": "BEACON queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BeaconResponse" } } } }
-        }
-      }
-    },
-    "/api/lora/nodes/data": {
-      "post": {
-        "x-tier": "ALL",
-        "tags": ["LoRa-Control"],
-        "summary": "Send a Data frame to a peer node",
-        "description": "Sends a Data frame to the node. `ack=true` for reliable DATA_ACK with retries (blocks until ACK or timeout, returning 200 with ack_status or 504 on timeout), `ack=false` for fire-and-forget DATA (returns 202 immediately).",
-        "parameters": [
-          { "name": "addr", "in": "query", "required": true,  "schema": { "type": "integer", "minimum": 1, "maximum": 254 }, "description": "Peer node LoRa address" },
-          { "name": "ack",  "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true = reliable DATA_ACK, false = unreliable DATA" }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataPayload" } } }
-        },
-        "responses": {
-          "200": { "description": "DATA_ACK acknowledged by peer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataAckResponse" } } } },
-          "202": { "description": "DATA frame queued (fire-and-forget)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DataDispatchResponse" } } } },
-          "400": { "description": "Missing addr or invalid body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "503": { "description": "LoRa broker busy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "504": { "description": "Timeout waiting for DATA_ACK ACK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    },
     "/api/lora/sensor/data": {
       "post": {
         "x-tier": "REMOTE",
@@ -644,12 +622,12 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "properties": {
           "tier": {
             "type": "string",
-            "enum": ["LOCAL", "REMOTE", "UNSET"],
-            "description": "LOCAL: connected to local LAN / Home Assistant, receives data from REMOTE. REMOTE: hosts SoftAP for IoT sensors, forwards data over LoRa. UNSET: portal not yet completed."
+            "enum": ["LOCAL", "REMOTE (Node 1)", "REMOTE (Node 2)", "REMOTE (Node 3)", "UNSET"],
+            "description": "LOCAL: connected to local WLAN, receives data from REMOTE nodes. REMOTE (Node 1..3): hosts SoftAP for IoT sensors, forwards data over LoRa."
           },
           "configured": {
             "type": "boolean",
-            "description": "false when tier is UNSET (portal has not been completed)"
+            "description": "false when tier is UNSET"
           }
         }
       },
@@ -752,8 +730,8 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "properties": {
           "tx_frames":  { "type": "integer", "description": "Frames successfully written to UART2 since boot" },
           "rx_frames":  { "type": "integer", "description": "Complete frames delivered to the receive callback since boot" },
-          "crc_errors": { "type": "integer", "description": "Frames discarded due to CRC mismatch (wired in Phase 3)" },
-          "ack_loss":   { "type": "integer", "description": "ACK timeouts / unacknowledged DATA_ACK frames (wired in Phase 3)" }
+          "crc_errors": { "type": "integer", "description": "Frames discarded due to CRC mismatch" },
+          "ack_loss":   { "type": "integer", "description": "ACK timeouts / unacknowledged DATA_ACK frames" }
         }
       },
       "EchoRequest": {
@@ -772,52 +750,22 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "echo":   { "type": "string",  "description": "The reversed text returned by the remote node" }
         }
       },
+      "EchoResultResponse": {
+        "type": "object",
+        "properties": {
+          "sent":         { "type": "string",  "description": "The text that was sent" },
+          "received":     { "type": "string",  "description": "The text returned by the remote node (empty string on failure)" },
+          "seqNo":        { "type": "integer", "description": "Frame sequence number of the echo request" },
+          "roundTripMs":  { "type": "integer", "description": "Round-trip time in milliseconds" },
+          "success":      { "type": "boolean", "description": "true when a valid echo response was received" }
+        }
+      },
       "PingResponse": {
         "type": "object",
         "properties": {
           "addr":    { "type": "integer", "description": "Node address that replied (for a broadcast ping, the first node that answered)" },
           "rtt_ms":  { "type": "integer", "description": "Round-trip time in milliseconds" },
           "boot_id": { "type": "integer", "description": "Optional. boot_id from the last BEACON of that node; omitted if no BEACON was received yet (the ACK carries no boot_id)" }
-        }
-      },
-      "BeaconResponse": {
-        "type": "object",
-        "properties": {
-          "status": { "type": "string", "example": "queued", "description": "Always queued - frame is sent asynchronously" }
-        }
-      },
-      "DataPayload": {
-        "type": "object",
-        "required": ["device", "values"],
-        "properties": {
-          "device": { "type": "integer", "description": "Device index (0 = node itself, 1-4 = SoftAP sensor)" },
-          "values": {
-            "type": "array",
-            "maxItems": 16,
-            "items": {
-              "type": "object",
-              "required": ["metric_id", "value"],
-              "properties": {
-                "metric_id": { "type": "integer" },
-                "value":     { "type": "integer", "description": "Scaled integer (divide by MetricDefinition.scale for real value)" }
-              }
-            }
-          }
-        }
-      },
-      "DataDispatchResponse": {
-        "type": "object",
-        "properties": {
-          "addr":  { "type": "integer" },
-          "ack":   { "type": "boolean", "description": "true = DATA_ACK (reliable), false = DATA (unreliable)" },
-          "bytes": { "type": "integer", "description": "Encoded nanopb payload length in bytes" }
-        }
-      },
-      "DataAckResponse": {
-        "type": "object",
-        "properties": {
-          "addr":       { "type": "integer" },
-          "ack_status": { "type": "string", "enum": ["OK", "BAD_REQUEST"], "description": "OK = peer stored values, BAD_REQUEST = unknown device or schema" }
         }
       },
       "SensorDataPayload": {

@@ -6,21 +6,111 @@ LoRaIoT is an enterprise-grade, half-duplex, point-to-point (P2P) RF bridge desi
 
 By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi SoftAP directly to a local LAN and downstream Home Automation/MQTT systems. To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, a framed binary protocol (protobuf/nanopb over a CRC-16 frame layer), and an on-demand 6-step physical wiring diagnostics suite.
 
-> Abbreviations and technical terms used in this document are explained in [Appendix A: Glossary](#appendix-a-glossary-of-abbreviations).
+LoRaIoT carries two kinds of data. Each kind has exactly one **owner** node that defines the devices and datapoints and pushes the values, and one **cache** node that mirrors them so its own REST clients can read them locally without waiting for the radio:
 
+| | Sensor data (measurements) | Control data (setpoints) |
+|---|---|---|
+| Typical example | Grid Power Monitor: voltage, current, power | DC/DC converter: voltage set, current limit |
+| Direction | REMOTE to LOCAL | LOCAL to REMOTE |
+| Owner (registry) | REMOTE (`SensorRegistry`) | LOCAL (`ControlRegistry`) |
+| Cache (registry) | LOCAL (`SensorRegistry`) | REMOTE (`ControlRegistry`) |
+| Written by | IoT device: `POST /api/lora/sensor/data` on the REMOTE SoftAP | Home Automation: `POST /api/lora/nodes/control?addr=<n>` on LOCAL |
+| Read by | Home Automation: `GET /api/lora/nodes/sensor?addr=<n>` on LOCAL | IoT device: `GET /api/lora/nodes/control` on the REMOTE SoftAP |
+
+**Sensor data flow (REMOTE to LOCAL):**
+
+1. An IoT device joins the REMOTE node's SoftAP WiFi and POSTs its readings as JSON. The REMOTE node stores them in its `SensorRegistry`, auto-assigns a stable device index and metric id to each new name, and answers immediately over WiFi.
+2. When a device or datapoint is new, the REMOTE node announces a changed `registry_rev` in its BEACON. LOCAL then fetches the device and datapoint definitions (name, unit, scale) from REMOTE over LoRa and caches them ([`REQUEST(Describe)`](doc/LoRaProtocol.md) in the protocol - also called a *definition crawl*).
+3. The REMOTE node pushes the values to LOCAL as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)), which LOCAL acknowledges (up to 3 retries). Later updates with an unchanged schema skip the definition step and carry only the values.
+4. Home Automation reads the cached values from LOCAL over the LAN. Reads are served from the cache, so they do not generate LoRa traffic unless `?live=true` is requested.
+
+**Control data flow (LOCAL to REMOTE):**
+
+1. Home Automation POSTs a setpoint to LOCAL for a given REMOTE node (`addr`). LOCAL stores it in its `ControlRegistry` and registers the device and datapoints on first use.
+2. LOCAL pushes the value to the REMOTE node as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)) and returns the delivery result to the caller (`200` acknowledged, `202` deferred until the REMOTE node has fetched the definitions, `504` no acknowledgement). LOCAL keeps the latest setpoint even if delivery fails; after a deferred delivery the value is pushed again once the REMOTE node has fetched the definitions.
+3. The REMOTE node stores the value in its `ControlRegistry` cache.
+4. The IoT device polls the REMOTE node's SoftAP REST API, reads the setpoint and applies it. This is also served from the cache, so the device never waits for the radio.
+
+All values are transported as integers; the real value is `value / scale`. The full frame and message specification is in [`doc/LoRaProtocol.md`](doc/LoRaProtocol.md), the REST endpoints are in [`doc/RestApi.md`](doc/RestApi.md).
+
+```mermaid
+graph LR
+    HA["REST client<br/>e.g. Home Assistant"]
+
+    subgraph LOCAL ["LOCAL Node"]
+        direction LR
+        LE["ESP32 STA, addr 0x01<br/>SensorRegistry: cache<br/>ControlRegistry: owner"]
+        LR0["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
+    end
+
+    subgraph REMOTE1 ["REMOTE Node 1"]
+        direction LR
+        R1R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
+        R1E["ESP32 AP, addr 0x02<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+    end
+
+    subgraph REMOTE2 ["REMOTE Node 2"]
+        direction LR
+        R2R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
+        R2E["ESP32 AP, addr 0x03<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+    end
+
+    subgraph REMOTE3 ["REMOTE Node 3"]
+        direction LR
+        R3R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
+        R3E["ESP32 AP, addr 0x04<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+    end
+
+    D1["IoT Device<br/>(read/write)"]
+    D2["IoT Device<br/>(read/write)"]
+    D3["IoT Device<br/>(read/write)"]
+
+    HA <-->|"REST API"| LE
+    LE <-->|"UART2"| LR0
+    LR0 <-->|"LoRa"| R1R
+    LR0 <-->|"LoRa"| R2R
+    LR0 <-->|"LoRa"| R3R
+    R1R <-->|"UART2"| R1E
+    R2R <-->|"UART2"| R2E
+    R3R <-->|"UART2"| R3E
+    R1E <-->|"REST API"| D1
+    R2E <-->|"REST API"| D2
+    R3E <-->|"REST API"| D3
 ```
-       [ Remote SoftAP Node ]                           [ Local Station Node ]
-  +-------------------------------+                +-------------------------------+
-  |  ESP32 WiFi AP (192.168.4.1)  |                |  ESP32 WiFi STA               |
-  |  - IoT Sensor Endpoints       |                |  - Local LAN Connection       |
-  |  - BEACON / PING / DATA       |                |  - Home Automation Uplink     |
-  +-------------------------------+                +-------------------------------+
-                 | (UART2)                                        | (UART2)
-  +-------------------------------+                +-------------------------------+
-  |  E220-400T22D (ADDR 0x02)     | <=== LoRa ===> |  E220-400T22D (ADDR 0x01)     |
-  |  Fixed Mode (Channel 0x19)    |    (433 MHz)   |  Fixed Mode (Channel 0x19)    |
-  +-------------------------------+                +-------------------------------+
+
+Notes:
+
+- REMOTE nodes 2 and 3 are optional. A single LOCAL node and one REMOTE node form a complete system; further REMOTE nodes can be added at any time.
+- Throughput is limited by the UART2 link between ESP32 and E220 (115200 baud) and by the LoRa air rate (default 62.5 kbps, half-duplex, shared by all nodes). The link is designed for small, infrequent sensor and setpoint updates, not bulk data.
+- Each REMOTE node supports up to 4 IoT devices (`DEVICE_TABLE_MAX_DEVICES`), each with up to 8 datapoints (`DEVICE_TABLE_MAX_METRICS`), i.e. at most 32 datapoints per REMOTE node. Device and metric names are limited to 12 characters, units to 5 characters (see `src/registry/src/DeviceTable.h`).
+
+Sensor data example: a Grid Power Monitor pushes its readings to the REMOTE node's SoftAP (`192.168.4.1`). Values are integers; the real value is `value/scale`.
+
+```bash
+curl -s -X POST http://192.168.4.1/api/lora/sensor/data \
+  -H "Content-Type: application/json" \
+  -d '{"device":"GridPower",
+       "metrics":{"Voltage":   {"value":2305,"unit":"V", "scale":10},
+                  "Current":   {"value":52,  "unit":"A", "scale":10},
+                  "Power":     {"value":1198,"unit":"W", "scale":1},
+                  "Frequency": {"value":5001,"unit":"Hz","scale":100}
+                 }
+      }'
 ```
+
+Control data example: the Home Automation system sets the output voltage of a DC/DC converter on REMOTE node 1 (`addr=2`) via the LOCAL node. LOCAL stores the setpoint and pushes it over LoRa to the REMOTE node, where the IoT device reads it with `GET /api/lora/nodes/control`.
+
+```bash
+curl -s -X POST "http://<LOCAL-IP>/api/lora/nodes/control?addr=2" \
+  -H "Content-Type: application/json" \
+  -d '{"device":"DcDc",
+       "metrics":{"Voltage": {"value":4800,"unit":"V","scale":100},
+                  "Current": {"value":150, "unit":"A","scale":10}
+                 }
+      }'
+```
+
+> Abbreviations and technical terms used in this document are explained in [Appendix A: Glossary](#appendix-a-glossary-of-abbreviations).
 
 ---
 
@@ -28,7 +118,7 @@ By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semte
 
 To construct and successfully run the LoRaIoT gateway bridge, the following hardware components are strictly required:
 
-1. **Microcontroller (2 Units):** ESP32 (dual-core ESP32-WROOM-32 or ESP32-S3 recommended; single-core variants such as ESP32-C3, C6, S2, H2 are also supported via the `TASK_CREATE` portability macro — see `src/util/src/TaskUtils.h`).
+1. **Microcontroller (2 Units):** ESP32 (dual-core ESP32-WROOM-32 or ESP32-S3 recommended; single-core variants such as ESP32-C3, C6, S2, H2 are also supported (but untested) via the `TASK_CREATE` portability macro — see `src/util/src/TaskUtils.h`).
 2. **LoRa Radio Module (2 Units):** Ebyte E220-400T22D (incorporating the Semtech LLCC68 RF chip operating in the 433 MHz UHF ISM band, delivering up to 22 dBm transmission power).
 3. **Antennas (2 Units):** High-quality 433 MHz SMA whip antennas (such as $18\text{ cm}$ dipole whips) tuned to the 433 MHz frequency range.
 4. **Decoupling Capacitor (2 Units):** A $100\mu\text{F}$ (or larger) low-ESR electrolytic capacitor connected in parallel directly across each E220's `VCC` and `GND` lines. This buffers high-current RF transmission bursts ($\approx 110\text{mA}$ peak) and prevents voltage sags that can cause ESP32 kernel brownout reboots.
@@ -67,165 +157,13 @@ By driving the M0 and M1 pins, the ESP32 dynamically commands the E220 through d
 
 ## 4. Firmware Architecture & Threading Model
 
-To ensure that real-time RF communication never blocks the TCP/IP stack or HTTP/WebSocket servers, LoRaIoT enforces a strict multi-threaded layout using FreeRTOS.
-
-```
-            Core 0 (System Core)                   Core 1 (Application Core)
-     +---------------------------------+      +---------------------------------+
-     | - WiFi Stack & LwIP             |      | - Main Arduino loop()           |
-     | - ESPAsyncWebServer (Callbacks) |      |   applicationSetup/Loop()       |
-     +---------------------------------+      | - loraTransportTask (Priority 2)|
-                      |                       | - WebSocketService broadcastTask|
-                      |                       |   (Priority 1)                  |
-                      |                       | - BeaconTask [REMOTE only]      |
-                      |                       |   (Priority 1)                  |
-                      |                       +---------------------------------+
-                      |                                        |
-                      +======= [ txQueue (Serialized) ] =======+
-                                         |
-                                      UART2 -> E220
-```
-
-> On single-core builds all tasks run on the only available core with no affinity pinning. The `TASK_CREATE` macro in `src/util/src/TaskUtils.h` handles this automatically.
-
-### Core Assignments
-- **Core 0 (System Core):** Handles the high-frequency WiFi stack, TCP/IP processing, and non-blocking asynchronous web callbacks from `ESPAsyncWebServer` (such as REST API and WebSocket events).
-- **Core 1 (Application Core):** Runs the primary application loop, the low-level `loraTransportTask`, WebSocket broadcast, and (on REMOTE) the beacon task.
-
-### Concurrency Rules
-1. **Single UART2 Ownership:** The `loraTransportTask` is the **sole owner** of `LoRaSerial` (UART2). Web server callbacks on Core 0 must never write directly to UART2. The diagnostics engine borrows UART2 via `LoRaTransport.pause()` / `LoRaTransport.resume()`.
-2. **The `txQueue` Bridge:** Any task intending to transmit calls `LoRaTransport.sendFrame()` or `LoRaTransport.sendRaw()`, which copies the packet into a `LoRaTxMessage` and posts it onto the FreeRTOS `txQueue`. The `loraTransportTask` drains the queue, executes the AUX handshake, and writes bytes atomically to UART2.
-3. **LoRa Readiness Gate:** The `loraIsReady()` function (declared in `Application.h`) returns `true` only after the boot diagnostics have completed on the first `applicationLoop()` tick. Radio tasks (e.g. `BeaconTask`) must poll this before transmitting to avoid corrupting the E220 UART state during the diagnostics Mode 3 sequence.
-4. **Shared State Mutexes:** All shared state structs (`LoRaState`, `DeviceRegistry`, `SensorRegistry`, `LogBuffer`) are protected by FreeRTOS mutexes.
-
-### LoRa Message Transmission and Reception Lifecycle
-
-The diagram below details how requests from REST callbacks or background tasks are dispatched across FreeRTOS queues to the single UART2 driver task, how AUX hardware flow control is enforced, and how incoming frames are parsed, validated, and routed to application handlers.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Caller as Caller Task / REST Handler
-    participant Broker as LoRaBroker
-    participant TxQ as txQueue (FreeRTOS Queue)
-    participant Task as loraTransportTask (Core 1)
-    participant E220 as Ebyte E220 Module (UART2)
-    participant RxCB as onLoRaReceive Callback
-
-    Note over Caller, E220: Outgoing Transmission Flow TX
-    Caller->>Broker: loraBrokerSend(type, dstAddr, payload)
-    Broker->>Broker: encodeFrame(LoRaFrame)
-    Broker->>TxQ: xQueueSend(txQueue, LoRaTxMessage)
-    Broker->>Broker: Block on responseSem (if waiting for reply)
-    
-    Task->>TxQ: xQueueReceive(txQueue, msg)
-    Task->>E220: Poll AUX pin (wait until AUX is HIGH)
-    Task->>E220: Atomic UART2 write: ADDH + ADDL + CHAN + Payload
-    E220-->>Task: AUX drops LOW (transmission in flight)
-    E220-->>Task: AUX rises HIGH (buffer empty)
-    Task->>Task: Wait 50 ms RF guard delay (GUARD_DELAY_MS)
-    Task->>Task: Increment statsTxFrames
-
-    Note over E220, Caller: Incoming Reception Flow RX
-    E220->>Task: UART2 RX bytes stream in
-    Task->>Task: Sync scanner matches 0xAA 0x55
-    Task->>Task: Accumulate header, payload, and CRC16
-    Task->>Task: decodeFrame(rxBuffer) verifies CRC and DST
-    Task->>Task: Increment statsRxFrames
-    Task->>RxCB: onLoRaReceive(rxFrame)
-    RxCB->>Broker: loraBrokerOnResponse(response) / sendPingAck(frame)
-    Broker-->>Caller: Give responseSem and unblock caller
-```
-
-### Boot Initialisation Sequence
-
-The diagram below traces the exact sequence of steps from power-on (or reset after reflash) until the node is fully ready to send and receive LoRa frames.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant HW   as Hardware / Reset
-    participant App  as applicationSetup
-    participant Cfg  as LoRaConfig / Gateway / LogBuffer
-    participant WM   as WiFiManager captive portal
-    participant E220 as E220 Module UART2
-    participant Task as loraTransportTask
-    participant Diag as diagnosticsLoop
-    participant Radio as Radio Tasks BeaconTask
-
-    HW->>App: Power-on / reset
-
-    Note over App,Cfg: Phase 1 - Singletons and NVS
-    App->>App: statusLed.begin() — LED enters BOOTING state
-    App->>Cfg: DeviceRegistry.begin() / SensorRegistry.begin()
-    App->>Cfg: LogBuffer.begin() — load persisted log level from NVS
-    App->>Cfg: Gateway.begin() — load tier LOCAL / REMOTE from NVS
-    App->>Cfg: LoRaConfig.begin() — load channel, address, cpuFreq from NVS
-    App->>App: setCpuFrequencyMhz — apply saved CPU frequency
-
-    Note over App,WM: Phase 2 - WiFi and Provisioning
-    App->>WM: wm.autoConnect — start WiFiManager
-    alt Node is unprovisioned
-        WM-->>App: Blocks — captive portal served on 192.168.4.1
-        Note over WM: User selects Tier and Channel in browser
-        WM->>Cfg: saveCallback — Gateway.save and LoRaConfig.save
-    else Credentials already in NVS
-        WM-->>App: Connects immediately, portal skipped
-    end
-    App->>App: RestService.registerRoutes — all /api/* routes wired
-    App->>App: WebSocketService.begin — /ws/data handler active
-    App->>App: server.begin — HTTP + WS live on port 80
-
-    Note over App,E220: Phase 3 - E220 Hardware Init at 9600 baud Mode 3
-    alt Gateway tier is configured
-        App->>App: LoRaState.begin
-        App->>App: LoRaTransport.setReceiveCallback
-        App->>E220: LoRaTransport.begin
-        E220-->>App: setMode M1=1 M0=1 — enter Config mode
-        E220-->>App: Write C0 00 08 ADDH ADDL REG0 REG1 CH REG3 CRYPT_H CRYPT_L
-        E220-->>App: Verify response != FF FF FF — retry up to 3x, FAULT on failure
-        E220-->>App: setMode M1=0 M0=0 — Normal mode at 115200 baud
-        App->>Task: TASK_CREATE loraTransportTask priority 2 — UART2 now owned
-        App->>App: loraBrokerBegin — semaphore bridge initialised
-        alt Tier is REMOTE
-            App->>Radio: beaconTaskBegin — task created, polls loraIsReady before first TX
-        end
-        App->>App: statusLed setState READY
-    else Tier not configured
-        App->>App: statusLed setState NO_DEVICE — REST API still reachable
-    end
-
-    Note over App,Diag: Phase 4 - Boot Diagnostics and LoRa Gate
-    App->>Diag: diagnosticsLoop — 6-step E220 wiring check + nanopb self-test
-    Note over Diag: pause suspends loraTransportTask then resume restores it
-    Diag-->>App: All steps logged to /api/log
-    App->>App: loraReady = true — loraIsReady gate opens
-
-    Note over Radio,Task: Phase 5 - Normal Operation
-    Radio->>Radio: BeaconTask unblocks — loraIsReady returns true
-    Radio->>Task: Enqueue BEACON frame onto txQueue
-    Task->>E220: AUX handshake + atomic UART2 write
-    Note over Task,E220: Node is fully operational - TX and RX active
-```
+For the full threading model, FreeRTOS core assignments, concurrency rules, TX/RX lifecycle
+sequence diagram, and boot initialisation sequence diagram see
+[`doc/Architecture.md`](doc/Architecture.md).
 
 ---
 
-## 5. Unified Singleton Design Pattern
-
-The codebase is built around the **Arduino Singleton Pattern** to prevent global variable name-shadowing collisions in C++ while presenting a clean, intuitive API. Every hardware controller or configuration subsystem defines an underlying class with a `-Class` suffix and exports a single global instance with a clean name:
-
-- **`LoRaTransportClass` → `LoRaTransport`**: Manages low-level UART2 transceiving, the FreeRTOS background task, and the `txQueue`.
-- **`LoRaConfigClass` → `LoRaConfig`**: Manages persistent NVS parameters (channel, address, CPU frequency).
-- **`GatewayClass` → `Gateway`**: Manages the persistent gateway role (`LOCAL` or `REMOTE`).
-- **`LogBufferClass` → `LogBuffer`**: Manages the multi-level (`INFO`/`DEBUG`/etc.) log ring buffer in RAM and provides JSON serialization.
-- **`StatusLed` → `statusLed`**: Manages the asynchronous status LED state machine.
-- **`LoRaStateClass` → `LoRaState`**: Mutex-protected per-SRC link state (duplicate detection, reboot detection via `boot_id`, LRU registry with 180s stale purge). Used on both LOCAL and REMOTE.
-- **`DeviceRegistryClass` → `DeviceRegistry`**: LOCAL-only cache of remote node entries and their device/metric definitions (populated by Describe crawl).
-- **`SensorRegistryClass` → `SensorRegistry`**: REMOTE-only registry of IoT devices posting sensor data via the SoftAP.
-
----
-
-## 6. Boot & Communication Lifecycle
+## 5. Boot & Communication Lifecycle
 
 Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE`) happens once via the WiFiManager captive portal and is persisted in NVS.
 
@@ -254,9 +192,9 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
 2. **WiFi Provisioning:**
    - Power on the node. Connect your phone or laptop to the captive WiFi portal (`AutoConnectAP`).
    - Open your browser to `http://192.168.4.1`.
-   - In the configuration form, select the node's **Gateway Tier** (`LOCAL` or `REMOTE`) and the desired **LoRa Channel** (0-31, default Channel 25 / `0x19`).
+   - In the configuration form, select the node's **Gateway Tier** (`LOCAL`, `REMOTE (Node 1)`, `REMOTE (Node 2)`, or `REMOTE (Node 3)`) and the desired **LoRa Channel** (0-31, default Channel 25 / `0x19`).
 3. **Address Assignment:**
-   - `LOCAL` is assigned address `0x01`; `REMOTE` is assigned address `0x02`.
+   - `LOCAL` is assigned address `0x01`; `REMOTE (Node 1)` is `0x02`, `REMOTE (Node 2)` is `0x03`, `REMOTE (Node 3)` is `0x04`.
    - `0x00` is invalid; `0xFF` is broadcast.
    - To re-provision, call `GET /reset` which clears WiFi credentials and all NVS settings.
 
@@ -266,14 +204,187 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
 3. **BEACON / Discovery (REMOTE):**
    - REMOTE broadcasts a `BEACON` frame every 5s (UNDISCOVERED state) until it receives any frame from LOCAL, then beacons every 60s (DISCOVERED state).
    - After 2 minutes of silence from LOCAL, REMOTE reverts to 5s fast beaconing (self-healing).
-   - LOCAL registers the REMOTE node in `DeviceRegistry` on the first received BEACON and schedules a Describe crawl.
-4. **PING / ACK (LOCAL):**
-   - LOCAL sends a framed `PING` (nanopb `Beacon{boot_id}` payload) to REMOTE every 2s.
-   - REMOTE replies with a framed `ACK`; LOCAL logs the RTT.
-5. **Fixed Mode Routing:**
+   - LOCAL registers the REMOTE node in `SensorRegistry` (via `cachedRegistry()`) on the first received BEACON and schedules a definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)) to learn the REMOTE's sensor device definitions.
+4. **PING / ACK (both nodes):**
+   - LOCAL sends a liveness check ([`PING`](doc/LoRaProtocol.md)) to REMOTE via `PingTask` on BEACON reception or on-demand via REST. The ping carries `boot_id` and optionally `registry_rev` to tell REMOTE when LOCAL's control definitions have changed.
+   - REMOTE also runs `PingTask` and sends PINGs to LOCAL for keep-alive monitoring.
+   - The receiving node replies with a framed `ACK`; the sender logs the RTT.
+5. **Sensor data push (REMOTE):**
+   - An IoT sensor on REMOTE's SoftAP POSTs readings to `POST /api/lora/sensor/data`. REMOTE stores them in `SensorRegistry` and increments `registry_rev` when the schema changes.
+   - The next BEACON carries the new `registry_rev`. LOCAL fetches the updated definitions from REMOTE over LoRa (definition crawl, [`REQUEST(Describe)`](doc/LoRaProtocol.md)), then REMOTE's `PushTask` pushes the current values as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)).
+   - A LAN client reads the values from LOCAL via `GET /api/lora/nodes/sensor?addr=2`.
+6. **Control setpoint push (LOCAL) and retrieval (REMOTE):**
+   - A LAN controller POSTs a setpoint to LOCAL via `POST /api/lora/nodes/control?addr=2`. LOCAL stores it in `ControlRegistry` and immediately pushes it to REMOTE as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)). If REMOTE acknowledges, LOCAL returns `200 {"delivery":"ok"}`.
+   - If REMOTE is unreachable at the time of the POST, LOCAL returns `504 {"delivery":"timeout"}` but **keeps the setpoint in `ControlRegistry`**. The value is re-delivered automatically once REMOTE comes back online (see step 7 below).
+   - If REMOTE does not yet recognise the control device (e.g. after its own reboot), it tells LOCAL it needs the definitions first ([`ACK{status=BAD_REQUEST}`](doc/LoRaProtocol.md)) and fetches them from LOCAL via a definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)). LOCAL returns `202 {"delivery":"after_describe"}`. Once the crawl completes, LOCAL's `PushTask` re-pushes the stored value as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)) without any further action from the caller.
+   - REMOTE caches the setpoint in its `ControlRegistry`. An IoT device on REMOTE's SoftAP reads the current setpoint via `GET /api/lora/nodes/control`.
+   - See `doc/LoRaProtocol.md` §15 for the full end-to-end sequence diagrams for both scenarios.
+7. **Self-healing after an outage:**
+   - **REMOTE reboots or is temporarily out of range:** REMOTE resets its `boot_id` and reverts to fast BEACON every 5 s. LOCAL detects the new `boot_id` on the first received BEACON, clears its cached sensor registry for that node, sends a liveness check ([`PING`](doc/LoRaProtocol.md)) carrying `registry_rev` if LOCAL has control devices, and starts a fresh definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)). Once the crawl completes, both `PushTask` instances re-deliver the latest values in each direction - REMOTE pushes its current sensor readings and LOCAL pushes its stored control setpoints. No manual intervention is needed.
+   - **LOCAL reboots:** LOCAL sends a broadcast liveness check ([`PING`](doc/LoRaProtocol.md)) at boot carrying its new `boot_id`. REMOTE detects the new `boot_id`, clears its cached control registry, and fetches the definitions from LOCAL via a definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)). After the crawl, LOCAL's `PushTask` re-delivers the control setpoints.
+   - **Temporary RF loss (no reboot):** Both nodes run `PingTask`. After 60 s of silence, each node sends keep-alive PINGs to the peer. After three unanswered PINGs the peer is marked `online: false` in the REST views. As soon as any frame is received, the peer is immediately revived (`online: true`) and normal operation continues with no re-crawl needed (the `boot_id` has not changed, so cached definitions remain valid).
+   - **Entry purge and re-entry:** If no frame is received for 180 s (three missed slow beacons), LOCAL purges the registry entry entirely. REMOTE re-enters through its fast-beacon cycle, which triggers a full rediscovery as described above.
+8. **Fixed Mode Routing:**
    - Both modules use Fixed Transmission Mode (`REG3=0x40`). The transport layer prepends the 3-byte E220 routing header `[ADDH][ADDL][CH]` before every write. Broadcast uses `[0xFF][0xFF][CH]`.
    - The E220 never delivers the sender address; SRC and DST are carried in the LoRaIoT frame header (`doc/LoRaProtocol.md` §4).
-6. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`) and a WebSocket endpoint (`/ws/data`) that broadcasts a JSON state snapshot every 1s: `{uptime_s, tier, lora{tx_frames, rx_frames, crc_errors, ack_loss}, echo{...}|null}`.
+9. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`). Key endpoints: `GET /api/lora/nodes/sensor` (sensor data), `GET,POST /api/lora/nodes/control` (control data), `POST /api/lora/sensor/data` (REMOTE sensor ingestion). A WebSocket endpoint (`/ws/data`) is wired but currently inactive (produces no output; see `doc/TechDebt.md` chapter 3).
+
+---
+
+## 6. REST API Quick-start Examples
+
+The examples below use placeholder addresses. Replace them with the actual IP addresses
+assigned to your nodes by your router. The REMOTE node's SoftAP address is always
+`192.168.4.1` when a device is connected directly to REMOTE's WiFi AP; the LAN addresses
+depend on your network.
+
+```
+<LOCAL-IP>   LAN address of the LOCAL node  (e.g. 192.168.1.147 in the development setup)
+<REMOTE-IP>  LAN address of the REMOTE node (e.g. 192.168.1.174 in the development setup,
+             also reachable as 192.168.4.1 from its SoftAP)
+```
+
+### IoT sensor posting data to REMOTE
+
+An IoT sensor connected to REMOTE's SoftAP (`192.168.4.1`) pushes a voltage and temperature reading:
+
+```bash
+curl -s -X POST http://192.168.4.1/api/lora/sensor/data \
+  -H "Content-Type: application/json" \
+  -d '{"device":"SensorA",
+       "metrics":{"Voltage":{"value":335,
+                             "unit":"V",
+                             "scale":100},
+                  "Temp":{"value":215,
+                          "unit":"C",
+                          "scale":10}
+                 }
+      }'
+```
+
+**Response (first post - schema registered, `registry_rev` incremented):**
+```json
+{"accepted":[{"metric":"Voltage",
+              "device_idx":1,
+              "metric_id":1
+             },
+             {"metric":"Temp",
+              "device_idx":1,
+              "metric_id":2
+             }],
+ "rejected":[],
+ "registry_rev":1
+}
+```
+
+The values are now in REMOTE's `SensorRegistry`. On the next BEACON, LOCAL will see the new `registry_rev`, crawl the definitions, and REMOTE's `PushTask` will deliver the values over LoRa. A LAN client can then read them from LOCAL:
+
+```bash
+curl -s "http://<LOCAL-IP>/api/lora/nodes/sensor?addr=2&device=1"
+```
+
+**Response:**
+```json
+{"nodes":[{"addr":2,
+           "boot_id":305419896,
+           "registry_rev":1,
+           "online":true,
+           "peer_last_seen_ms_ago":1200,
+           "devices":[{"device":1,
+                       "name":"SensorA",
+                       "has_data":true,
+                       "age_ms":4500,
+                       "alert":false,
+                       "metrics":[{"id":1,
+                                   "name":"Voltage",
+                                   "unit":"V",
+                                   "scale":100,
+                                   "value":335
+                                  },
+                                  {"id":2,
+                                   "name":"Temp",
+                                   "unit":"C",
+                                   "scale":10,
+                                   "value":215
+                                  }]
+                      }]
+          }]
+}
+```
+
+`value / scale` gives the real number: `335 / 100 = 3.35 V`, `215 / 10 = 21.5 °C`.
+
+---
+
+### Controller posting a setpoint to LOCAL (delivered to REMOTE over LoRa)
+
+A home automation controller on the LAN sets a target voltage for a charger attached to REMOTE:
+
+```bash
+curl -s -X POST "http://<LOCAL-IP>/api/lora/nodes/control?addr=2" \
+  -H "Content-Type: application/json" \
+  -d '{"device":"Charger",
+       "metrics":{"VoltageSet":{"value":333,
+                                "unit":"V",
+                                "scale":100}}}'
+```
+
+**Response (REMOTE acknowledged):**
+```json
+{"accepted":[{"metric":"VoltageSet",
+              "device_idx":1,
+              "metric_id":1
+             }],
+ "rejected":[],
+ "registry_rev":1,
+ "delivery":"ok"
+}
+```
+
+LOCAL stores the setpoint and delivers it to REMOTE as a `DATA_ACK` frame. A `delivery` of `"after_describe"` means REMOTE rebooted and does not have the definitions yet - they will be pushed automatically once REMOTE crawls LOCAL.
+
+The IoT device on REMOTE's SoftAP retrieves the cached setpoint:
+
+```bash
+curl -s http://192.168.4.1/api/lora/nodes/control
+```
+
+**Response:**
+```json
+{"nodes":[{"addr":1,
+           "boot_id":987654321,
+           "registry_rev":1,
+           "online":true,
+           "peer_last_seen_ms_ago":800,
+           "devices":[{"device":1,
+                       "name":"Charger",
+                       "has_data":true,
+                       "age_ms":120,
+                       "alert":false,
+                       "metrics":[{"id":1,
+                                   "name":"VoltageSet",
+                                   "unit":"V",
+                                   "scale":100,
+                                   "value":333
+                                  }]
+                      }]
+          }]
+}
+```
+
+`333 / 100 = 3.33 V`. Check `online` and `age_ms` before applying the value - if `online` is `false` or `age_ms` exceeds your staleness limit, fall back to a safe state.
+
+---
+
+### Live sensor read (bypasses cache, queries REMOTE directly)
+
+Force a fresh reading from REMOTE's device 1 without waiting for the next push:
+
+```bash
+curl -s "http://<LOCAL-IP>/api/lora/nodes/sensor?addr=2&device=1&live=true"
+```
+
+LOCAL sends a live-read request to REMOTE over LoRa ([`REQUEST(Read)`](doc/LoRaProtocol.md) in the protocol) and waits up to 3 s for the reply. Returns `504` on timeout.
 
 ---
 
@@ -284,15 +395,17 @@ Since serial monitors can typically only focus on a single COM port at a time, L
 ### The 6-Step Hardware Diagnostics Check
 The diagnostics run automatically at boot and can be re-triggered at any time via REST:
 
-**Trigger the check on demand:**
+**Trigger the check on demand** (run on each node you want to test - replace with `<LOCAL-IP>` or `<REMOTE-IP>`):
 ```bash
-curl -s http://<node_ip>/api/diag/e220
+curl -s http://<LOCAL-IP>/api/diag/e220
+curl -s http://<REMOTE-IP>/api/diag/e220
 ```
 *This safely calls `LoRaTransport.pause()` to suspend the background transceiver task before touching UART2, and `LoRaTransport.resume()` when done.*
 
-**Fetch the results:**
+**Fetch the results from each node:**
 ```bash
-curl -s http://<node_ip>/api/log
+curl -s http://<LOCAL-IP>/api/log
+curl -s http://<REMOTE-IP>/api/log
 ```
 
 Look for `E220 diag:` lines in the log. The six steps and their failure interpretations:
@@ -329,10 +442,11 @@ Whip antennas have a **toroidal (doughnut-shaped) radiation pattern**. They radi
 Receiver sensitivity is mathematically coupled to Spreading Factor and bandwidth. Lowering the air data rate makes the radio receiver orders of magnitude more sensitive:
 - By changing the configuration register `REG0` from **62.5 kbps** (`REG0_AIR_DATA_RATE_62K5`) to **2.4 kbps** (`REG0_AIR_DATA_RATE_2K4`), the link budget increases by **approximately $14 \text{ dB}$**.
 - In RF physics, **every $6\text{ dB}$ increase in link budget doubles the penetrative capacity through concrete/steel walls or doubles the open-space range.**
-- Set the data rate to `2.4 kbps` or `9.6 kbps` inside `LoRaTransport.cpp` to punch through dense concrete building cores.
+- Set the data rate to `2.4 kbps` or `9.6 kbps` via `PUT /api/lora/airrate` (applies live, no reboot) to punch through dense concrete building cores.
+- End-to-end feasibility at 2.4 kbps has been verified - see [`doc/LoRaProtocol.md §18`](doc/LoRaProtocol.md) for measured RTTs, test results, and the `LORA_REQUEST_TIMEOUT_MS` adjustment required at that rate.
 
 ---
 
 ## Appendix A: Glossary of Abbreviations
 
-Please see [Glossary.md](./Glossary.md).
+Please see [doc/Glossary.md](./doc/Glossary.md).

@@ -5,10 +5,10 @@
 /**
  * Tier.h - Gateway tier selection (LOCAL vs REMOTE).
  *
- * "Tier" describes the role of this LoRaIoT instance in the two-node system:
+ * "Tier" describes the role of this LoRaIoT instance:
  *
- *   LOCAL  - Connected to the local LAN / Home Assistant. Receives LoRa frames
- *            from the REMOTE instance and forwards sensor data upstream.
+ *   LOCAL  - Connected to the local WLAN. Receives LoRa frames
+ *            from REMOTE instances and forwards sensor data upstream.
  *
  *   REMOTE - Hosts the WiFi SoftAP that IoT sensors connect to. Forwards their
  *            data over the LoRa link to the LOCAL instance.
@@ -34,7 +34,7 @@ static constexpr const char* TIER_NVS_KEY        = "tier";
 /**
  * Tier - immutable value type representing one gateway role.
  *
- * Only the two static constants (LOCAL, REMOTE) may exist - the constructor
+ * Only static constants (LOCAL, REMOTE_1, REMOTE_2, REMOTE_3) may exist - the constructor
  * is private. String literals live in flash; no heap allocation.
  */
 class Tier {
@@ -42,9 +42,20 @@ class Tier {
   /** Human-readable name used in NVS, REST API responses, and portal HTML. */
   const char* name() const { return tierName; }
 
-  /** The two valid tiers. */
-  static const Tier LOCAL;   ///< Handles data received from REMOTE; connects to local LAN.
-  static const Tier REMOTE;  ///< Hosts SoftAP for IoT sensors; forwards data over LoRa.
+  /** Default LoRa node address for this tier. */
+  uint8_t defaultAddress() const { return defaultAddr; }
+
+  /** True if this is the LOCAL tier. */
+  bool isLocal() const { return defaultAddr == 0x01; }
+
+  /** True if this is any REMOTE tier. */
+  bool isRemote() const { return defaultAddr >= 0x02; }
+
+  /** The valid tiers. */
+  static const Tier LOCAL;     ///< Handles data received from REMOTE; connects to local WLAN.
+  static const Tier REMOTE_1;  ///< REMOTE Node 1 (address 0x02).
+  static const Tier REMOTE_2;  ///< REMOTE Node 2 (address 0x03).
+  static const Tier REMOTE_3;  ///< REMOTE Node 3 (address 0x04).
 
   /**
    * All tiers in definition order as a plain C array.
@@ -55,8 +66,9 @@ class Tier {
   static const Tier* const* values(size_t& count);
 
  private:
-  constexpr Tier(const char* name) : tierName(name) {}
+  constexpr Tier(const char* name, uint8_t addr) : tierName(name), defaultAddr(addr) {}
   const char* tierName;
+  uint8_t defaultAddr;
 };
 
 /**
@@ -86,7 +98,7 @@ class GatewayClass {
   void setTier(const Tier& tier);
 
   /**
-   * Set the tier from a name string ("LOCAL" or "REMOTE").
+   * Set the tier from a name string (e.g. "LOCAL", "REMOTE (Node 1)").
    * Returns false and leaves the tier unchanged if the name is unrecognised.
    */
   bool setTierFromString(const char* name);
@@ -96,6 +108,15 @@ class GatewayClass {
 
   /** True when a valid tier has been selected (not the boot default). */
   bool isConfigured() const;
+
+  /** True if the configured tier is LOCAL. */
+  bool isLocal() const;
+
+  /** True if the configured tier is any REMOTE instance. */
+  bool isRemote() const;
+
+  /** Default LoRa node address for the active tier. */
+  uint8_t defaultAddress() const;
 
  private:
   const Tier* activeTier = nullptr;  ///< nullptr = not yet set

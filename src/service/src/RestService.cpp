@@ -224,14 +224,14 @@ void RestService::registerRoutes() {
   server->on(
       "/api/lora/address", HTTP_PUT,
       [](AsyncWebServerRequest* request) {
-        if (strcmp(Gateway.getTierName(), "REMOTE") != 0) {
+        if (!Gateway.isRemote()) {
           Log_warn("PUT /api/lora/address failed - not a REMOTE instance");
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Address API only available on REMOTE instances\"}");
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
         }
       },
       nullptr,
       [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-        if (strcmp(Gateway.getTierName(), "REMOTE") != 0) {
+        if (!Gateway.isRemote()) {
           return;
         }
 
@@ -321,15 +321,15 @@ void RestService::registerRoutes() {
   // LOCAL: cache view of SensorRegistry (supports ?addr=, ?device=, ?live=true, ?timeout=, ?refresh=true).
   // REMOTE: owner view of SensorRegistry (?addr= and ?live=/?refresh= return 400).
   server->on("/api/lora/nodes/sensor", HTTP_GET, [](AsyncWebServerRequest* request) {
-    const bool isRemote = (strcmp(Gateway.getTierName(), "REMOTE") == 0);
+    const bool isRemote = Gateway.isRemote();
 
     if (isRemote) {
       if (request->hasArg("addr")) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr not accepted on REMOTE\"}");
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr not supported\"}");
         return;
       }
       if (request->hasArg("live") || request->hasArg("refresh")) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"live and refresh not allowed on owner view\"}");
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"live and refresh not supported\"}");
         return;
       }
 
@@ -523,11 +523,11 @@ void RestService::registerRoutes() {
   // REMOTE: cache view of ControlRegistry (?addr= returns 400; supports ?device=, ?live=true
   //         (requires device), ?timeout=, ?refresh=true). The only peer is LOCAL.
   server->on("/api/lora/nodes/control", HTTP_GET, [](AsyncWebServerRequest* request) {
-    const bool isRemote = (strcmp(Gateway.getTierName(), "REMOTE") == 0);
+    const bool isRemote = Gateway.isRemote();
 
     if (isRemote) {
       if (request->hasArg("addr")) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr not accepted on REMOTE\"}");
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr not supported\"}");
         return;
       }
 
@@ -628,7 +628,7 @@ void RestService::registerRoutes() {
 
     // LOCAL owner view
     if (request->hasArg("live") || request->hasArg("refresh")) {
-      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"live and refresh not allowed on owner view\"}");
+      request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"live and refresh not supported\"}");
       return;
     }
 
@@ -721,8 +721,8 @@ void RestService::registerRoutes() {
     [](AsyncWebServerRequest* request) {},
     nullptr,
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      if (strcmp(Gateway.getTierName(), "LOCAL") != 0) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint only available on LOCAL\"}");
+      if (!Gateway.isLocal()) {
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
         return;
       }
       if (!request->hasArg("addr")) {
@@ -876,7 +876,7 @@ void RestService::registerRoutes() {
   });
 
   // -------------------------------------------------------------------------
-  // Phase 2e: Blocking endpoints - require LoRaBroker (LOCAL only)
+  // Blocking endpoints - require LoRaBroker (LOCAL only)
   // -------------------------------------------------------------------------
 
   // POST /api/lora/nodes/echo?addr=2  body: {"text":"hello"}
@@ -1034,8 +1034,8 @@ void RestService::registerRoutes() {
     [](AsyncWebServerRequest* request) {},
     nullptr,
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      if (strcmp(Gateway.getTierName(), "REMOTE") != 0) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint only available on REMOTE\"}");
+      if (!Gateway.isRemote()) {
+        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
         return;
       }
       JsonDocument doc;
@@ -1096,109 +1096,6 @@ void RestService::registerRoutes() {
       serializeJson(respDoc, json);
       int status = rejected.size() > 0 ? HTTP_STATUS_BAD_REQUEST : HTTP_STATUS_OK;
       request->send(status, "application/json", json);
-    });
-
-  // -------------------------------------------------------------------------
-  // Phase 2f: Fire-and-forget endpoints (no blocking wait)
-  // -------------------------------------------------------------------------
-
-  // POST /api/lora/beacon  - trigger an immediate manual BEACON from LOCAL
-  server->on("/api/lora/beacon", HTTP_POST,
-    [](AsyncWebServerRequest* request) {},
-    nullptr,
-    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      // Build a minimal Beacon and send it broadcast. Phase 3 will wrap this
-      // in a proper BEACON-type frame header.
-      const char beaconMsg[] = "BEACON\n";
-      LoRaTransport.sendRaw(LORA_ADDR_BROADCAST, reinterpret_cast<const uint8_t*>(beaconMsg), sizeof(beaconMsg) - 1);
-      Log_info("POST /api/lora/beacon: manual BEACON queued [Phase2 stub]");
-      request->send(HTTP_STATUS_ACCEPTED, "application/json", "{\"status\":\"queued\"}");
-    });
-
-  // POST /api/lora/nodes/data?addr=2[&ack=true]
-  // Body: {"device":1,"values":[{"metric_id":1,"value":335}]}
-  server->on("/api/lora/nodes/data", HTTP_POST,
-    [](AsyncWebServerRequest* request) {},
-    nullptr,
-    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      if (!request->hasArg("addr")) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"missing param: addr\"}");
-        return;
-      }
-      uint8_t addr = (uint8_t)request->arg("addr").toInt();
-      if (addr < LORA_DEFAULT_ADDR_LOCAL || addr > LORA_MAX_ADDR_REMOTE) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"addr out of range (1-254)\"}");
-        return;
-      }
-      bool ack = request->hasArg("ack") && request->arg("ack") == "true";
-      JsonDocument bodyDoc;
-      if (deserializeJson(bodyDoc, data, len)) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"invalid JSON\"}");
-        return;
-      }
-      loraiot_Data dataMsg = loraiot_Data_init_zero;
-      dataMsg.device       = bodyDoc["device"].as<uint32_t>();
-      JsonArray vals       = bodyDoc["values"].as<JsonArray>();
-      for (JsonObject v : vals) {
-        if (dataMsg.values_count >= DATA_VALUES_MAX) {
-          break;
-        }
-        dataMsg.values[dataMsg.values_count].metric_id = v["metric_id"].as<uint32_t>();
-        dataMsg.values[dataMsg.values_count].value     = v["value"].as<int32_t>();
-        dataMsg.values_count++;
-      }
-
-      if (ack) {
-        loraiot_Status ackStatus = loraiot_Status_STATUS_OK;
-        BrokerResult result = loraSendDataReliable(addr, dataMsg, ackStatus);
-        if (result == BrokerResult::BUSY) {
-          request->send(HTTP_STATUS_SERVICE_UNAVAILABLE, "application/json", "{\"error\":\"LoRa broker busy\"}");
-          return;
-        }
-        if (result == BrokerResult::ENCODE_ERR) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"encode failed\"}");
-          return;
-        }
-        if (result == BrokerResult::TIMEOUT) {
-          request->send(HTTP_STATUS_GATEWAY_TIMEOUT, "application/json", "{\"error\":\"timeout\"}");
-          return;
-        }
-        // result == BrokerResult::OK
-        JsonDocument respDoc;
-        respDoc["addr"]       = addr;
-        respDoc["ack_status"] = (ackStatus == loraiot_Status_STATUS_OK) ? "OK" : "BAD_REQUEST";
-        String json;
-        serializeJson(respDoc, json);
-        request->send(HTTP_STATUS_OK, "application/json", json);
-      } else {
-        uint8_t buf[LORA_MAX_PAYLOAD_LEN];
-        pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
-        if (!pb_encode(&stream, loraiot_Data_fields, &dataMsg)) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"encode failed\"}");
-          return;
-        }
-        LoRaFrame frame;
-        frame.ver  = LORA_PROTOCOL_VER;
-        frame.type = LoRaFrameType::DATA;
-        frame.src  = LoRaConfig.getAddress();
-        frame.dst  = addr;
-        frame.seq  = loraNextSeq();
-        frame.len  = static_cast<uint8_t>(stream.bytes_written);
-        memcpy(frame.payload, buf, frame.len);
-        if (!LoRaTransport.sendFrame(frame)) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"send failed\"}");
-          return;
-        }
-        Log_info("POST /api/lora/nodes/data?addr=%u&ack=false: %u bytes queued",
-                 addr, (unsigned)stream.bytes_written);
-        JsonDocument respDoc;
-        respDoc["addr"]  = addr;
-        respDoc["ack"]   = false;
-        respDoc["bytes"] = stream.bytes_written;
-        String json;
-        serializeJson(respDoc, json);
-        request->send(HTTP_STATUS_ACCEPTED, "application/json", json);
-      }
     });
 
   // GET /api/lora/nodes - list all known remote node addresses.

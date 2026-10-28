@@ -65,24 +65,28 @@ static constexpr const char* LOG_NVS_KEY_LEVEL = "logLevel";
  */
 class LogLevel {
  public:
-  // Log4j2-compatible integer ordering: higher = less severe.
-  // levelOrdinal field stores the value; levelOrdinal() method exposes it.
+  /**
+   * Log4j2-compatible integer ordinal.
+   * Higher value = less severe (TRACE = 0, ERROR = 4).
+   * A message is emitted when its ordinal >= the active level's ordinal.
+   */
   int levelOrdinal() const {
     return levelOrdinalValue;
   }
 
-  // Canonical bare name, e.g. "INFO". Used for NVS, API, and comparisons.
-  // Java equivalent: LogLevel.name()
+  /**
+   * Canonical bare name string, e.g. "INFO".
+   * Used for NVS persistence, REST API responses, and log-line formatting.
+   */
   const char* name() const {
     return levelName;
   }
 
-  // The five canonical instances - mirrors Java enum constants.
-  static const LogLevel TRACE;
-  static const LogLevel DEBUG;
-  static const LogLevel INFO;
-  static const LogLevel WARN;
-  static const LogLevel ERROR;
+  static const LogLevel TRACE;  ///< Most verbose level (ordinal 0).
+  static const LogLevel DEBUG;  ///< Debug-level messages (ordinal 1).
+  static const LogLevel INFO;   ///< Informational messages - default active level (ordinal 2).
+  static const LogLevel WARN;   ///< Warning messages (ordinal 3).
+  static const LogLevel ERROR;  ///< Error messages - least verbose (ordinal 4).
 
   /**
    * All levels in ascending severity order, as a plain C array.
@@ -134,12 +138,14 @@ class LogBufferClass {
    */
   void saveLevel() const;
 
-  // Internal methods - do not call directly. Use the Log_* macros below.
+  /** @name Internal log dispatch methods - do not call directly; use the Log_* macros. */
+  ///@{
   void logError(const char* file, int line, const char* format, ...);
-  void logWarn(const char* file, int line, const char* format, ...);
-  void logInfo(const char* file, int line, const char* format, ...);
+  void logWarn (const char* file, int line, const char* format, ...);
+  void logInfo (const char* file, int line, const char* format, ...);
   void logDebug(const char* file, int line, const char* format, ...);
   void logTrace(const char* file, int line, const char* format, ...);
+  ///@}
 
   /** Returns the current active log level. */
   const LogLevel& getLogLevel() const;

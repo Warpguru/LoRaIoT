@@ -36,10 +36,9 @@ Base URL: `http://<device-ip>/` (port 80).
 | POST | `/api/lora/nodes/control` | `RestService.cpp` | LOCAL | Register control devices and store setpoint values (`?addr=`) |
 | GET | `/api/lora/stats` | `RestService.cpp` | LOCAL | LoRa transport TX/RX/CRC/ACK counters |
 | POST | `/api/lora/nodes/echo` | `RestService.cpp` | LOCAL | Echo test to a remote node (`?addr=`) |
+| GET | `/api/lora/echo/result` | `RestService.cpp` | LOCAL | Return the result of the last echo test (non-blocking) |
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
 | GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
-| POST | `/api/lora/beacon` | `RestService.cpp` | LOCAL | Trigger an immediate manual BEACON |
-| POST | `/api/lora/nodes/data` | `RestService.cpp` | Both | Send a Data frame (`?addr=`, `?ack=true\|false`) |
 | POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from a SoftAP IoT device |
 | WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s) |
 
@@ -128,12 +127,14 @@ Returns the currently active gateway tier.
 
 | Field | Type | Description |
 |---|---|---|
-| `tier` | string | `"LOCAL"`, `"REMOTE"`, or `"UNSET"` if no tier has been selected in the portal yet |
+| `tier` | string | `"LOCAL"`, `"REMOTE (Node 1)"`, `"REMOTE (Node 2)"`, `"REMOTE (Node 3)"`, or `"UNSET"` if no tier has been selected in the portal yet |
 | `configured` | bool | `false` when tier is `"UNSET"` (portal has not been completed) |
 
 **Tier meanings:**
-- `LOCAL` - connected to the local LAN / Home Assistant; receives data from the REMOTE instance.
-- `REMOTE` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to the LOCAL instance.
+- `LOCAL` - connected to the local WLAN; receives data from REMOTE nodes (default addr `0x01`).
+- `REMOTE (Node 1)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x02`).
+- `REMOTE (Node 2)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x03`).
+- `REMOTE (Node 3)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x04`).
 
 The tier is selected in the WiFiManager captive portal and persisted in NVS
 (namespace `sc_prefs`, key `tier`). It survives reboots. Clear it with `GET /reset`.
@@ -170,8 +171,7 @@ It needs no radio, so it runs even when the E220 check fails, and it does not ch
 **Side effects:**
 - Uses only the temporary write command (`0xC2`), so nothing is stored in the module's flash.
 - If the check fails, the status LED switches to `NO_DEVICE`.
-- Takes UART2 for the duration of the check and releases it afterwards. Remove this endpoint
-  when Milestone 3 (`LoRaTransport`) becomes the sole owner of UART2.
+- Takes UART2 for the duration of the check via `LoRaTransport.pause()` / `resume()` and releases it afterwards.
 
 ---
 
@@ -478,7 +478,7 @@ LOCAL stores the setpoint value regardless of delivery outcome. The remote will 
 
 ## GET /api/lora/stats
 
-Returns cumulative LoRa transport counters since boot. CRC error and ACK loss counters are wired in Phase 3.
+Returns cumulative LoRa transport counters since boot.
 
 **Response:** `200 application/json`
 
@@ -508,6 +508,35 @@ Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns i
 | `400` | Missing `addr`, invalid body, or text exceeds 175 characters |
 | `503` | LoRa broker busy |
 | `504` | No response from remote node |
+
+---
+
+## GET /api/lora/echo/result
+
+Returns the result of the last `POST /api/lora/nodes/echo` call without blocking. The result is
+stored in RAM by the echo handler and survives until the next echo call replaces it or the node reboots.
+LOCAL only.
+
+**Request body:** none
+
+| Status | Meaning |
+|---|---|
+| `200` | Result available. |
+| `404` | No echo has been performed since boot. Body: `{"error":"no echo result yet"}` |
+
+**Response body** (`200`):
+
+```json
+{"sent":"hello world","received":"dlrow olleh","seqNo":7,"roundTripMs":87,"success":true}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `sent` | string | The text that was sent |
+| `received` | string | The text returned by the remote node (empty string on failure) |
+| `seqNo` | uint32 | Frame sequence number of the echo request |
+| `roundTripMs` | uint32 | Round-trip time in milliseconds |
+| `success` | bool | `true` when a valid echo response was received |
 
 ---
 
@@ -542,44 +571,6 @@ Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful fo
 
 ---
 
-## POST /api/lora/beacon
-
-Queues an immediate manual BEACON frame for broadcast transmission. Returns 202 immediately; the frame is sent asynchronously by `loraTransportTask`. LOCAL only.
-
-**Response:** `202 application/json`
-
-```json
-{"status":"queued"}
-```
-
----
-
-## POST /api/lora/nodes/data
-
-Sends a `loraiot_Data` payload to a peer node. Both nodes.
-- `ack=true`: reliable `DATA_ACK` transmission with up to 4 attempts (200 ms timeout per attempt, random 20-200 ms backoff). Blocks until ACK received or timeout.
-- `ack=false`: fire-and-forget `DATA` frame. Returns 202 immediately.
-
-| Query parameter | Required | Description |
-|---|---|---|
-| `addr` | Yes | Peer node LoRa address (1-254) |
-| `ack` | No | `true` = DATA_ACK (reliable), `false` = DATA (unreliable). Default `false` |
-
-**Request body:** `application/json`
-
-```json
-{"device":1,"values":[{"metric_id":1,"value":335},{"metric_id":2,"value":215}]}
-```
-
-| Status | Meaning |
-|---|---|
-| `200` | Reliable DATA_ACK delivered and acknowledged. Body: `{"addr":2,"ack_status":"OK"}` or `{"addr":2,"ack_status":"BAD_REQUEST"}` |
-| `202` | Unreliable DATA frame queued. Body: `{"addr":2,"ack":false,"bytes":12}` |
-| `400` | Missing `addr`, addr out of range (1-254), invalid body, or nanopb encode failed |
-| `503` | LoRa broker busy (another request in flight) |
-| `504` | Gateway timeout (no ACK received after all retry attempts) |
-
----
 
 ## POST /api/lora/sensor/data
 

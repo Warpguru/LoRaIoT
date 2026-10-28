@@ -30,11 +30,7 @@ void LoRaConfigClass::begin() {
       address = addr;
     } else {
       // Default address based on active tier
-      if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
-        address = LORA_DEFAULT_ADDR_REMOTE;
-      } else {
-        address = LORA_DEFAULT_ADDR_LOCAL;
-      }
+      address = Gateway.defaultAddress();
     }
     prefs.end();
     Log_info("LoRa config loaded: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
@@ -46,11 +42,7 @@ void LoRaConfigClass::begin() {
     cpuFreq = LORA_CPU_FREQ_DEFAULT;
     key     = LORA_DEFAULT_KEY;
     airRate = LoRaTransportClass::AIR_RATE_DEFAULT;
-    if (strcmp(Gateway.getTierName(), "REMOTE") == 0) {
-      address = LORA_DEFAULT_ADDR_REMOTE;
-    } else {
-      address = LORA_DEFAULT_ADDR_LOCAL;
-    }
+    address = Gateway.defaultAddress();
     Log_info("LoRa config using defaults: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
              LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off",
              LoRaTransportClass::airRateName(airRate), cpuFreq);

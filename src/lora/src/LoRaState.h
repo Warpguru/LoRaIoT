@@ -41,12 +41,12 @@ static constexpr uint32_t LORA_STATE_STALE_MS    = 180000;
  * SEQ=0 is not treated as a duplicate of a previous run (§6.1).
  */
 struct LoRaRemoteEntry {
-  uint8_t  src;           // LoRa node address of the remote (0x01..0xFE)
-  uint16_t lastSeq;       // SEQ of the last accepted frame
-  uint8_t  lastType;      // TYPE of the last accepted frame (LoRaFrameType cast to uint8_t)
-  uint32_t lastBootId;    // boot_id last seen from this src (0 = not yet seen)
-  uint32_t lastSeenMs;    // millis() when any frame was last received from src
-  bool     seqValid;      // false until the first frame from src is processed
+  uint8_t  src;           ///< LoRa node address of the remote (0x01..0xFE).
+  uint16_t lastSeq;       ///< SEQ of the last accepted frame.
+  uint8_t  lastType;      ///< TYPE of the last accepted frame (LoRaFrameType cast to uint8_t).
+  uint32_t lastBootId;    ///< boot_id last seen in a PING or BEACON from src (0 = not yet seen).
+  uint32_t lastSeenMs;    ///< millis() when any frame was last received from src.
+  bool     seqValid;      ///< False until the first frame from src has been processed.
 };
 
 class LoRaStateClass {

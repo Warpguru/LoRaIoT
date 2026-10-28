@@ -6,8 +6,9 @@ This document explains how `src/lora/proto/loraiot.proto` becomes the C sources 
 The schema itself is specified in [`LoRaProtocol.md`](LoRaProtocol.md) section 10. That section is the
 source of truth; the `.proto` file is a copy and the generated files are derived from it.
 
-> **Status:** the generated code is part of the `lora` library (so it is compiled by the Arduino IDE and
-> PlatformIO), but no firmware code calls it yet. It is used from Milestone 4 on.
+> **Status:** the generated code is part of the `lora` library and is compiled by both the Arduino IDE and
+> PlatformIO. It is called at every boot by `runPingEncodeCheck()` in `src/diagnostics/src/Diagnostics.cpp`
+> and on every `GET /api/diag/e220` request.
 
 ## 1. What is in the repository
 

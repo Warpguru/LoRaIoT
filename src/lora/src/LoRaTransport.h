@@ -23,6 +23,7 @@
  * and timing rules are encapsulated inside this library.
  */
 
+/** Callback invoked from loraTransportTask when a complete, CRC-valid, addressed frame is received. */
 typedef void (*LoRaReceiveCallback)(const LoRaFrame& frame);
 
 /**
@@ -30,20 +31,24 @@ typedef void (*LoRaReceiveCallback)(const LoRaFrame& frame);
  * Returned by LoRaTransport.getStats(). All fields are reset by resetStats().
  */
 struct LoRaStats {
-  uint32_t txFrames;   // frames successfully written to UART2
-  uint32_t rxFrames;   // complete frames delivered to the receive callback
-  uint32_t crcErrors;  // frames discarded due to CRC mismatch
-  uint32_t ackLoss;    // ACK timeouts / unacknowledged DATA_ACK frames
+  uint32_t txFrames;   ///< Frames successfully written to UART2 (TX queue -> serial).
+  uint32_t rxFrames;   ///< Complete CRC-valid frames delivered to the receive callback.
+  uint32_t crcErrors;  ///< Frames discarded due to CRC mismatch.
+  uint32_t ackLoss;    ///< ACK timeouts - unacknowledged DATA_ACK frames (all retries failed).
 };
 
 // The frame size constants (LORA_MAX_FRAME_LEN, LORA_ROUTING_HDR_LEN, LORA_FRAME_HEADER_LEN,
 // LORA_FRAME_CRC_LEN, LORA_FRAME_OVERHEAD, LORA_MAX_PAYLOAD_LEN) moved to LoRaFrame.h so the
 // codec does not depend on the transport. They are still visible here through the include above.
 
+/**
+ * One item queued for transmission in the loraTransportTask TX queue.
+ * Prepared by sendFrame() / sendRaw(); dequeued and sent by loraTransportTask.
+ */
 struct LoRaTxMessage {
-  uint8_t destAddr;
-  uint8_t data[LORA_MAX_FRAME_LEN];
-  size_t len;
+  uint8_t destAddr;              ///< E220 ADDL destination byte (unicast or 0xFF broadcast).
+  uint8_t data[LORA_MAX_FRAME_LEN]; ///< Encoded frame bytes (SYNC..CRC, no routing header).
+  size_t  len;                   ///< Number of valid bytes in data.
 };
 
 class LoRaTransportClass {

@@ -26,7 +26,7 @@ Known test nodes (from `AGENTS.md`): LOCAL `http://192.168.1.147` (LoRa address 
 | 12 | Push after crawl and after reboot or return | code | [x] |
 | 13 | Age, link indicator, `live` and `refresh` on cache views | code | [x] |
 | 14 | Failure tests | test only | [x] |
-| 15 | Cleanup and final docs | doc + code | [ ] |
+| 15 | Cleanup and final docs | doc + code | [x] |
 
 ## Rules for every step
 

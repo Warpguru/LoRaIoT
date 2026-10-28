@@ -10,6 +10,7 @@
 #include "Application.h"
 #include "../../registry/src/PeerRegistry.h"
 #include "LoRaBroker.h"
+#include "LoRaConfig.h"
 
 /**
  * PingTask.cpp - link-liveness task, identical on LOCAL and REMOTE. See PingTask.h for the
@@ -191,7 +192,8 @@ static void pingTask(void* /*param*/) {
     while (!loraIsReady()) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    Log_info("PingTask: LoRa gate open - starting keep-alive loop");
+    Log_info("PingTask: LoRa gate open - starting keep-alive loop airRate=%s",
+             LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
 
     for (;;) {
         uint8_t addr = 0;

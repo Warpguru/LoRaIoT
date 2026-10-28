@@ -16,14 +16,18 @@
 
 // ---- Tier static constants -------------------------------------------------
 
-const Tier Tier::LOCAL ("LOCAL");
-const Tier Tier::REMOTE("REMOTE");
+const Tier Tier::LOCAL   ("LOCAL",            0x01);
+const Tier Tier::REMOTE_1("REMOTE (Node 1)", 0x02);
+const Tier Tier::REMOTE_2("REMOTE (Node 2)", 0x03);
+const Tier Tier::REMOTE_3("REMOTE (Node 3)", 0x04);
 
 // values() - static array, initialised once, no heap allocation.
 const Tier* const* Tier::values(size_t& count) {
   static const Tier* const all[] = {
     &Tier::LOCAL,
-    &Tier::REMOTE,
+    &Tier::REMOTE_1,
+    &Tier::REMOTE_2,
+    &Tier::REMOTE_3,
   };
   count = sizeof(all) / sizeof(all[0]);
   return all;
@@ -71,7 +75,9 @@ void GatewayClass::setTier(const Tier& tier) {
 }
 
 bool GatewayClass::setTierFromString(const char* name) {
-  if (name == nullptr) return false;
+  if (name == nullptr) {
+    return false;
+  }
   size_t count;
   const Tier* const* all = Tier::values(count);
   for (size_t i = 0; i < count; i++) {
@@ -89,4 +95,16 @@ const char* GatewayClass::getTierName() const {
 
 bool GatewayClass::isConfigured() const {
   return activeTier != nullptr;
+}
+
+bool GatewayClass::isLocal() const {
+  return activeTier != nullptr && activeTier->isLocal();
+}
+
+bool GatewayClass::isRemote() const {
+  return activeTier != nullptr && activeTier->isRemote();
+}
+
+uint8_t GatewayClass::defaultAddress() const {
+  return getTier().defaultAddress();
 }

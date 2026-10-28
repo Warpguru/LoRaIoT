@@ -1,12 +1,7 @@
 # LoRaIoT LoRa Protocol Specification
 
-**Version:** 1 (draft, produced by Milestone 1)
-**Status:** Normative for Milestones 3 to 7. Supersedes the frame header and type table of
-`Feasibility.md` §6.
-
 Facts about the radio module are taken from `E220-400T22D_UserManual_EN_v1.2.pdf`, which
-wins over any other document in this repository. Items the manual does not specify are
-listed in §18 and must be verified on hardware in Milestone 5.
+wins over any other document in this repository.
 
 ---
 
@@ -84,7 +79,7 @@ Broadcast is allowed only for PING. Replies to a broadcast PING are unicast.
 The fixed overhead is 11 B. The E220 sub-packet is 200 B (REG1). With the 3 routing bytes
 the UART write is at most 3 + 11 + 186 = 200 B, so the maximum payload is 186 B. The manual
 does not state whether the routing bytes count toward the sub-packet, so the conservative
-reading is used (verify in M5). A frame must fit one sub-packet, otherwise the receiving
+reading is used. A frame must fit one sub-packet, otherwise the receiving
 module outputs it in pieces.
 
 ### 4.1 CRC
@@ -183,19 +178,20 @@ No acknowledgement is required, because the next BEACON or PING repeats the valu
 
 ## 7. Reliability and timing
 
-Named constants (values to confirm in M5):
+Named constants:
 
-| Message | Attempt timeout | Attempts |
-|---|---|---|
-| DATA_ACK | `LORA_ACK_TIMEOUT_MS` = 200 ms | 4 (1 + 3 retries) |
-| PING | `LORA_ACK_TIMEOUT_MS` = 200 ms | 2 (1 + 1 retry) |
-| REQUEST | `LORA_REQUEST_TIMEOUT_MS` = 1000 ms | 2 (1 + 1 retry) |
-| Broadcast PING | `LORA_ACK_TIMEOUT_MS` | 1 (no retry) |
+| Message | Attempt timeout | Attempts | Retry logic |
+|---|---|---|---|
+| DATA_ACK | `LORA_ACK_TIMEOUT_MS` = 200 ms | 4 (1 + 3 retries) | `loraSendDataReliable` retry loop in `LoRaBroker.cpp` |
+| PING (unicast, beacon reply) | `PING_ATTEMPT_TIMEOUT_MS` = `LORA_REQUEST_TIMEOUT_MS` = 1000 ms | 1 (no retry) | Single `loraBrokerSend` + `loraBrokerWait`; a missed beacon reply only delays REMOTE's switch to slow beacon rate |
+| PING (unicast, keep-alive) | `PING_ATTEMPT_TIMEOUT_MS` = 1000 ms | up to `PING_OFFLINE_ATTEMPTS` = 3 | Application-level loop in `PingTask`; marks peer offline only after 3 real timeouts |
+| PING (broadcast) | `PING_ATTEMPT_TIMEOUT_MS` = 1000 ms | 1 (no retry) | `loraBrokerSend` + `loraBrokerWait`; LOCAL may repeat manually |
+| REQUEST (Echo / Read) | `LORA_REQUEST_TIMEOUT_MS` = 1000 ms | 1 (no retry) | Single `loraBrokerSend` + `loraBrokerWait`; callers receive `504` on timeout |
 
 - The timeout starts when the transmission, including the AUX guard, has completed.
-- Before each retry wait a random time between `LORA_BACKOFF_MIN_MS` (20 ms) and `LORA_BACKOFF_MAX_MS` (200 ms).
-- After the last attempt: log an error, mark the link degraded and report a timeout. The node
-  does not enter the FAULT state.
+- Before each DATA_ACK retry, wait a random time between `LORA_BACKOFF_MIN_MS` (20 ms) and `LORA_BACKOFF_MAX_MS` (200 ms).
+- Between keep-alive PING attempts, `PingTask` waits `PING_ATTEMPT_GAP_MS` (1000 ms).
+- After the last DATA_ACK attempt: call `LoRaTransport.incrementAckLoss()`, log an error, and return timeout. The node does not enter the FAULT state.
 - Each REMOTE delays its ACK to a broadcast PING by a random 0 to `LORA_BCAST_REPLY_WINDOW_MS` (1000 ms).
   Lost replies are tolerated; LOCAL may repeat the PING.
 - The REQUEST timeout covers REMOTE processing plus the RESPONSE airtime (up to 200 B).
@@ -362,7 +358,7 @@ message Describe {
 // "Send my text back". Used for link testing and for measuring the payload limit.
 message Echo {
   string text = 1;  // The REMOTE returns it REVERSED in the RESPONSE (max 175 chars). Reversing
-                    // proves the frame was processed and not merely reflected (M3 test)
+                    // proves the frame was processed and not merely reflected
 }
 
 // Payload of the REQUEST type. Exactly one command is set.
@@ -503,8 +499,8 @@ Reliable data (REMOTE alert):
 
 ```mermaid
 sequenceDiagram
-    participant R as REMOTE
     participant L as LOCAL
+    participant R as REMOTE
     R->>L: DATA_ACK(Data alert)
     L-->>R: ACK(acked_type=5, acked_seq)
 ```
@@ -516,7 +512,7 @@ sequenceDiagram
     participant C as REST client
     participant L as LOCAL
     participant R as REMOTE
-    C->>L: GET .../metrics?live=true
+    C->>L: GET /api/lora/nodes/sensor?addr=2&device=1&live=true
     L->>R: REQUEST(Read device)
     R-->>L: RESPONSE(request_seq, Data)
     L-->>C: 200 JSON (504 on timeout)
@@ -526,17 +522,22 @@ Discovery of the definitions:
 
 ```mermaid
 sequenceDiagram
-    participant R as REMOTE
     participant L as LOCAL
+    participant R as REMOTE
     R->>L: BEACON(boot_id, registry_rev=3)
-    Note over L: new boot_id or registry_rev
+    Note over L: new boot_id or registry_rev - start crawl
+    L->>R: PING(boot_id, registry_rev)
+    R-->>L: ACK(acked_type=1, acked_seq)
+    Note over R: PING received - switch to 60s beacon interval
     L->>R: REQUEST(Describe 1)
     R-->>L: RESPONSE(Device 1 "Sensor A", metrics)
     L->>R: REQUEST(Describe 2)
     R-->>L: RESPONSE(BAD_REQUEST)
+    Note over R: BAD_REQUEST triggers PushTask
     Note over L: cache complete
-    R->>L: DATA(device=1, values)
-    Note over L: values arrive together with definitions
+    R->>L: DATA_ACK(device=1, values)
+    Note over L: PushTask pushes current values after crawl
+    L-->>R: ACK(acked_type=5, acked_seq)
 ```
 
 Push after crawl (R1) - the owner pushes values after the crawl ends:
@@ -550,8 +551,9 @@ sequenceDiagram
     owner-->>cache: RESPONSE(Device 1 "Sensor A", metrics)
     cache->>owner: REQUEST(Describe 2)
     owner-->>cache: RESPONSE(BAD_REQUEST)
-    Note over owner: crawl complete - push all current values
-    owner->>cache: DATA / DATA_ACK (device=1, values)
+    Note over owner: BAD_REQUEST triggers PushTask - push all current values
+    owner->>cache: DATA_ACK(device=1, values)
+    cache-->>owner: ACK(acked_type=5, acked_seq, status=OK)
 ```
 
 Control data flow (LOCAL to REMOTE):
@@ -572,8 +574,8 @@ PING with registry_rev (§8):
 
 ```mermaid
 sequenceDiagram
-    participant R as REMOTE
     participant L as LOCAL
+    participant R as REMOTE
     R->>L: BEACON(boot_id, registry_rev=3)
     Note over L: new boot_id
     L->>R: PING(boot_id, registry_rev=5)
@@ -588,7 +590,7 @@ sequenceDiagram
     R-->>L: ACK(status=OK)
 ```
 
-Liveness:
+Liveness (both nodes run PingTask and send keep-alive PINGs independently):
 
 ```mermaid
 sequenceDiagram
@@ -596,7 +598,73 @@ sequenceDiagram
     participant R as REMOTE
     L->>R: PING(boot_id)
     R-->>L: ACK(acked_type=1, acked_seq)
+    R->>L: PING(boot_id)
+    L-->>R: ACK(acked_type=1, acked_seq)
 ```
+
+---
+
+### End-to-end scenario A - IoT sensor on REMOTE SoftAP pushes data to LOCAL
+
+An IoT sensor (e.g. a voltage meter) connects to REMOTE's SoftAP WiFi and POSTs its readings. LOCAL learns the definitions over LoRa and makes them available through its own REST API.
+
+```mermaid
+sequenceDiagram
+    participant Sensor as IoT Sensor (SoftAP client)
+    participant R as REMOTE (SoftAP 192.168.4.1)
+    participant L as LOCAL (LAN)
+    participant Client as LAN client / Home Automation
+
+    Sensor->>R: POST /api/lora/sensor/data {"device":"SensorA","metrics":{...}}
+    Note over R: SensorRegistry auto-assigns device_idx and metric_ids
+    Note over R: registry_rev increments if schema is new
+    R-->>Sensor: 200 {"accepted":[...],"registry_rev":2}
+
+    R->>L: BEACON(boot_id, registry_rev=2)
+    Note over L: registry_rev changed - start Describe crawl
+    L->>R: PING(boot_id, registry_rev)
+    R-->>L: ACK(acked_type=1, acked_seq)
+    L->>R: REQUEST(Describe 1)
+    R-->>L: RESPONSE(Device 1 "SensorA", metrics)
+    L->>R: REQUEST(Describe 2)
+    R-->>L: RESPONSE(BAD_REQUEST)
+    Note over R: BAD_REQUEST triggers PushTask
+    R->>L: DATA_ACK(device=1, Voltage=3.35 V, Temp=21.5 C)
+    L-->>R: ACK(acked_type=5, acked_seq)
+    Note over L: SensorRegistry updated with definitions and values
+
+    Client->>L: GET /api/lora/nodes/sensor?addr=2&device=1
+    L-->>Client: 200 {"nodes":[{"addr":2,"devices":[{"name":"SensorA","metrics":[...]}]}]}
+```
+
+Subsequent pushes by the sensor (same schema, same `registry_rev`) skip the crawl: REMOTE stores the new value and PushTask sends a `DATA_ACK` to LOCAL directly.
+
+---
+
+### End-to-end scenario B - Controller on LOCAL LAN pushes a setpoint to REMOTE; IoT sensor retrieves it
+
+A controller (e.g. a home automation system) on the local LAN sets a target voltage on REMOTE. An IoT device on REMOTE's SoftAP polls the cached setpoint and applies it.
+
+```mermaid
+sequenceDiagram
+    participant HA as Controller (LAN client)
+    participant L as LOCAL (LAN)
+    participant R as REMOTE (SoftAP 192.168.4.1)
+    participant Device as IoT device (SoftAP client)
+
+    HA->>L: POST /api/lora/nodes/control?addr=2 {"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
+    Note over L: ControlRegistry updated, registry_rev increments
+    L->>R: DATA_ACK(device=1, VoltageSet=3.33 V)
+    R-->>L: ACK(acked_type=5, acked_seq, status=OK)
+    Note over R: ControlRegistry cache updated
+    L-->>HA: 200 {"accepted":[...],"registry_rev":1,"delivery":"ok"}
+
+    Device->>R: GET /api/lora/nodes/control
+    R-->>Device: 200 {"nodes":[{"addr":1,"devices":[{"name":"Charger","metrics":[{"name":"VoltageSet","value":333,"unit":"V","scale":100,"age_ms":120}]}]}]}
+    Note over Device: Device applies VoltageSet = 333 / 100 = 3.33 V
+```
+
+If REMOTE does not yet have the definitions when the `DATA_ACK` arrives (e.g. after a reboot), it answers `ACK{status=BAD_REQUEST}` and schedules a Describe crawl of LOCAL. LOCAL returns `202 {"delivery":"after_describe"}` and the values are pushed again once the crawl completes.
 
 ---
 
@@ -609,10 +677,9 @@ This is a deterrent, not security. The key is stored in NVS and must not be hard
 
 ---
 
-## 17. REST mapping (target - push-control-plan.md Steps 7/8)
+## 17. REST mapping
 
-Forward-looking design, not yet implemented. The source of truth for the implemented API is
-`src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
+The source of truth for the implemented API is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
 
 ### LOCAL endpoints
 
@@ -625,35 +692,65 @@ Forward-looking design, not yet implemented. The source of truth for the impleme
 | `GET,POST` | `/api/lora/nodes/ping?addr=` | - | `PING` -> wait for `ACK`; returns RTT and `boot_id` |
 | `GET` | `/api/lora/ping` | - | Broadcast `PING` (dst=0xFF) -> first `ACK` |
 | `POST` | `/api/lora/nodes/echo?addr=` | - | `REQUEST(Echo)` -> `RESPONSE(Echo)` |
-| `POST` | `/api/lora/nodes/data?addr=&ack=true\|false` | - | Debug: `DATA` or `DATA_ACK` (fire and forget); removed in Step 15 |
-| `POST` | `/api/lora/beacon` | - | Broadcast `BEACON` (fire and forget) |
 | `GET` | `/api/lora/stats` | - | TX/RX/CRC/ACK counters (no LoRa) |
 
 ### REMOTE endpoints
 
 | Method | Endpoint | Role | Action |
 |---|---|---|---|
-| `POST` | `/api/lora/sensor/data` | owner | Sensor ingestion (renamed from `/api/sensor/data`); updates `SensorRegistry`; increments `registry_rev` on schema change |
-| `GET` | `/api/lora/nodes/sensor` | owner | Content of REMOTE's `SensorRegistry` (own devices and values) |
-| `GET` | `/api/lora/nodes/control` | cache | Content of LOCAL's control cache: definitions, values and `age_ms` per value |
+| `POST` | `/api/lora/sensor/data` | owner | Sensor ingestion; updates `SensorRegistry`; increments `registry_rev` on schema change |
+| `GET` | `/api/lora/nodes/sensor` | owner | Content of REMOTE's `SensorRegistry` (own devices and values); `?device=` filters to one device |
+| `GET` | `/api/lora/nodes/control` | cache | Content of LOCAL's control cache: definitions, values, `age_ms`, `online`, `peer_last_seen_ms_ago`; `?live=true` sends `REQUEST(Read)` to LOCAL; `?refresh=true` re-runs Describe crawl |
 
 ### Behaviour notes
 
 - All blocking calls return `503` when the broker is busy (one request already in flight).
 - All blocking calls return `504` when no response arrives within the timeout (default 3 s).
-- `{device}` accepts the index (integer) or the device name string.
+- `?device=` accepts the device index (integer).
 - Handlers never touch Serial2 directly; blocking ones post to `LoRaBroker` and wait on a semaphore.
 - `?live=true` and `?refresh=true` are only valid on cache views (LOCAL `.../sensor`, REMOTE `.../control`). On owner views they return `400`.
 - REMOTE has exactly one peer (LOCAL) and does not accept `?addr=`; a request that sends it returns `400`.
+- `GET /api/lora/nodes/control` on REMOTE includes `online` (false after 90 s with no ACK from LOCAL) and `peer_last_seen_ms_ago`.
 - The source of truth for the implemented API is `src/LoRaIoT/src/openapi_json.h` and `doc/RestApi.md`.
+
 
 ---
 
-## 18. To verify in Milestone 5
+## 18. Air Rate Validation
 
-| Item | Why |
-|---|---|
-| Do the 3 routing bytes count toward the 200 B sub-packet? | Decides whether the payload limit is 186 B or higher |
-| Does a module with its own address receive a frame sent to `0xFFFF`? | Broadcast PING is an optimisation only; without it LOCAL relies on beacons |
-| `LORA_ACK_TIMEOUT_MS`, backoff window, broadcast reply window | Proposed values |
-| `0x0000` as a transmit target | Not documented by the manual; do not use |
+### Tested rates
+
+The table below summarises measured round-trip times at the two extreme air rates on an
+ESP32-WROOM-32 node pair (LOCAL addr `0x01`, REMOTE addr `0x03`, channel `0x17`, fixed mode).
+All other rates between 4.8k and 38.4k are expected to fall within the same timeout budget as
+62.5k.
+
+| Air rate | PING RTT (typical) | DATA_ACK delivery | Notes |
+|---|---|---|---|
+| 62.5k (default) | 117-137 ms | first attempt, well within 1 s | Normal operating rate |
+| 2.4k (slowest) | 698-700 ms | retry 2 of 3 on first push after boot; subsequent pushes ACKed on attempt 1 | See timeout note below |
+
+### 2.4k feasibility result
+
+A full end-to-end test at 2.4 kbps confirmed:
+
+- PING/ACK exchange: PASS (RTT ~700 ms, ~6x the 62.5k baseline, consistent with air time ratio).
+- Describe crawl (definition fetch): PASS, completes within normal retry budget.
+- DATA_ACK push (control setpoints): PASS, delivered correctly on retry; duplicate ACK handling
+  exercised correctly.
+- Live reconfiguration via `PUT /api/lora/airrate` without reboot: PASS on both nodes; E220 REG0
+  confirmed as `0xE2` (UART 115200, 8N1, air rate 2.4k).
+- Self-healing after rate switch: PASS, normal beacon/ping cycle resumed automatically.
+
+### Timeout constraint at 2.4k
+
+The default `LORA_REQUEST_TIMEOUT_MS` (1000 ms, defined in `src/lora/src/LoRaTransport.h`) is
+tight for the 2.4k DATA_ACK round-trip (~700 ms air time + 50 ms guard + processing). On the
+first push attempt the ACK arrives just after the timeout window, triggering retry 1. The retry
+succeeds because the ACK from the first attempt arrives and is correctly matched.
+
+**If 2.4k is used in production, increase `LORA_REQUEST_TIMEOUT_MS` to 2000 ms** to avoid the
+unnecessary retry and the associated half-duplex channel occupancy.
+
+All other parameters (retry count, beacon intervals, ping idle threshold) work correctly at 2.4k
+without change.
