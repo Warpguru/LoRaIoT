@@ -20,6 +20,7 @@
 #include "BeaconTask.h"
 #include "PingTask.h"
 #include "PushTask.h"
+#include "../../service/src/WiFiConfig.h"
 
 /**
  * Application.cpp - Main application setup and loop.
@@ -656,6 +657,9 @@ void applicationSetup() {
 
   // Initialize and load the LoRa settings (channel and address) from NVS.
   LoRaConfig.begin();
+
+  // Initialize and load WiFi settings (mode, AP SSID, password, channel, IP) from NVS.
+  WiFiConfig.begin();
 
   // Apply the loaded CPU frequency config
   setCpuFrequencyMhz(LoRaConfig.getCpuFreq());

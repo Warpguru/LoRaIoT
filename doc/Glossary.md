@@ -77,9 +77,10 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 
 | Term | Meaning | Explanation |
 |---|---|---|
-| **WiFi AP / SoftAP** | (Soft) Access Point | The ESP32 acts as a WiFi base station. The REMOTE node does this for the IoT devices (`192.168.4.1`). |
-| **WiFi STA** | Station | The ESP32 acts as a WiFi client of an existing network. The LOCAL node does this. |
-| **Captive portal** | | Configuration web page that opens when connecting to the node's setup network (WiFiManager). |
+| **WiFi AP / SoftAP** | (Soft) Access Point | The ESP32 acts as a WiFi base station. A REMOTE node can do this for the IoT devices (default `192.168.4.1`). Mode `AP`. |
+| **WiFi STA** | Station | The ESP32 acts as a WiFi client of an existing network. The LOCAL node does this; a REMOTE node does this by default. Mode `STA`. |
+| **WiFi AP+STA** | Concurrent access point and station | Both at once: the node hosts its own access point and is also a client of an existing network. Mode `AP_STA`, set with `PUT /api/wifi/mode`. |
+| **Captive portal** | | Configuration web page that opens when connecting to the node's setup network (WiFiManager). Runs in `STA` and `AP+STA` mode only. |
 | **LAN** | Local Area Network | The local network (WLAN) in which the LOCAL node is connected. |
 | **WLAN** | Wireless LAN | A LAN over WiFi. |
 | **IP / TCP / UDP** | Internet Protocol / Transmission Control Protocol / User Datagram Protocol | Standard network protocols. They are not forwarded over LoRa; the nodes terminate them and translate the content. |
@@ -99,7 +100,7 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 | Term | Meaning | Explanation |
 |---|---|---|
 | **LOCAL** | Gateway tier | The node on the WLAN. It serves the REST API and talks to the REMOTE nodes. Address `0x01`. |
-| **REMOTE** | Gateway tier | A node near the sensors. It offers a WiFi access point and talks to the LOCAL node over LoRa. Addresses `0x02` to `0xFE`. |
+| **REMOTE** | Gateway tier | A node near the sensors. It can offer a WiFi access point (modes `AP` / `AP_STA`) and talks to the LOCAL node over LoRa. Addresses `0x02` to `0xFE`. |
 | **Tier** | Gateway role | The persisted choice `LOCAL` or `REMOTE`. |
 | **Frame** | | One message on the air: header, payload and CRC. One message is always exactly one frame. |
 | **Payload** | | The user data inside a frame (a protobuf message). |

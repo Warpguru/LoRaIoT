@@ -2,6 +2,9 @@
 
 Reference for every HTTP and WebSocket endpoint currently registered in the firmware.
 Base URL: `http://<device-ip>/` (port 80).
+`<device-ip>` depends on the node's WiFi mode (see [`GET /api/wifi/mode`](#get-apiwifimode)): the LAN address
+in `STA` and `AP_STA` mode, or the SoftAP address (`apIp`, default `192.168.4.1`, after joining the node's SSID)
+in `AP` and `AP_STA` mode.
 
 > **Source of truth:** `src/LoRaIoT/src/openapi_json.h` is now the authoritative API spec,
 > served at `GET /openapi` and rendered interactively at `GET /openapi/ui` (Swagger UI).
@@ -17,10 +20,12 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/openapi/ui` | `Server.cpp` | Both | Swagger UI explorer (fetches JS/CSS from unpkg CDN) |
 | GET | `/status` | `Server.cpp` | Both | ESP32 hardware diagnostics |
 | GET | `/reboot` | `Server.cpp` | Both | Reboot the ESP32, all settings preserved (use this to restart a node) |
-| GET | `/reset` | `Server.cpp` | Both | DESTRUCTIVE: clear WiFi and all persisted NVS settings, then reboot. Never call from automation or agents |
+| GET | `/reset` | `Server.cpp` | Both | DESTRUCTIVE: clear WiFi credentials, WiFi mode / SoftAP settings and all persisted NVS settings, then reboot. Never call from automation or agents |
 | GET | `/api/log` | `Server.cpp` | Both | Read (and optionally clear) the log ring buffer |
 | PUT | `/api/log/level` | `Server.cpp` | Both | Change the active log level |
 | GET | `/api/tier` | `RestService.cpp` | Both | Return the active gateway tier (LOCAL / REMOTE) |
+| GET | `/api/wifi/mode` | `RestService.cpp` | Both | Get active WiFi mode (`STA`, `AP`, `AP_STA`), IP addresses, SoftAP settings and client count |
+| PUT | `/api/wifi/mode` | `RestService.cpp` | Both | Set WiFi mode (`STA`, `AP`, `AP_STA`) and SoftAP settings (auto-reboots). Intended for REMOTE nodes |
 | GET | `/api/diag/e220` | `RestService.cpp` | Both | Request an E220 wiring and register check |
 | GET | `/api/lora/channel` | `RestService.cpp` | Both | Get active LoRa channel |
 | PUT | `/api/lora/channel` | `RestService.cpp` | Both | Set active LoRa channel |
@@ -39,7 +44,7 @@ Base URL: `http://<device-ip>/` (port 80).
 | GET | `/api/lora/echo/result` | `RestService.cpp` | LOCAL | Return the result of the last echo test (non-blocking) |
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
 | GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
-| POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from a SoftAP IoT device |
+| POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from an IoT device (via the SoftAP in `AP` / `AP_STA` mode, or via the LAN address in `STA` / `AP_STA` mode) |
 | WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s) |
 
 ---
@@ -70,9 +75,11 @@ configuration within a few seconds. **This is the endpoint to use whenever a nod
 
 Clears the stored WiFi credentials and every application setting persisted in NVS, then reboots into the
 WiFiManager captive portal. The erased settings are the gateway tier, the log level, the LoRa channel,
-the LoRa air rate, the LoRa address and the CPU frequency (namespaces `TIER_NVS_NAMESPACE`, `LOG_NVS_NAMESPACE` and
-`LORA_NVS_NAMESPACE`, all currently `sc_prefs`). After the reboot the node uses the built-in defaults until
-it is provisioned again.
+the LoRa air rate, the LoRa address, the CPU frequency and the WiFi mode with its SoftAP settings (namespaces
+`TIER_NVS_NAMESPACE`, `LOG_NVS_NAMESPACE`, `LORA_NVS_NAMESPACE` and `WIFI_NVS_NAMESPACE`, all currently `sc_prefs`).
+After the reboot the node uses the built-in defaults (WiFi mode `STA`) until it is provisioned again. This is also
+the last-resort recovery if a node was switched to `AP` mode and its SSID or password is lost. While the SoftAP
+credentials are known, `PUT /api/wifi/mode` with `{"mode":"STA"}` is the normal way back.
 
 **Response:** `200 text/plain` - `WiFi and application settings cleared. ESP32 rebooting to Configuration Mode...`
 
@@ -131,13 +138,157 @@ Returns the currently active gateway tier.
 | `configured` | bool | `false` when tier is `"UNSET"` (portal has not been completed) |
 
 **Tier meanings:**
-- `LOCAL` - connected to the local WLAN; receives data from REMOTE nodes (default addr `0x01`).
-- `REMOTE (Node 1)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x02`).
-- `REMOTE (Node 2)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x03`).
-- `REMOTE (Node 3)` - hosts the WiFi SoftAP for IoT sensors; forwards data over LoRa to LOCAL (default addr `0x04`).
+- `LOCAL` - connected to the local WLAN (`STA` mode); receives data from REMOTE nodes (default addr `0x01`).
+- `REMOTE (Node 1)` - forwards data over LoRa to LOCAL (default addr `0x02`).
+- `REMOTE (Node 2)` - forwards data over LoRa to LOCAL (default addr `0x03`).
+- `REMOTE (Node 3)` - forwards data over LoRa to LOCAL (default addr `0x04`).
+
+A REMOTE node is typically run in `AP` or `AP_STA` mode so it hosts a WiFi SoftAP for IoT sensors, but it can also
+stay in `STA` mode (the default after provisioning). The tier says nothing about the WiFi mode; read the active mode
+from [`GET /api/wifi/mode`](#get-apiwifimode).
 
 The tier is selected in the WiFiManager captive portal and persisted in NVS
-(namespace `sc_prefs`, key `tier`). It survives reboots. Clear it with `GET /reset`.
+(namespace `sc_prefs`, key `tier`). It survives reboots. Clear it with `GET /reset`. The portal only runs in `STA`
+and `AP_STA` mode; in `AP` mode WiFiManager is bypassed, so the tier and LoRa settings must be provisioned
+(in `STA` mode) before switching a node to `AP`.
+
+---
+
+## GET /api/wifi/mode
+
+Returns the active WiFi operational mode, assigned IP addresses, SoftAP configuration, and connected client count. Available on both tiers.
+
+The three modes:
+
+| Mode | Behaviour | Reachable at |
+|---|---|---|
+| `STA` | WiFi client of an existing router (default, original behaviour). WiFiManager captive portal runs when the node is unprovisioned. | `staIp` (LAN address assigned by the router) |
+| `AP` | Node hosts its own SoftAP and DHCP server and does not join any router. WiFiManager is bypassed at boot. | `apIp` (default `192.168.4.1`) after joining the node's SSID |
+| `AP_STA` | Concurrent: the SoftAP is started and the node also joins the router. If the router connection fails the node keeps running as SoftAP only. | `apIp` and, when connected, `staIp` |
+
+**Request body:** none
+
+**Response:** `200 application/json`
+
+`STA` mode:
+
+```json
+{
+  "mode": "STA",
+  "apSsid": "LoRaIoT-Node-1",
+  "apIp": "192.168.4.1",
+  "apChannel": 1,
+  "apClients": 0,
+  "staIp": "192.168.1.174"
+}
+```
+
+`AP` mode (no router, `staIp` is `null`):
+
+```json
+{
+  "mode": "AP",
+  "apSsid": "LoRaIoT-Node-1",
+  "apIp": "192.168.4.1",
+  "apChannel": 1,
+  "apClients": 2,
+  "staIp": null
+}
+```
+
+`AP_STA` mode (both interfaces up):
+
+```json
+{
+  "mode": "AP_STA",
+  "apSsid": "LoRaIoT-Node-1",
+  "apIp": "192.168.4.1",
+  "apChannel": 1,
+  "apClients": 1,
+  "staIp": "192.168.1.174"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `mode` | string | Active operational mode: `"STA"`, `"AP"`, or `"AP_STA"` |
+| `apSsid` | string | Configured SoftAP SSID. Always reported, also in `STA` mode (the SoftAP is then not running) |
+| `apIp` | string | Configured SoftAP host IP address (default `192.168.4.1`). Always reported, also in `STA` mode |
+| `apChannel` | integer | Configured SoftAP 2.4 GHz channel (1-13). Always reported, also in `STA` mode |
+| `apClients` | integer | Number of stations connected to the SoftAP. Always `0` in `STA` mode |
+| `staIp` | string or null | Station IP address when connected to an external router. `null` in `AP` mode, or in `STA` / `AP_STA` mode while not connected |
+
+---
+
+## PUT /api/wifi/mode
+
+Reconfigures the WiFi operational mode (`"STA"`, `"AP"`, or `"AP_STA"`) and SoftAP parameters. All settings are validated and persisted to NVS (namespace `sc_prefs`). Upon successful validation, returns HTTP 200 and automatically restarts the ESP32 after 200 ms so the device boots cleanly into the new mode.
+
+> **Reachability warning.** After the reboot the node is no longer reachable at its old address when the mode
+> changes. Switching `STA` to `AP` drops the LAN address: join the node's SSID (`ssid`, default `LoRaIoT-Node-{n}`)
+> and use `http://<ip>/` (default `192.168.4.1`). Switching to `AP_STA` keeps the LAN address and adds the SoftAP
+> address. Switching back to `STA` is done the same way with `{"mode":"STA"}` through the SoftAP address.
+> Provision the tier and LoRa settings in `STA` mode first: in `AP` mode the captive portal is not available.
+
+The node number `{n}` in the default SSID is derived from the LoRa address (`0x02` gives `LoRaIoT-Node-1`, `0x03` gives
+`LoRaIoT-Node-2`). The default password is `LoRaIoT`; change it for any field deployment.
+
+**Request body:** `application/json`
+
+```json
+{
+  "mode": "AP",
+  "ssid": "LoRaIoT-Node-1",
+  "password": "MySecretPassword",
+  "ip": "192.168.4.1",
+  "channel": 1
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mode` | string | Yes | Target operational mode: `"STA"`, `"AP"`, or `"AP_STA"` |
+| `ssid` | string | No | SoftAP SSID (1-32 characters). Defaults to `LoRaIoT-Node-{n}` |
+| `password` | string | No | SoftAP WPA2 password (empty string for open network, or 8-64 characters). Defaults to `"LoRaIoT"` |
+| `ip` | string | No | Custom host IP address for SoftAP (e.g. `"192.168.4.1"`). Automatically derives a `/24` subnet mask |
+| `channel` | integer | No | SoftAP 2.4 GHz channel (1-13). Default `1`. In `AP_STA` mode the router's channel typically takes precedence while the node is connected |
+
+Omitted optional fields keep their stored values. Only `mode` is mandatory.
+
+**Response (Success):** `200 application/json`
+
+```json
+{
+  "status": "rebooting",
+  "mode": "AP",
+  "apSsid": "LoRaIoT-Node-1",
+  "apIp": "192.168.4.1",
+  "apChannel": 1
+}
+```
+
+**Response (Validation Error):** `400 application/json`
+
+```json
+{"error":"Password must be empty (open) or at least 8 characters (max 64)"}
+```
+
+| `error` text | Cause |
+|---|---|
+| `Expected JSON with mandatory 'mode' ('STA', 'AP', or 'AP_STA')` | Body is not valid JSON or `mode` is missing |
+| `Invalid mode. Expected 'STA', 'AP', or 'AP_STA'` | Unknown `mode` value |
+| `SSID exceeds maximum length of 32 characters` | `ssid` longer than 32 characters |
+| `Password must be empty (open) or at least 8 characters (max 64)` | `password` is 1-7 or more than 64 characters |
+| `Invalid IP address format. Expected e.g. '192.168.4.1'` | `ip` is not a valid dotted IPv4 address |
+| `Channel must be between 1 and 13` | `channel` out of range |
+
+**Example** - switch REMOTE to concurrent mode:
+
+```bash
+curl -s -X PUT http://192.168.1.174/api/wifi/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"AP_STA","ssid":"LoRaIoT-Node-1","password":"MySecretPassword","channel":1}'
+```
 
 ---
 
@@ -234,7 +385,7 @@ Frames sent or received during that moment are lost. This endpoint is available 
 The default is `62.5k`; lower rates give more range but a longer air time.
 
 Both nodes must use the same rate, otherwise they cannot hear each other. Change REMOTE first, then LOCAL: the link
-re-establishes with the next BEACON/PING after both match. If the order is reversed, REMOTE is unreachable over LoRa and must be changed through its own WiFi address.
+re-establishes with the next BEACON/PING after both match. If the order is reversed, REMOTE is unreachable over LoRa and must be changed through its own WiFi address (its LAN address in `STA` / `AP_STA` mode, or its SoftAP address, default `192.168.4.1`, in `AP` / `AP_STA` mode).
 The existing timeouts (for example `LORA_REQUEST_TIMEOUT_MS`) are not scaled with the rate; at the slow rates they may need manual tuning.
 
 **Request body:** `application/json`

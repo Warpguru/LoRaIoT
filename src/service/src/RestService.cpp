@@ -2,10 +2,13 @@
 
 #include <ArduinoJson.h>
 
+#include <WiFi.h>
+
 #include "../../util/src/LogBuffer.h"
 #include "../../LoRaIoT/src/Tier.h"
 #include "../../LoRaIoT/src/LoRaConfig.h"
 #include "../../LoRaIoT/src/Server.h"
+#include "WiFiConfig.h"
 #include "../../diagnostics/src/Diagnostics.h"
 #include "../../registry/src/PeerRegistry.h"
 #include "../../LoRaIoT/src/DescribeCrawler.h"
@@ -129,6 +132,111 @@ void RestService::registerRoutes() {
     serializeJson(doc, json);
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
+
+  // GET /api/wifi/mode - get active WiFi mode, active IP(s), AP settings, and client count.
+  server->on("/api/wifi/mode", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/wifi/mode");
+    JsonDocument doc;
+    doc["mode"]        = WiFiConfig.getOpModeName();
+    doc["apSsid"]      = WiFiConfig.getApSsid();
+    doc["apIp"]        = WiFiConfig.getApIp().toString();
+    doc["apChannel"]   = WiFiConfig.getApChannel();
+    if (WiFiConfig.isApEnabled()) {
+      doc["apClients"] = WiFi.softAPgetStationNum();
+    } else {
+      doc["apClients"] = 0;
+    }
+    if (WiFiConfig.isStaEnabled() && WiFi.status() == WL_CONNECTED) {
+      doc["staIp"]     = WiFi.localIP().toString();
+    } else {
+      doc["staIp"]     = nullptr;
+    }
+    String json;
+    serializeJson(doc, json);
+    request->send(HTTP_STATUS_OK, "application/json", json);
+  });
+
+  // PUT /api/wifi/mode - reconfigure WiFi mode (STA, AP, AP_STA) and SoftAP settings.
+  // Returns HTTP 200 and reboots after 200 ms so the node comes up cleanly in the target mode.
+  server->on(
+      "/api/wifi/mode", HTTP_PUT,
+      [](AsyncWebServerRequest* request) {},
+      nullptr,
+      [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err || !doc["mode"].is<const char*>()) {
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                        "{\"error\":\"Expected JSON with mandatory 'mode' ('STA', 'AP', or 'AP_STA')\"}");
+          return;
+        }
+
+        const char* modeStr = doc["mode"].as<const char*>();
+        WifiOpMode opMode;
+        if (!WiFiConfigClass::parseOpMode(modeStr, opMode)) {
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                        "{\"error\":\"Invalid mode. Expected 'STA', 'AP', or 'AP_STA'\"}");
+          return;
+        }
+
+        if (doc["ssid"].is<const char*>()) {
+          const char* ssid = doc["ssid"].as<const char*>();
+          if (strlen(ssid) > WIFI_MAX_SSID_LEN) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"SSID exceeds maximum length of 32 characters\"}");
+            return;
+          }
+          WiFiConfig.setApSsid(ssid);
+        }
+
+        if (doc["password"].is<const char*>()) {
+          const char* pass = doc["password"].as<const char*>();
+          if (!WiFiConfigClass::isValidPassword(pass)) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"Password must be empty (open) or at least 8 characters (max 64)\"}");
+            return;
+          }
+          WiFiConfig.setApPassword(pass);
+        }
+
+        if (doc["ip"].is<const char*>()) {
+          const char* ipStr = doc["ip"].as<const char*>();
+          if (!WiFiConfig.setApIpFromString(ipStr)) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"Invalid IP address format. Expected e.g. '192.168.4.1'\"}");
+            return;
+          }
+        }
+
+        if (doc["channel"].is<int>()) {
+          int chan = doc["channel"].as<int>();
+          if (!WiFiConfigClass::isValidChannel(chan)) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"Channel must be between 1 and 13\"}");
+            return;
+          }
+          WiFiConfig.setApChannel((uint8_t)chan);
+        }
+
+        WiFiConfig.setOpMode(opMode);
+        WiFiConfig.save();
+
+        Log_warn("WiFi mode reconfigured via API to %s. Rebooting in %d ms...",
+                 WiFiConfig.getOpModeName(), RESET_REBOOT_DELAY_MS);
+
+        JsonDocument respDoc;
+        respDoc["status"]    = "rebooting";
+        respDoc["mode"]      = WiFiConfig.getOpModeName();
+        respDoc["apSsid"]    = WiFiConfig.getApSsid();
+        respDoc["apIp"]      = WiFiConfig.getApIp().toString();
+        respDoc["apChannel"] = WiFiConfig.getApChannel();
+        String json;
+        serializeJson(respDoc, json);
+        request->send(HTTP_STATUS_OK, "application/json", json);
+
+        delay(RESET_REBOOT_DELAY_MS);
+        ESP.restart();
+      });
 
   // GET /api/lora/channel - get active LoRa channel (available on all nodes).
   server->on("/api/lora/channel", HTTP_GET, [](AsyncWebServerRequest* request) {

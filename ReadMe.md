@@ -4,7 +4,7 @@
 
 LoRaIoT is an enterprise-grade, half-duplex, point-to-point (P2P) RF bridge designed to transparently extend local IP networks and link remote physical layers across high-attenuation boundaries (such as reinforced concrete floors, steel-grid structures, or long distances).
 
-By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi SoftAP directly to a local LAN and downstream Home Automation/MQTT systems. To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, a framed binary protocol (protobuf/nanopb over a CRC-16 frame layer), and an on-demand 6-step physical wiring diagnostics suite.
+By leveraging the high-penetration physics of the 433 MHz UHF spectrum and Semtech LLCC68-based E220 transceivers, LoRaIoT bridges a vertically or horizontally isolated remote WiFi network directly to a local LAN and downstream Home Automation/MQTT systems. A remote node runs in one of three WiFi modes (see [WiFi modes](#wifi-modes)): `STA` (client of an existing router), `AP` (its own SoftAP) or `AP_STA` (both at once). To guarantee non-blocking operations, the firmware is architected around a dual-core FreeRTOS threading model on the ESP32, integrating thread-safe queue-serialized UART2 transactions, persistent NVS state management, a framed binary protocol (protobuf/nanopb over a CRC-16 frame layer), and an on-demand 6-step physical wiring diagnostics suite.
 
 LoRaIoT carries two kinds of data. Each kind has exactly one **owner** node that defines the devices and datapoints and pushes the values, and one **cache** node that mirrors them so its own REST clients can read them locally without waiting for the radio:
 
@@ -14,12 +14,12 @@ LoRaIoT carries two kinds of data. Each kind has exactly one **owner** node that
 | Direction | REMOTE to LOCAL | LOCAL to REMOTE |
 | Owner (registry) | REMOTE (`SensorRegistry`) | LOCAL (`ControlRegistry`) |
 | Cache (registry) | LOCAL (`SensorRegistry`) | REMOTE (`ControlRegistry`) |
-| Written by | IoT device: `POST /api/lora/sensor/data` on the REMOTE SoftAP | Home Automation: `POST /api/lora/nodes/control?addr=<n>` on LOCAL |
-| Read by | Home Automation: `GET /api/lora/nodes/sensor?addr=<n>` on LOCAL | IoT device: `GET /api/lora/nodes/control` on the REMOTE SoftAP |
+| Written by | IoT device: `POST /api/lora/sensor/data` on the REMOTE REST API (SoftAP or LAN address) | Home Automation: `POST /api/lora/nodes/control?addr=<n>` on LOCAL |
+| Read by | Home Automation: `GET /api/lora/nodes/sensor?addr=<n>` on LOCAL | IoT device: `GET /api/lora/nodes/control` on the REMOTE REST API (SoftAP or LAN address) |
 
 **Sensor data flow (REMOTE to LOCAL):**
 
-1. An IoT device joins the REMOTE node's SoftAP WiFi and POSTs its readings as JSON. The REMOTE node stores them in its `SensorRegistry`, auto-assigns a stable device index and metric id to each new name, and answers immediately over WiFi.
+1. An IoT device joins the REMOTE node's SoftAP WiFi (`AP` / `AP_STA` mode; in `STA` mode it uses the node's LAN address instead) and POSTs its readings as JSON. The REMOTE node stores them in its `SensorRegistry`, auto-assigns a stable device index and metric id to each new name, and answers immediately over WiFi.
 2. When a device or datapoint is new, the REMOTE node announces a changed `registry_rev` in its BEACON. LOCAL then fetches the device and datapoint definitions (name, unit, scale) from REMOTE over LoRa and caches them ([`REQUEST(Describe)`](doc/LoRaProtocol.md) in the protocol - also called a *definition crawl*).
 3. The REMOTE node pushes the values to LOCAL as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)), which LOCAL acknowledges (up to 3 retries). Later updates with an unchanged schema skip the definition step and carry only the values.
 4. Home Automation reads the cached values from LOCAL over the LAN. Reads are served from the cache, so they do not generate LoRa traffic unless `?live=true` is requested.
@@ -29,7 +29,7 @@ LoRaIoT carries two kinds of data. Each kind has exactly one **owner** node that
 1. Home Automation POSTs a setpoint to LOCAL for a given REMOTE node (`addr`). LOCAL stores it in its `ControlRegistry` and registers the device and datapoints on first use.
 2. LOCAL pushes the value to the REMOTE node as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)) and returns the delivery result to the caller (`200` acknowledged, `202` deferred until the REMOTE node has fetched the definitions, `504` no acknowledgement). LOCAL keeps the latest setpoint even if delivery fails; after a deferred delivery the value is pushed again once the REMOTE node has fetched the definitions.
 3. The REMOTE node stores the value in its `ControlRegistry` cache.
-4. The IoT device polls the REMOTE node's SoftAP REST API, reads the setpoint and applies it. This is also served from the cache, so the device never waits for the radio.
+4. The IoT device polls the REMOTE node's REST API (SoftAP in `AP` / `AP_STA` mode, LAN address in `STA` mode), reads the setpoint and applies it. This is also served from the cache, so the device never waits for the radio.
 
 All values are transported as integers; the real value is `value / scale`. The full frame and message specification is in [`doc/LoRaProtocol.md`](doc/LoRaProtocol.md), the REST endpoints are in [`doc/RestApi.md`](doc/RestApi.md).
 
@@ -46,19 +46,19 @@ graph LR
     subgraph REMOTE1 ["REMOTE Node 1"]
         direction LR
         R1R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
-        R1E["ESP32 AP, addr 0x02<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+        R1E["ESP32 AP / STA / AP+STA, addr 0x02<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
     end
 
     subgraph REMOTE2 ["REMOTE Node 2"]
         direction LR
         R2R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
-        R2E["ESP32 AP, addr 0x03<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+        R2E["ESP32 AP / STA / AP+STA, addr 0x03<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
     end
 
     subgraph REMOTE3 ["REMOTE Node 3"]
         direction LR
         R3R["LoRa radio<br/>E220-400T22D<br/>433 MHz, fixed mode"]
-        R3E["ESP32 AP, addr 0x04<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
+        R3E["ESP32 AP / STA / AP+STA, addr 0x04<br/>SensorRegistry: owner<br/>ControlRegistry: cache"]
     end
 
     D1["IoT Device<br/>(read/write)"]
@@ -84,7 +84,7 @@ Notes:
 - Throughput is limited by the UART2 link between ESP32 and E220 (115200 baud) and by the LoRa air rate (default 62.5 kbps, half-duplex, shared by all nodes). The link is designed for small, infrequent sensor and setpoint updates, not bulk data.
 - Each REMOTE node supports up to 4 IoT devices (`DEVICE_TABLE_MAX_DEVICES`), each with up to 8 datapoints (`DEVICE_TABLE_MAX_METRICS`), i.e. at most 32 datapoints per REMOTE node. Device and metric names are limited to 12 characters, units to 5 characters (see `src/registry/src/DeviceTable.h`).
 
-Sensor data example: a Grid Power Monitor pushes its readings to the REMOTE node's SoftAP (`192.168.4.1`). Values are integers; the real value is `value/scale`.
+Sensor data example: a Grid Power Monitor pushes its readings to the REMOTE node's SoftAP (default `192.168.4.1`, `AP` / `AP_STA` mode). Values are integers; the real value is `value/scale`.
 
 ```bash
 curl -s -X POST http://192.168.4.1/api/lora/sensor/data \
@@ -109,6 +109,29 @@ curl -s -X POST "http://<LOCAL-IP>/api/lora/nodes/control?addr=2" \
                  }
       }'
 ```
+
+### WiFi modes
+
+A REMOTE node can run in one of three WiFi modes. The mode is stored in NVS and read with `GET /api/wifi/mode`; it is changed with `PUT /api/wifi/mode` (the node reboots automatically). `LOCAL` normally stays in `STA` mode.
+
+| Mode | Behaviour | How to reach the node |
+|---|---|---|
+| `STA` (default) | Client of an existing router. The WiFiManager captive portal runs while the node is unprovisioned. | LAN address from the router (`staIp`) |
+| `AP` | The node hosts its own SoftAP (default SSID `LoRaIoT-Node-<n>`, password `LoRaIoT`, IP `192.168.4.1`, channel 1) and does not join a router. WiFiManager is bypassed. | Join the node's SSID, then `apIp` |
+| `AP_STA` | SoftAP and router connection at the same time. If the router connection fails, the node keeps running as SoftAP only. | `apIp`, and `staIp` when connected |
+
+```bash
+curl -s -X PUT http://<REMOTE-IP>/api/wifi/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"AP","ssid":"LoRaIoT-Node-1","password":"MySecretPassword","ip":"192.168.4.1","channel":1}'
+```
+
+Notes:
+
+- Provision the node (tier, LoRa channel) in `STA` mode first. In `AP` mode the captive portal is not available.
+- After switching `STA` to `AP`, the old LAN address no longer works. Join the node's SSID and use `apIp`.
+- `GET /reset` erases the WiFi mode as well and returns the node to `STA`. It is a developer-only recovery step.
+- The `192.168.4.1` addresses in this document are the default `apIp`, which can be changed with the `ip` field.
 
 > Abbreviations and technical terms used in this document are explained in [Appendix A: Glossary](#appendix-a-glossary-of-abbreviations).
 
@@ -165,7 +188,7 @@ sequence diagram, and boot initialisation sequence diagram see
 
 ## 5. Boot & Communication Lifecycle
 
-Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE`) happens once via the WiFiManager captive portal and is persisted in NVS.
+Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE`) happens once via the WiFiManager captive portal and is persisted in NVS. The WiFi mode (`STA`, `AP`, `AP_STA`) is not part of the portal; it is set with `PUT /api/wifi/mode` (see [WiFi modes](#wifi-modes)).
 
 ```
   [ PHASE 1: BUILD ]           [ PHASE 2: DEPLOY ]          [ PHASE 3: RUN ]
@@ -189,10 +212,11 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
 
 ### Phase 2: Deploy & Provision
 1. **Flash Firmware:** Flash the compiled binary onto both ESP32 boards.
-2. **WiFi Provisioning:**
+2. **WiFi Provisioning (first boot, `STA` mode):**
    - Power on the node. Connect your phone or laptop to the captive WiFi portal (`AutoConnectAP`).
    - Open your browser to `http://192.168.4.1`.
    - In the configuration form, select the node's **Gateway Tier** (`LOCAL`, `REMOTE (Node 1)`, `REMOTE (Node 2)`, or `REMOTE (Node 3)`) and the desired **LoRa Channel** (0-31, default Channel 25 / `0x19`).
+   - A fresh node always starts in `STA` mode. To run a REMOTE node as its own access point, switch it afterwards with `PUT /api/wifi/mode` (`AP` or `AP_STA`). In `AP` mode the portal is bypassed, so complete this step first.
 3. **Address Assignment:**
    - `LOCAL` is assigned address `0x01`; `REMOTE (Node 1)` is `0x02`, `REMOTE (Node 2)` is `0x03`, `REMOTE (Node 3)` is `0x04`.
    - `0x00` is invalid; `0xFF` is broadcast.
@@ -210,14 +234,14 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
    - REMOTE also runs `PingTask` and sends PINGs to LOCAL for keep-alive monitoring.
    - The receiving node replies with a framed `ACK`; the sender logs the RTT.
 5. **Sensor data push (REMOTE):**
-   - An IoT sensor on REMOTE's SoftAP POSTs readings to `POST /api/lora/sensor/data`. REMOTE stores them in `SensorRegistry` and increments `registry_rev` when the schema changes.
+   - An IoT sensor on REMOTE (via its SoftAP in `AP` / `AP_STA` mode, or its LAN address in `STA` mode) POSTs readings to `POST /api/lora/sensor/data`. REMOTE stores them in `SensorRegistry` and increments `registry_rev` when the schema changes.
    - The next BEACON carries the new `registry_rev`. LOCAL fetches the updated definitions from REMOTE over LoRa (definition crawl, [`REQUEST(Describe)`](doc/LoRaProtocol.md)), then REMOTE's `PushTask` pushes the current values as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)).
    - A LAN client reads the values from LOCAL via `GET /api/lora/nodes/sensor?addr=2`.
 6. **Control setpoint push (LOCAL) and retrieval (REMOTE):**
    - A LAN controller POSTs a setpoint to LOCAL via `POST /api/lora/nodes/control?addr=2`. LOCAL stores it in `ControlRegistry` and immediately pushes it to REMOTE as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)). If REMOTE acknowledges, LOCAL returns `200 {"delivery":"ok"}`.
    - If REMOTE is unreachable at the time of the POST, LOCAL returns `504 {"delivery":"timeout"}` but **keeps the setpoint in `ControlRegistry`**. The value is re-delivered automatically once REMOTE comes back online (see step 7 below).
    - If REMOTE does not yet recognise the control device (e.g. after its own reboot), it tells LOCAL it needs the definitions first ([`ACK{status=BAD_REQUEST}`](doc/LoRaProtocol.md)) and fetches them from LOCAL via a definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)). LOCAL returns `202 {"delivery":"after_describe"}`. Once the crawl completes, LOCAL's `PushTask` re-pushes the stored value as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)) without any further action from the caller.
-   - REMOTE caches the setpoint in its `ControlRegistry`. An IoT device on REMOTE's SoftAP reads the current setpoint via `GET /api/lora/nodes/control`.
+   - REMOTE caches the setpoint in its `ControlRegistry`. An IoT device on REMOTE (SoftAP or LAN address) reads the current setpoint via `GET /api/lora/nodes/control`.
    - See `doc/LoRaProtocol.md` §15 for the full end-to-end sequence diagrams for both scenarios.
 7. **Self-healing after an outage:**
    - **REMOTE reboots or is temporarily out of range:** REMOTE resets its `boot_id` and reverts to fast BEACON every 5 s. LOCAL detects the new `boot_id` on the first received BEACON, clears its cached sensor registry for that node, sends a liveness check ([`PING`](doc/LoRaProtocol.md)) carrying `registry_rev` if LOCAL has control devices, and starts a fresh definition crawl ([`REQUEST(Describe)`](doc/LoRaProtocol.md)). Once the crawl completes, both `PushTask` instances re-deliver the latest values in each direction - REMOTE pushes its current sensor readings and LOCAL pushes its stored control setpoints. No manual intervention is needed.
@@ -227,21 +251,22 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
 8. **Fixed Mode Routing:**
    - Both modules use Fixed Transmission Mode (`REG3=0x40`). The transport layer prepends the 3-byte E220 routing header `[ADDH][ADDL][CH]` before every write. Broadcast uses `[0xFF][0xFF][CH]`.
    - The E220 never delivers the sender address; SRC and DST are carried in the LoRaIoT frame header (`doc/LoRaProtocol.md` §4).
-9. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`). Key endpoints: `GET /api/lora/nodes/sensor` (sensor data), `GET,POST /api/lora/nodes/control` (control data), `POST /api/lora/sensor/data` (REMOTE sensor ingestion). A WebSocket endpoint (`/ws/data`) is wired but currently inactive (produces no output; see `doc/TechDebt.md` chapter 3).
+9. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`). Key endpoints: `GET /api/lora/nodes/sensor` (sensor data), `GET,POST /api/lora/nodes/control` (control data), `POST /api/lora/sensor/data` (REMOTE sensor ingestion), `GET,PUT /api/wifi/mode` (WiFi mode). A WebSocket endpoint (`/ws/data`) is wired but currently inactive (produces no output; see `doc/TechDebt.md` chapter 3).
 
 ---
 
 ## 6. REST API Quick-start Examples
 
 The examples below use placeholder addresses. Replace them with the actual IP addresses
-assigned to your nodes by your router. The REMOTE node's SoftAP address is always
-`192.168.4.1` when a device is connected directly to REMOTE's WiFi AP; the LAN addresses
-depend on your network.
+assigned to your nodes by your router. The REMOTE node's SoftAP address is `192.168.4.1`
+by default (configurable) and exists only in `AP` and `AP_STA` mode, when a device is
+connected directly to REMOTE's WiFi AP; the LAN addresses depend on your network.
 
 ```
 <LOCAL-IP>   LAN address of the LOCAL node  (e.g. 192.168.1.147 in the development setup)
-<REMOTE-IP>  LAN address of the REMOTE node (e.g. 192.168.1.174 in the development setup,
-             also reachable as 192.168.4.1 from its SoftAP)
+<REMOTE-IP>  Address of the REMOTE node: its LAN address in STA / AP_STA mode
+             (e.g. 192.168.1.174 in the development setup), or its SoftAP address
+             (192.168.4.1 by default) in AP / AP_STA mode
 ```
 
 ### IoT sensor posting data to REMOTE

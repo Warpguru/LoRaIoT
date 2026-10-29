@@ -49,6 +49,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <li><a href="/api/log"><code>GET /api/log</code></a> - last 128 log lines</li>
     <li><a href="/api/log?clear=1"><code>GET /api/log?clear=1</code></a> - clear log buffer</li>
     <li><a href="/api/tier"><code>GET /api/tier</code></a> - active gateway tier (LOCAL / REMOTE)</li>
+    <li><a href="/api/wifi/mode"><code>GET /api/wifi/mode</code></a> - active WiFi mode and SoftAP status</li>
     <li><a href="/api/diag/e220"><code>GET /api/diag/e220</code></a> - request E220 wiring check
         <span class="note">(result appears in /api/log after ~2 s)</span></li>
     <li><a href="/api/lora/channel"><code>GET /api/lora/channel</code></a> - active LoRa channel</li>

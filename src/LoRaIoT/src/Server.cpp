@@ -14,6 +14,7 @@
 #include "../../util/src/StatusLed.h"
 #include "Tier.h"
 #include "LoRaConfig.h"
+#include "../../service/src/WiFiConfig.h"
 #include "index_html.h"
 #include "openapi_json.h"
 
@@ -94,6 +95,7 @@ static void handleReset(AsyncWebServerRequest* request) {
   clearNvsNamespace(TIER_NVS_NAMESPACE);
   clearNvsNamespace(LOG_NVS_NAMESPACE);
   clearNvsNamespace(LORA_NVS_NAMESPACE);
+  clearNvsNamespace(WIFI_NVS_NAMESPACE);
   ESP.restart();
 }
 
@@ -153,7 +155,18 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
  */
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
   Log_info("GET /openapi/ui");
-  String ssid = WiFi.SSID();   // extracted to named local so .c_str() is safe
+  // Named local so .c_str() is safe. WiFi.SSID() only reports a joined STA network:
+  //   STA    -> router SSID
+  //   AP     -> SoftAP SSID (no STA interface)
+  //   AP_STA -> router SSID if joined, otherwise the SoftAP SSID
+  String ssid;
+  if (WiFiConfig.isStaEnabled() && WiFi.status() == WL_CONNECTED) {
+    ssid = WiFi.SSID();
+  } else if (WiFiConfig.isApEnabled()) {
+    ssid = WiFiConfig.getApSsid();
+  } else {
+    ssid = WiFi.SSID();   // STA mode, not connected: keep previous behaviour
+  }
   char buf[1300];  // the size actually needed is logged below after the snprintf
   const int written = snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
            ssid.c_str(),           // %s SSID in banner
@@ -393,13 +406,36 @@ void setupServer() {
   wm.setSaveParamsCallback(saveCallback);
   wm.setSaveConfigCallback(saveCallback);
 
-  if (!wm.autoConnect("LoRaIoT")) {
-    Log_error("WiFi Connection Failed! Halting with SOS signal.");
-    statusLed.setState(LedState::FAULT);
-    vTaskSuspend(NULL);
+  // Initialize WiFi radio according to the configured mode
+  if (WiFiConfig.getOpMode() == WifiOpMode::AP) {
+    // Standalone SoftAP mode: do not block in WiFiManager
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(WiFiConfig.getApIp(), WiFiConfig.getApIp(), WiFiConfig.getApSubnet());
+    WiFi.softAP(WiFiConfig.getApSsid(), WiFiConfig.getApPassword(), WiFiConfig.getApChannel());
+    Log_info("WiFi SoftAP started! SSID: '%s', IP: %s, Channel: %u",
+             WiFiConfig.getApSsid(), WiFi.softAPIP().toString().c_str(), WiFiConfig.getApChannel());
+  } else if (WiFiConfig.getOpMode() == WifiOpMode::AP_STA) {
+    // Concurrent SoftAP + Station mode: start SoftAP and connect to router
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAPConfig(WiFiConfig.getApIp(), WiFiConfig.getApIp(), WiFiConfig.getApSubnet());
+    WiFi.softAP(WiFiConfig.getApSsid(), WiFiConfig.getApPassword(), WiFiConfig.getApChannel());
+    Log_info("WiFi SoftAP started (concurrent)! SSID: '%s', IP: %s, Channel: %u",
+             WiFiConfig.getApSsid(), WiFi.softAPIP().toString().c_str(), WiFiConfig.getApChannel());
+    if (!wm.autoConnect("LoRaIoT")) {
+      Log_warn("WiFi STA connection failed in AP_STA mode, continuing in SoftAP mode");
+    } else {
+      Log_info("WiFi STA Connected! IP: %s", WiFi.localIP().toString().c_str());
+    }
+  } else {
+    // Standard Station mode (STA): connect to configured router via WiFiManager
+    WiFi.mode(WIFI_STA);
+    if (!wm.autoConnect("LoRaIoT")) {
+      Log_error("WiFi Connection Failed! Halting with SOS signal.");
+      statusLed.setState(LedState::FAULT);
+      vTaskSuspend(NULL);
+    }
+    Log_info("WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
   }
-
-  Log_info("WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
 
   // Construct and register REST routes.
   static RestService restService(&server);

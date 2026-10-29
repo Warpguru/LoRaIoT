@@ -226,8 +226,9 @@ add value only for a browser page that must update without user-initiated
 reloads - a live dashboard. There is no device-to-device or server-push use
 case in this project that would justify WebSockets over plain HTTP.
 
-REMOTE runs in SoftAP mode (LAN-disconnected after provisioning); a browser
-cannot reach it over the LAN. A GUI is therefore only meaningful on LOCAL.
+REMOTE typically runs in SoftAP mode (`AP` / `AP_STA`, see `GET /api/wifi/mode` in
+`doc/RestApi.md`); a browser can then reach it only by joining its SoftAP (or over the LAN in
+`STA` / `AP_STA` mode). LOCAL is always on the LAN, so a GUI is most useful there.
 
 ### Option A - Add a real browser GUI on LOCAL (keep WebSockets)
 
@@ -612,7 +613,8 @@ before spending effort on any of them.
 5. **Review duplicated web stacks.** `WiFiManager` brings its own HTTP server for the
    captive portal while `ESPAsyncWebServer` serves the application. Consider whether
    one can replace the other, or whether WiFiManager can be restricted to the
-   provisioning path only. Check the map file before investing.
+   provisioning path only. Check the map file before investing. Note that `AP` mode
+   already bypasses WiFiManager entirely (`Server.cpp` `setupServer`).
 6. **Trim log strings.** `Log_*` macros embed `__FILE__` and format strings in flash
    at every call site. Dropping TRACE/DEBUG call sites at compile time (e.g. a
    `LOG_COMPILE_LEVEL` guard) removes them from the image entirely.
@@ -736,7 +738,7 @@ variable exposed via `GET /api/lora/stats`. No new task is needed. Effort is low
    "I am alive" (via `cachedRegistry().markSeen()`), so a pushing node never needs a keep-alive PING either.
 3. **LOCAL must also send data to REMOTE.** Example: set the output voltage of a DC/DC converter that
    charges a battery. REMOTE cannot drive such hardware itself (ESP32 resources are too small). A
-   second ESP joins the access point that REMOTE opens and does the real sensor and control work. So
+   second ESP joins the access point that REMOTE opens (`AP` / `AP_STA` mode) and does the real sensor and control work. So
    REMOTE only stores and serves the values. It does not know what they mean.
 4. **The old model is one-directional.** Today only REMOTE defines devices and LOCAL caches them. For
    control data the roles are reversed, so the design must become symmetric.

@@ -9,8 +9,9 @@ a LoRa radio link. LoRa is a low-power, long-range radio technology well suited 
 applications where WiFi does not reach or battery life matters.
 
 The network always has exactly **one LOCAL node** and up to **three REMOTE nodes**. Each node
-also connects to your WiFi network and exposes a REST API, so you can read and write data from
-any device on your local network.
+exposes a REST API. LOCAL connects to your WiFi network; a REMOTE node either joins your WiFi
+network, hosts its own WiFi access point, or does both (see "Which WiFi modes can a REMOTE node
+use?" below).
 
 ### What is the LOCAL node?
 
@@ -52,18 +53,40 @@ Writes control data   ──REST──>  Holds control setpoints ──LoRa─�
                                                          ──LoRa──> Node 3                  Relay / actuator
 ```
 
-LOCAL is the only node that needs to be reachable from your network. REMOTE nodes only need
-WiFi for their own REST API (useful for direct inspection or firmware updates) - all IoT data
+LOCAL is the only node that needs to be reachable from your network. REMOTE nodes use WiFi for
+their own REST API: either as an access point that the local IoT devices join, or as a client of
+your network (useful for direct inspection or firmware updates). All data between the nodes
 flows over LoRa.
 
 **Connecting IoT devices to a REMOTE node:**
 
 Out of the box, any IoT device that can make HTTP calls can push sensor data to or read control
-setpoints from a REMOTE node using its REST API - no firmware changes needed.
+setpoints from a REMOTE node using its REST API - no firmware changes needed. In `AP` or `AP_STA`
+mode the device joins the REMOTE node's WiFi (SSID `LoRaIoT-Node-<n>`, default address
+`192.168.4.1`); in `STA` mode it uses the REMOTE node's address on your network.
 
 Interfacing via the ESP32's hardware peripherals (GPIO, I2C, SPI, ADC, PWM, UART, etc.) is
 possible but requires modifying this application to add that support. It is not included out of
 the box and is constrained by the flash and RAM remaining after the base firmware is flashed.
+
+
+### Which WiFi modes can a REMOTE node use?
+
+| Mode | What it does | How to reach the node |
+| :--- | :--- | :--- |
+| `STA` (default) | The node joins your WiFi network, as LOCAL does. | Its address on your network |
+| `AP` | The node hosts its own WiFi access point and joins no other network. | Join its SSID, then `192.168.4.1` (default) |
+| `AP_STA` | Both at once: own access point and connection to your network. | Either address |
+
+### How do I switch a REMOTE node to access point mode, and back?
+
+1. Provision the node in `STA` mode first (tier and LoRa channel are set in the captive portal,
+   which is not available in `AP` mode).
+2. Send `PUT /api/wifi/mode` with `{"mode":"AP"}` (optionally `ssid`, `password`, `ip`, `channel`).
+   The node reboots into the new mode and is then no longer reachable at its old network address.
+3. To go back, join the node's SSID and send `PUT /api/wifi/mode` with `{"mode":"STA"}`.
+
+Details are in [`doc/RestApi.md`](doc/RestApi.md).
 
 ---
 

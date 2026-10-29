@@ -35,7 +35,8 @@ servers, LoRaIoT enforces a strict multi-threaded layout using FreeRTOS.
 
 - **Core 0 (System Core):** Handles the high-frequency WiFi stack, TCP/IP processing, and
   non-blocking asynchronous web callbacks from `ESPAsyncWebServer` (REST API and WebSocket
-  events).
+  events). The WiFi stack serves one radio. In `AP_STA` mode the SoftAP and the station
+  interface share it, so both interfaces run on the same channel.
 - **Core 1 (Application Core):** Runs the primary application loop, the low-level
   `loraTransportTask`, WebSocket broadcast, and (on REMOTE) the beacon task.
 
@@ -120,7 +121,7 @@ sequenceDiagram
     autonumber
     participant HW   as Hardware / Reset
     participant App  as applicationSetup
-    participant Cfg  as LoRaConfig / Gateway / LogBuffer
+    participant Cfg  as LoRaConfig / WiFiConfig / Gateway / LogBuffer
     participant WM   as WiFiManager captive portal
     participant E220 as E220 Module UART2
     participant Task as loraTransportTask
@@ -135,16 +136,26 @@ sequenceDiagram
     App->>Cfg: LogBuffer.begin() - load persisted log level from NVS
     App->>Cfg: Gateway.begin() - load tier LOCAL / REMOTE from NVS
     App->>Cfg: LoRaConfig.begin() - load channel, address, cpuFreq from NVS
+    App->>Cfg: WiFiConfig.begin() - load WiFi mode (STA / AP / AP_STA) and SoftAP settings from NVS
     App->>App: setCpuFrequencyMhz - apply saved CPU frequency
 
-    Note over App,WM: Phase 2 - WiFi and Provisioning
-    App->>WM: wm.autoConnect - start WiFiManager
-    alt Node is unprovisioned
-        WM-->>App: Blocks - captive portal served on 192.168.4.1
-        Note over WM: User selects Tier and Channel in browser
-        WM->>Cfg: saveCallback - Gateway.save and LoRaConfig.save
-    else Credentials already in NVS
-        WM-->>App: Connects immediately, portal skipped
+    Note over App,WM: Phase 2 - WiFi and Provisioning (branches on WiFiConfig mode)
+    alt Mode is AP
+        App->>App: WiFi.softAP - SoftAP up, WiFiManager bypassed, no captive portal
+    else Mode is AP_STA
+        App->>App: WiFi.softAP - SoftAP up first
+        App->>WM: wm.autoConnect - join router
+        Note over App,WM: If the router connection fails the node continues as SoftAP only
+    else Mode is STA (default)
+        App->>WM: wm.autoConnect - start WiFiManager
+        alt Node is unprovisioned
+            WM-->>App: Blocks - captive portal served on 192.168.4.1
+            Note over WM: User selects Tier and Channel in browser
+            WM->>Cfg: saveCallback - Gateway.save and LoRaConfig.save
+        else Credentials already in NVS
+            WM-->>App: Connects immediately, portal skipped
+        end
+        Note over App: A failed STA connection halts with the SOS LED
     end
     App->>App: RestService.registerRoutes - all /api/* routes wired
     App->>App: WebSocketService.begin - /ws/data handler active

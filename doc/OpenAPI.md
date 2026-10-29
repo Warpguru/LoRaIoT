@@ -59,7 +59,7 @@ in flash. It contains seven placeholders expanded at request time via
 
 | Placeholder | Value |
 |---|---|
-| `%s` (1st) | `WiFi.SSID()` - connected network name |
+| `%s` (1st) | Router SSID (`WiFi.SSID()`) if STA is enabled and connected, else the SoftAP SSID (`WiFiConfig.getApSsid()`) |
 | `%s` (2nd) | `Gateway.getTierName()` - tier shown in the banner |
 | `%u` (3rd) | `LoRaConfig.getKey()` - LoRa key value (decimal, 0 = disabled) |
 | `%s` (4th) | `"on"` or `"off"` - LoRa key enabled state |
@@ -74,8 +74,8 @@ it from `location.hostname` at page load:
 document.getElementById('ip').textContent = location.hostname;
 ```
 
-This is correct for both current STA mode (LAN DHCP IP) and future SoftAP mode
-(192.168.4.1) - the browser always used the right address to reach the page.
+This is correct for STA mode (LAN DHCP IP) and SoftAP mode (default 192.168.4.1) - the
+browser always used the right address to reach the page.
 
 ---
 
@@ -92,7 +92,14 @@ The replacement uses a fixed stack buffer:
 
 ```cpp
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
-  String ssid = WiFi.SSID();   // one small heap alloc for the SSID string
+  String ssid;                 // one small heap alloc for the SSID string
+  if (WiFiConfig.isStaEnabled() && WiFi.status() == WL_CONNECTED) {
+    ssid = WiFi.SSID();                // STA / AP_STA: router SSID
+  } else if (WiFiConfig.isApEnabled()) {
+    ssid = WiFiConfig.getApSsid();     // AP, or AP_STA without router: SoftAP SSID
+  } else {
+    ssid = WiFi.SSID();                // STA, not connected
+  }
   char buf[1300];              // stack - freed when function returns
   snprintf(buf, sizeof(buf), OPENAPI_UI_TEMPLATE,
            ssid.c_str(),                                          // %s SSID
@@ -106,7 +113,7 @@ static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
 }
 ```
 
-`WiFi.SSID()` is extracted to a named `String` local so that `.c_str()`
+The SSID is extracted to a named `String` local so that `.c_str()`
 is safe for the lifetime of the `snprintf` call. After that the `String`
 destructor runs immediately and frees the SSID heap allocation.
 
@@ -115,7 +122,7 @@ destructor runs immediately and frees the SSID heap allocation.
 | Quantity | Bytes |
 |---|---|
 | Template static content | ~1,147 |
-| Max SSID (32 chars) | 32 |
+| Max SSID (32 chars, router or SoftAP) | 32 |
 | Tier name ("REMOTE", 6 chars) × 2 | 12 |
 | LoRa key value (5 digits max) | 5 |
 | Key state ("off", 3 chars) | 3 |

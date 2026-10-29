@@ -60,6 +60,54 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       }
     },
+    "/api/wifi/mode": {
+      "get": {
+        "tags": ["Gateway"],
+        "summary": "Active WiFi operational mode and status",
+        "description": "Returns the active WiFi mode (STA, AP, AP_STA), IP addresses, SoftAP settings, and connected client count. STA: reachable at staIp. AP: reachable at apIp (default 192.168.4.1). AP_STA: reachable at apIp and, when connected, staIp.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WifiModeResponse" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Gateway"],
+        "summary": "Set WiFi mode and SoftAP configuration",
+        "description": "Sets the operational mode (STA, AP, or AP_STA) and SoftAP parameters. Omitted optional fields keep their stored values. Persisted in NVS; node automatically reboots after 200 ms. The old address becomes invalid when the mode changes (STA to AP: join the SoftAP SSID, use apIp). Provision tier and LoRa settings in STA mode first (no captive portal in AP mode).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/WifiModePutRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings accepted, rebooting",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WifiModeResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameter (mode, SSID over 32 chars, IP format, channel outside 1-13, or password not empty / 8-64 chars)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/lora/channel": {
       "get": {
         "tags": ["Gateway"],
@@ -623,12 +671,35 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "tier": {
             "type": "string",
             "enum": ["LOCAL", "REMOTE (Node 1)", "REMOTE (Node 2)", "REMOTE (Node 3)", "UNSET"],
-            "description": "LOCAL: connected to local WLAN, receives data from REMOTE nodes. REMOTE (Node 1..3): hosts SoftAP for IoT sensors, forwards data over LoRa."
+            "description": "LOCAL: connected to local WLAN, receives data from REMOTE nodes. REMOTE (Node 1..3): forwards data over LoRa; WiFi mode is set via /api/wifi/mode."
           },
           "configured": {
             "type": "boolean",
             "description": "false when tier is UNSET"
           }
+        }
+      },
+      "WifiModeResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "description": "Status text, e.g. 'rebooting' on PUT" },
+          "mode": { "type": "string", "enum": ["STA", "AP", "AP_STA"], "description": "Active WiFi mode" },
+          "apSsid": { "type": "string", "description": "SoftAP SSID" },
+          "apIp": { "type": "string", "description": "SoftAP IP address" },
+          "apChannel": { "type": "integer", "description": "SoftAP 2.4 GHz channel" },
+          "apClients": { "type": "integer", "description": "Number of connected SoftAP stations (0 in STA mode)" },
+          "staIp": { "type": "string", "nullable": true, "description": "Station IP address when connected to external router; null in AP mode or while not connected" }
+        }
+      },
+      "WifiModePutRequest": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["STA", "AP", "AP_STA"], "description": "Target operational mode (mandatory)" },
+          "ssid": { "type": "string", "maxLength": 32, "description": "Custom SoftAP SSID" },
+          "password": { "type": "string", "minLength": 8, "maxLength": 64, "description": "SoftAP WPA2 password (min 8 chars, or empty for open)" },
+          "ip": { "type": "string", "description": "Custom SoftAP host IP (e.g. '192.168.4.1')" },
+          "channel": { "type": "integer", "minimum": 1, "maximum": 13, "description": "SoftAP 2.4 GHz channel (1-13)" }
         }
       },
       "LogResponse": {
@@ -818,7 +889,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
  * IP address is not injected server-side. A one-line JS snippet reads
  * location.hostname so the displayed address is always the interface the
  * browser actually used - correct for both STA mode (LAN DHCP IP) and
- * future SoftAP mode (192.168.4.1).
+ * SoftAP mode (192.168.4.1).
  *
  * The tierPlugin wrapComponents hook inspects the x-tier OpenAPI extension
  * on each operation and returns null (hides the row) when the operation's
