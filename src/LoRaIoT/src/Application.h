@@ -15,7 +15,7 @@ void applicationSetup();
 
 /**
  * Main loop body. Called repeatedly from loop().
- * Drains the WebSocket command queue and drives the DescribeCrawler state machine.
+ * Drives the DescribeCrawler state machine.
  */
 void applicationLoop();
 

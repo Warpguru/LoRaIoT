@@ -59,7 +59,7 @@ Core 0  (dual-core only)                 Core 1  (or the only core on single-cor
 ─────────────────────────────────────    ─────────────────────────────────────
 WiFi / lwIP stack (system)               Arduino main task: setup() -> loop()
 ESPAsyncWebServer request callbacks        applicationSetup() wiring
-loraTask (priority 2)                      applicationLoop() - WS command drain
+loraTask (priority 2)                      applicationLoop()
   sole owner of Serial2 (UART2)          DeviceService pollingTask (priority 2)
   E220 UART RX/TX/begin/end              WebSocketService broadcastTask (priority 1)
 StatusLed ledTask (priority 1, tskNO_AFFINITY)

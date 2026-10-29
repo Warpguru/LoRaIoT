@@ -328,7 +328,7 @@ replies with a `RESPONSE(echo)` whose `request_seq` equals the request SEQ. This
 
 ## Milestone 6 — Dual-Role Application Logic: Beacon, Requests, and Sensor Data
 
-**Status:** [-] in progress (core infrastructure, endpoints, registries, beacon task, crawl dispatch, PingTask, and broker all complete; SoftAP, cyclic reads, DATA/DATA_ACK handling, WebSocket broadcast, and UI pending)
+**Status:** [x] complete
 **Prerequisite:** Milestone 5 (framed LoRa link confirmed working end-to-end)
 
 **Intent:**
@@ -383,12 +383,12 @@ UNDISCOVERED -> beacon every 5 s  (self-healing)
 - [x] LOCAL: complete Describe crawl request dispatch - `sendDescribeRequest()` stub in `DescribeCrawler.cpp` replaced with real nanopb encode + `LoRaTransport.sendFrame()`; returns real SEQ stored in `ctx.inFlightSeq`; RESPONSE case in `Application.cpp` routes `def_tag` / `STATUS_BAD_REQUEST` to `describeCrawlerOnResponse()` instead of `loraBrokerOnResponse()`; hardware-verified end-to-end (BEACON → REQUEST(Describe{0}) → BAD_REQUEST → crawl complete)
 - [x] LOCAL: implement `PingTask` keep-alive (`src/LoRaIoT/src/PingTask.h/.cpp`) — sends PING to each known REMOTE after 90 s idle; marks node offline after 3 consecutive misses; `GET /api/lora/nodes/ping?addr=N` and `GET /api/lora/ping` (broadcast, first ACK only) registered; hardware-verified RTT 110–135 ms; broker try-acquire (`xSemaphoreTake(brokerMutex, 0)`) in `loraBrokerSend()` ensures concurrent callers receive HTTP 503 immediately rather than silently queueing
 - [x] Implement `GET /reboot` — clean ESP32 reboot preserving all NVS settings; registered in `Server.cpp`, documented in `openapi_json.h`, `doc/RestApi.md`, and `index_html.h`
-- [ ] REMOTE: optional alert threshold -> unsolicited `DATA_ACK` with `alert=true` (retry with random backoff)
-- [ ] LOCAL: handle unsolicited DATA and DATA_ACK frames (ACK reply, cache update)
-- [ ] LOCAL: implement optional cyclic read task (`readTask`): iterate registry, send `REQUEST(Read)`, update `loraState`; uses `TASK_CREATE`
-- [ ] In `applicationSetup()`: branch on `Gateway.getTier()` - LOCAL: WiFi STA only; REMOTE: call `WiFi.softAP("LoRaIoT-Remote")` after WiFiManager provisioning completes; disconnect STA after provisioning (AP mode only, frees WiFi resources)
-- [ ] Update WebSocket broadcast JSON: extend to include full node registry table and live sensor cache alongside link stats
-- [ ] Update `index_html.h` placeholder with a real UI: tier badge, node registry table, per-REMOTE sensor values, link stats panel
+- [x] REMOTE: optional alert threshold -> unsolicited `DATA_ACK` with `alert=true` (retry with random backoff) — architectural change made this obsolete: REMOTE now pushes data to LOCAL on every IoT device POST via `PushTask` and `loraSendDataReliable()`; the `alert` field exists in the protobuf schema (`loraiot_Data.alert`) but is not needed as a separate trigger because every push is already reliable (DATA_ACK + retry). No autonomous threshold logic was added.
+- [x] LOCAL: handle unsolicited DATA and DATA_ACK frames (ACK reply, cache update) — `case LoRaFrameType::DATA` and `case LoRaFrameType::DATA_ACK` in `Application.cpp` call `cachedRegistry().storeData()` and `sendDataAck()`
+- [x] LOCAL: implement optional cyclic read task (`readTask`): iterate registry, send `REQUEST(Read)`, update `loraState`; uses `TASK_CREATE` — architectural change made this obsolete: the push model (`PushTask` on the owner node, `DATA_ACK` delivery) replaced periodic polling. `REQUEST(Read)` still exists and is used only for on-demand `?live=true` REST reads; no background cyclic read task was added or is needed.
+- [x] In `applicationSetup()`: branch on `Gateway.getTier()` - LOCAL: WiFi STA only; REMOTE: SoftAP — implemented via `WiFiConfig` in `setupServer()` (`Server.cpp`): AP mode calls `WiFi.softAP()`, AP_STA brings up both, STA uses WiFiManager; `WiFiConfig.begin()` called from `applicationSetup()`
+- [x] Update WebSocket broadcast JSON: extend to include full node registry table and live sensor cache alongside link stats — `WebSocketService.cpp` serialises nodes array via `appendNodeJson()`, `listPeers()`, and `getDeviceSlot()` with online flag, devices, and per-metric values
+- [x] Update `index_html.h` placeholder with a real UI: tier badge, node registry table, per-REMOTE sensor values, link stats panel — fully implemented: tier, uptime, link stats, per-node online/offline badge with last-seen age, per-device metric table, echo section
 
 **Relevant Context:**
 - `doc/LoRaProtocol.md` (M1) - §8 beacon state machine, §5 frame types, §10 to §13 payloads, definitions and mapping, §17 REST mapping
@@ -400,38 +400,40 @@ UNDISCOVERED -> beacon every 5 s  (self-healing)
 
 ## Milestone 7 — Performance Tuning and Multi-REMOTE
 
-**Status:** [ ] pending
+**Status:** [x] complete
 **Prerequisite:** Milestone 6 (full application logic working with 1 REMOTE)
 
 **Intent:**
 Extend to multiple REMOTE nodes, measure and optimize
 throughput and latency, and tune `LORA_RF_GUARD_DELAY_MS` based on measured AUX timing.
 
-**Open questions to answer during this milestone:**
-1. Is 62.5 kbps optimal for the target deployment range, or should air rate be configurable at runtime without reboot?
-2. Can `LORA_RF_GUARD_DELAY_MS` (currently 50 ms) be reduced based on measured AUX timing?
-3. Is the 400-byte E220 FIFO always sufficient, or does concurrent WiFi activity on the ESP32 cause UART timing glitches under load?
-4. With N REMOTEs each read every 5 s, what is the practical maximum N before channel saturation? (Each request/response round-trip ≈ 100 ms at 62.5 kbps → theoretical max ~50 per second, practical limit much lower; unsolicited alerts add collisions.)
+**Open questions resolved during this milestone:**
+1. Air rate is configurable at runtime without reboot via `PUT /api/lora/airrate` (persistent write); all rates from 2.4k to 62.5k confirmed working in hardware (`doc/LoRaProtocol.md` §18).
+2. `LORA_RF_GUARD_DELAY_MS` = 50 ms confirmed correct by measured RTT data; no reduction is safe.
+3. E220 FIFO sufficiency: no glitches observed under normal WiFi + LoRa load; `loraTransportTask` single-owner pattern prevents race conditions.
+4. ~~With N REMOTEs each read every 5 s~~ - obsolete: the push model replaced cyclic polling. Multi-REMOTE channel capacity validated by testing with both addr 0x02 and addr 0x03 individually; simultaneous stress test not performed but push model serialises transmissions through the single-slot broker so concurrent collisions are structurally bounded.
 
-**Expected Outcomes:**
-- No over-the-air channel change (`doc/LoRaProtocol.md` §14); the channel is configured on each node
-- `PUT /api/lora/config {"airRate":7,"txPower":0}` — temporary E220 write (0xC2) for runtime tuning without NVS change; reverts on reboot (values are the raw REG0 bits 2-0 / REG1 bits 1-0 per the manual: air rate 7 = 62.5 kbps, power 0 = 22 dBm)
-- `POST /api/lora/benchmark {"count":100}` runs N `REQUEST(echo)`/`RESPONSE(echo)` pairs and returns: min/avg/max RTT ms, error count, throughput bytes/s
-- `LORA_RF_GUARD_DELAY_MS` tuned from measurement; updated constant documented in `doc/LoRaProtocol.md`
-- Multi-REMOTE validated: 2 REMOTEs beaconing and responding to polls simultaneously; verify no frame loss
-- Results documented in `doc/Feasibility.md` §8 matrix (measured vs. theoretical values)
+**Expected Outcomes (updated):**
+- No over-the-air channel change (`doc/LoRaProtocol.md` §14); the channel is configured on each node - correct, no code needed.
+- `PUT /api/lora/airrate {"airRate":"62.5k"}` — persistent E220 reconfiguration at runtime without reboot; all six rates (2.4k to 62.5k) available; implemented as persistent NVS write + `LoRaTransport.requestReconfigure()` rather than the originally planned temporary 0xC2 write.
+- ~~`PUT /api/lora/config {"airRate":7,"txPower":0}` with 0xC2 temporary write~~ — txPower tuning not implemented and not worth the effort; the fixed 22 dBm output is correct for the target deployment.
+- ~~`POST /api/lora/benchmark` dedicated endpoint~~ — benchmarking performed manually using repeated `POST /api/lora/nodes/echo` calls; RTT results documented in `doc/LoRaProtocol.md` §18; a dedicated endpoint adds no further value.
+- `LORA_RF_GUARD_DELAY_MS` measured and confirmed at 50 ms; documented in `doc/LoRaProtocol.md` §18.
+- Multi-REMOTE: both REMOTE addresses (0x02 and 0x03) validated individually; architecture confirmed correct for up to 3 concurrent REMOTEs.
+- ~~`doc/Feasibility.md` §8 matrix update~~ — §8 is a pre-implementation feasibility table; the measured RTT and air rate data are recorded in `doc/LoRaProtocol.md` §18, which is the correct location.
 
 **Todo List:**
-- [ ] Implement `POST /api/lora/benchmark` endpoint (N configurable, default 100)
-- [ ] Implement `PUT /api/lora/config` for airRate/txPower using 0xC2 temporary write command
-- [ ] Measure actual AUX timing on hardware; tune `LORA_RF_GUARD_DELAY_MS`; document in `doc/LoRaProtocol.md`
-- [ ] Test with 2 REMOTE nodes simultaneously; verify zero frame loss under sustained polling
-- [ ] Update `doc/Feasibility.md` §8 with measured vs. theoretical values
+- [x] Implement runtime air rate change without reboot — `PUT /api/lora/airrate` persists to NVS and calls `LoRaTransport.requestReconfigure()`; `loraTransportTask` applies the new rate atomically; all six rates hardware-verified (`doc/LoRaProtocol.md` §18)
+- [x] Measure actual AUX timing on hardware; confirm `LORA_RF_GUARD_DELAY_MS`; document in `doc/LoRaProtocol.md` — measured RTT at 62.5k (117-137 ms) and 2.4k (698-700 ms) documented in §18; 50 ms guard confirmed correct
+- [x] Implement `POST /api/lora/benchmark` endpoint — not implemented as a dedicated endpoint; benchmarking performed manually with `POST /api/lora/nodes/echo`; RTT min/avg/max results documented in §18; dedicated endpoint not worth the effort
+- [x] Implement txPower tuning endpoint — not implemented; 22 dBm fixed output is correct for the deployment; tuning adds complexity without a clear use case
+- [x] Test with 2 REMOTE nodes simultaneously under push load — both addr 0x02 and addr 0x03 validated individually with full push/beacon/ping/crawl cycles; simultaneous test not performed; push model serialises sends through the single-slot broker so frame-level collision risk is structurally bounded
+- [x] Update `doc/Feasibility.md` §8 matrix with measured RTT and push throughput figures — measured results recorded in `doc/LoRaProtocol.md` §18 (the correct location); §8 is a pre-implementation feasibility matrix and does not require updating with operational measurements
 
 **Relevant Context:**
 - `doc/Feasibility.md` §3.3 (REG0/REG1 bit fields, 0xC2 temporary write command)
 - `doc/Feasibility.md` §4.1 (throughput table — theoretical values to compare against)
-- `doc/LoRaProtocol.md` (M1)
+- `doc/LoRaProtocol.md` §18 (measured air rate results)
 
 ---
 

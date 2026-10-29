@@ -15,7 +15,7 @@ in `AP` and `AP_STA` mode.
 
 | Method | Path | Registered in | Node | Purpose |
 |---|---|---|---|---|
-| GET | `/` | `Server.cpp` | Both | Browser UI (HTML from PROGMEM) |
+| GET | `/` | `Server.cpp` | Both | Live dashboard (HTML from PROGMEM, fed by `/ws/data`) |
 | GET | `/openapi` | `Server.cpp` | Both | OpenAPI 3.0 specification (JSON, from PROGMEM) |
 | GET | `/openapi/ui` | `Server.cpp` | Both | Swagger UI explorer (fetches JS/CSS from unpkg CDN) |
 | GET | `/status` | `Server.cpp` | Both | ESP32 hardware diagnostics |
@@ -45,7 +45,7 @@ in `AP` and `AP_STA` mode.
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
 | GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
 | POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from an IoT device (via the SoftAP in `AP` / `AP_STA` mode, or via the LAN address in `STA` / `AP_STA` mode) |
-| WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s) |
+| WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s, server to client only) |
 
 ---
 
@@ -482,11 +482,6 @@ Supported frequencies (with active WiFi radio):
 
 ---
 
-## WebSocket /ws/data
-
-Pushes a JSON state snapshot to all connected clients once per second. The payload is not
-defined yet (placeholder in `WebSocketService::broadcastTask`).
-
 ---
 
 ## GET /api/lora/nodes
@@ -743,3 +738,39 @@ REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assign
 ```json
 {"accepted":[{"metric":"Voltage","device_idx":1,"metric_id":1},{"metric":"Temp","device_idx":1,"metric_id":2}],"rejected":[],"registry_rev":2}
 ```
+
+---
+
+## WebSocket /ws/data
+
+Pushes a JSON state snapshot to all connected clients once per second. It drives the browser
+dashboard served at `GET /`. The endpoint is server-push only: messages sent by a client are
+ignored. Nothing is sent while no client is connected.
+
+`nodes[]` has the same shape as `GET /api/lora/nodes/sensor` on LOCAL and
+`GET /api/lora/nodes/control` on REMOTE (without `boot_id` and `registry_rev`), and is `[]` when
+no peer is known.
+
+```json
+{
+  "uptime_s": 312,
+  "tier": "LOCAL",
+  "lora": {"tx_frames": 20, "rx_frames": 23, "crc_errors": 0, "ack_loss": 0},
+  "nodes": [
+    {
+      "addr": 3, "online": true, "peer_last_seen_ms_ago": 53000,
+      "devices": [
+        {
+          "device": 1, "name": "Lenovo W510", "has_data": true, "age_ms": 247000, "alert": false,
+          "metrics": [{"id": 1, "name": "CPU Temp.", "unit": "C", "scale": 100, "value": 7146}]
+        }
+      ]
+    }
+  ],
+  "echo": null
+}
+```
+
+`echo` is `null` until an echo test has run, then
+`{"sent":"...","received":"...","seq_no":n,"round_trip_ms":n,"success":true}`.
+`value` is `null` for a metric that has not received data yet; the real value is `value / scale`.

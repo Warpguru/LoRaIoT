@@ -206,87 +206,28 @@ in every observable way.
 
 ---
 
-## 3. WebSocket infrastructure: keep and build a GUI, or remove
+## 3. WebSocket infrastructure: dashboard built (resolved)
 
 ### Current state
 
-`/ws/data` is a live, connectable WebSocket endpoint. `WebSocketService::broadcastTask`
-(`src/service/src/WebSocketService.cpp`) runs as a FreeRTOS task on every boot,
-loops at 1 s intervals, and sends nothing - the `ws->textAll()` call is commented
-out pending a payload definition. The infrastructure (endpoint registration,
-task creation, mutex) is wired but produces no output.
+`/ws/data` feeds the live browser dashboard served at `GET /` (`src/LoRaIoT/src/index_html.h`,
+about 12 KB, self-contained). `WebSocketService::broadcastTask`
+(`src/service/src/WebSocketService.cpp`, 10240 B stack) pushes a JSON snapshot once per second
+while at least one client is connected. The design is described in `doc/Architecture.md`
+section 5; the payload schema is in `doc/RestApi.md` (WebSocket /ws/data).
 
-The endpoint was carried over from the SerialController template project, which
-had a real browser GUI that consumed the 1 s push to drive a live data table.
+The endpoint is server-push only. Inbound client messages are ignored; there is no command queue.
 
-### Why WebSockets only make sense with a browser GUI
+### Open points
 
-REST polling (`GET /api/lora/nodes/sensor`) works for any client. WebSockets
-add value only for a browser page that must update without user-initiated
-reloads - a live dashboard. There is no device-to-device or server-push use
-case in this project that would justify WebSockets over plain HTTP.
-
-REMOTE typically runs in SoftAP mode (`AP` / `AP_STA`, see `GET /api/wifi/mode` in
-`doc/RestApi.md`); a browser can then reach it only by joining its SoftAP (or over the LAN in
-`STA` / `AP_STA` mode). LOCAL is always on the LAN, so a GUI is most useful there.
-
-### Option A - Add a real browser GUI on LOCAL (keep WebSockets)
-
-Implement a self-contained HTML page (inline CSS + JS WebSocket client) stored
-in PROGMEM at `src/LoRaIoT/src/index_html.h`, served at `GET /`. The page
-connects to `ws://<host>/ws/data` and renders a live dashboard showing:
-
-- Active tier and gateway status
-- Node registry table (addr, boot_id, registry_rev, last_seen)
-- Per-device metric values with age
-- LoRa link stats (TX/RX/CRC/ACK counters)
-
-The SerialController template (`ESP/SerialController/src/SerialController/src/index_html.h`,
-~1,110 lines) is the reference pattern to adapt.
-
-**Cost:**
-- Flash: ~30-40 KB additional PROGMEM for the HTML/CSS/JS
-- Current flash headroom: ~105 KB (92% used of 1,280 KB)
-- After frame protocol layer (est. ~20-30 KB): headroom shrinks to ~55-75 KB
-- A 35 KB GUI would consume roughly half that remaining margin
-- `WebSocketService::broadcastTask` payload must be implemented
-- `index_html.h` deprecation notice must be removed
-
-**Constraint:** implement only after the frame protocol layer is complete and
-the final flash budget is known. If headroom is < 50 KB at that point, the GUI
-should be hosted externally (e.g. a static page on the LAN that fetches from
-the ESP32 API) rather than embedded in flash.
-
-### Option B - Remove WebSocket infrastructure (simplify)
-
-Remove the WebSocket endpoint and service entirely. `GET /openapi/ui` (Swagger UI)
-already provides a fully interactive, self-documenting explorer for every endpoint.
-Cached and live metric reads are available via `GET /api/lora/nodes/sensor` (LOCAL) or `GET /api/lora/nodes/control` (REMOTE).
-Neither requires a persistent connection.
-
-**What to remove:**
-- `src/service/src/WebSocketService.h/.cpp` - delete both files
-- `src/LoRaIoT/src/Server.cpp` - remove `AsyncWebSocket ws(WS_PATH)`,
-  `WebSocketService wsService(&ws)`, `server.addHandler(&ws)`, `wsService.begin()`
-- `src/LoRaIoT/src/Server.h` - remove `WS_PATH` constant and `extern WebSocketService wsService`
-- `src/LoRaIoT/src/Application.cpp` - remove the drain-WebSocket-command-queue TODO comment
-- `src/LoRaIoT/src/index_html.h` - already has deprecation notice; can be removed or replaced
-  with a one-line redirect to `/openapi/ui`
-- `doc/RestApi.md` - remove the `WebSocket /ws/data` entry from the summary table and section
-- `src/LoRaIoT/src/openapi_json.h` - no entry to remove (WebSocket is not in the OpenAPI spec)
-
-**Savings:** ~4 KB flash (compiled task code) + 4 KB DRAM (task stack) + simplifies
-the threading diagram in `doc/TechDebt.md §ESP32 Memory Layout` and `README.md`.
-
-### Recommendation
-
-Do not act on either option until the frame protocol layer is complete and a
-final flash measurement is available. At that point:
-
-- If flash headroom > 60 KB: Option A is viable.
-- If flash headroom < 60 KB: choose Option B.
-- If a LAN-hosted dashboard is acceptable: choose Option B regardless and host
-  the GUI as a static page that polls the REST API.
+- **Stack size:** the task keeps a `DeviceSlot` snapshot (`LORA_MAX_PEERS` x
+  `DEVICE_TABLE_MAX_DEVICES` slots, about 4 KB) on its stack. 6144 B overflowed (stack canary
+  panic), so it is 10240 B. Check the high-water mark in `GET /status` and consider a static
+  buffer if DRAM gets tight.
+- **Flash:** the dashboard replaces the old 3.8 KB landing page. Re-check the app slot fill
+  level (see section 6) after significant UI growth.
+- **Inbound commands:** only needed if the browser should write control setpoints. Not planned.
+- **`cleanupClients()`:** not called; stale client slots are reclaimed only by the async TCP stack.
 
 ---
 
@@ -608,8 +549,9 @@ before spending effort on any of them.
    (`Content-Encoding: gzip`). Text such as HTML and JSON typically compresses to
    20-30% of its size. The openapi document grows with every endpoint, so this
    scales with the API.
-4. **Remove WebSockets if no GUI is built** (see §3). Saves the broadcast task code
-   and library paths, as well as DRAM for its task stack.
+4. **Slim the WebSocket task** (see §3). The dashboard now depends on it, so removal is no
+   longer an option. The broadcast task's 10240 B stack is the lever: a static `DeviceSlot`
+   buffer instead of a stack array would free most of it.
 5. **Review duplicated web stacks.** `WiFiManager` brings its own HTTP server for the
    captive portal while `ESPAsyncWebServer` serves the application. Consider whether
    one can replace the other, or whether WiFiManager can be restricted to the

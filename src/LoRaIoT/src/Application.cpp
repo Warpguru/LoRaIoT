@@ -27,7 +27,7 @@
  *
  * Constructs the LoRa transport and global singletons.
  * HTTP handler logic lives in service/RestService.
- * WebSocket broadcast + receive live in service/WebSocketService.
+ * WebSocket broadcast lives in service/WebSocketService.
  */
 
 // ---- Application Constants -------------------------------------------------
@@ -727,6 +727,5 @@ void applicationLoop() {
   // ESPAsyncWebServer is fully non-blocking; this is a no-op kept for symmetry.
   handleServerRequests();
 
-  // TODO: drain WebSocket command queue and dispatch LoRa/device actions.
-  // Mirror the pattern in SerialController/Application.cpp applicationLoop().
+  // Inbound WebSocket commands are not implemented (the dashboard is read-only).
 }

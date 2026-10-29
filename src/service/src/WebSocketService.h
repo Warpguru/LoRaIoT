@@ -3,14 +3,13 @@
 #include <ESPAsyncWebServer.h>
 
 /**
- * WebSocketService.h - WebSocket broadcast task + command queue.
+ * WebSocketService.h - WebSocket broadcast task (server push only).
  *
- * Mirrors SerialController WebSocketService pattern:
- *   wsService.begin() starts the broadcast task (1 s push to all clients).
+ * wsService.begin() starts the broadcast task (1 s push to all clients).
  *
  * The WebSocket endpoint is /ws/data (defined as WS_PATH in Server.h).
- * Clients receive a JSON snapshot every 1 s.
- * Clients send JSON commands which are queued and dispatched in applicationLoop().
+ * Clients receive a JSON snapshot every 1 s (schema: see WebSocketService.cpp).
+ * Inbound messages from clients are not processed (read-only dashboard).
  */
 class WebSocketService {
  public:

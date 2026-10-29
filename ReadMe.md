@@ -110,6 +110,21 @@ curl -s -X POST "http://<LOCAL-IP>/api/lora/nodes/control?addr=2" \
       }'
 ```
 
+### Live dashboard
+
+Every node serves a self-contained, real-time dashboard at `http://<node-ip>/`. The page is stored in flash (about 12 KB, no CDN, no external assets) and is updated once per second over the WebSocket endpoint `/ws/data`. It shows the node tier, WebSocket connection state, uptime, the peer nodes with their devices and metrics (scaled value, unit, age), and the LoRa link counters (TX, RX, CRC errors, ACK loss). If no update arrives for 3 s the page marks the link as lost and reconnects automatically.
+
+- **LOCAL** shows the sensor values cached from its REMOTE nodes (same data as `GET /api/lora/nodes/sensor`).
+- **REMOTE** shows the control setpoints cached from LOCAL (same data as `GET /api/lora/nodes/control`).
+
+LOCAL (`http://<LOCAL-IP>/`), listing `REMOTE node 0x03` with its `CPU temperature` sensor:
+
+![LoRaIoT dashboard on the LOCAL node](doc/images/dashboard-local.webp)
+
+REMOTE Node 2 (`http://<REMOTE-IP>/`), listing `LOCAL (0x01)` with a control `dishwasher` device:
+
+![LoRaIoT dashboard on a REMOTE node](doc/images/dashboard-remote.webp)
+
 ### WiFi modes
 
 A REMOTE node can run in one of three WiFi modes. The mode is stored in NVS and read with `GET /api/wifi/mode`; it is changed with `PUT /api/wifi/mode` (the node reboots automatically). `LOCAL` normally stays in `STA` mode.
@@ -251,7 +266,7 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
 8. **Fixed Mode Routing:**
    - Both modules use Fixed Transmission Mode (`REG3=0x40`). The transport layer prepends the 3-byte E220 routing header `[ADDH][ADDL][CH]` before every write. Broadcast uses `[0xFF][0xFF][CH]`.
    - The E220 never delivers the sender address; SRC and DST are carried in the LoRaIoT frame header (`doc/LoRaProtocol.md` §4).
-9. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`). Key endpoints: `GET /api/lora/nodes/sensor` (sensor data), `GET,POST /api/lora/nodes/control` (control data), `POST /api/lora/sensor/data` (REMOTE sensor ingestion), `GET,PUT /api/wifi/mode` (WiFi mode). A WebSocket endpoint (`/ws/data`) is wired but currently inactive (produces no output; see `doc/TechDebt.md` chapter 3).
+9. **REST & WebSocket API:** A non-blocking `ESPAsyncWebServer` on port 80 exposes the full REST API (see `doc/RestApi.md`). Key endpoints: `GET /api/lora/nodes/sensor` (sensor data), `GET,POST /api/lora/nodes/control` (control data), `POST /api/lora/sensor/data` (REMOTE sensor ingestion), `GET,PUT /api/wifi/mode` (WiFi mode). A WebSocket endpoint (`/ws/data`) pushes a JSON state snapshot (tier, uptime, LoRa counters, cached nodes, last echo) once per second to the browser dashboard served at `GET /` (see [Live dashboard](#live-dashboard)).
 
 ---
 

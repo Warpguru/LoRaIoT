@@ -174,6 +174,43 @@ Yes. Add `timeout=<ms>` to the request, for example `?live=true&timeout=3000` to
 3 seconds for the radio reply. If the remote node does not respond in time the API returns an
 error rather than stale data.
 
+### Why does new data not appear immediately on the other node's REST API or dashboard?
+
+The first time a new device or metric is used, the receiving node does not yet know what the
+data means - it only receives compact integer ids and scaled values over the air, with no
+strings or units. Before it can store or display those values it must fetch the **device
+definition** (device name, metric names, units, scales) from the owner node. This fetch is
+called the **Describe crawl** and is triggered automatically.
+
+**What triggers the crawl:**
+
+- When a sensor device posts new data to a REMOTE node for the first time, REMOTE includes an
+  updated `registry_rev` counter in its next BEACON to LOCAL. LOCAL sees the new revision and
+  starts the crawl.
+- When a control setpoint is POSTed to LOCAL for a new device, LOCAL sends an immediate PING
+  to the target REMOTE carrying the new `registry_rev`. REMOTE sees it and starts the crawl.
+
+**How long it takes:**
+
+| Scenario | Expected delay before data is visible |
+| :--- | :--- |
+| New sensor on REMOTE, REMOTE in undiscovered state (fast beacon every 5 s) | 5-15 s |
+| New sensor on REMOTE, REMOTE already discovered (slow beacon every 60 s) | up to ~70 s |
+| New control setpoint POSTed to LOCAL | a few seconds (PING sent immediately) |
+| Each additional new device | ~200-400 ms extra per device (one radio round-trip each) |
+
+**Nothing is lost:** the value is stored by the owner node as soon as the REST call returns.
+Once the crawl completes the owner automatically pushes the current values to the cache node,
+and the dashboard updates on the next 1-second WebSocket push.
+
+**HTTP 202 on a control POST** means the setpoint was stored on LOCAL and transmitted to
+REMOTE, but REMOTE replied with `STATUS_BAD_REQUEST` because it did not yet know the device
+schema. The crawl has been triggered automatically and the value will be re-pushed once it
+completes. No action is needed.
+
+For a full technical explanation of the crawl mechanism, state machine, and timing see
+[Architecture.md - Section 7: Describe Crawl](doc/Architecture.md#7-describe-crawl---schema-discovery-before-data-is-visible).
+
 ---
 
 ## 4. Resource Usage and Headroom

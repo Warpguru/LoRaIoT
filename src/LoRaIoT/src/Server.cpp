@@ -26,7 +26,7 @@
  * - Registers all routes and starts the server
  *
  * All /api/* handler logic lives in service/RestService.
- * WebSocket broadcast + command-receive live in service/WebSocketService.
+ * WebSocket broadcast lives in service/WebSocketService.
  * ESP32-specific /status and /reset endpoints live here.
  */
 
