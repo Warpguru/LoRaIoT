@@ -31,7 +31,8 @@ replay_pid*
 /pom.xml
 # Symlink to ESP template project
 /ESP
-# Bob artifacts
+# Bob
 /.bob/artifacts/
+/.bob/tmp/
 
 
