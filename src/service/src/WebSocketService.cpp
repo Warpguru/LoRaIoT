@@ -34,6 +34,7 @@
  *       "addr":                   <uint8>,
  *       "online":                 <bool>,
  *       "peer_last_seen_ms_ago":  <uint32>,
+ *       "crawl_pending":          <bool>,  // true while a Describe crawl is in progress for this peer
  *       "devices": [
  *         {
  *           "device":   <uint8>,
@@ -120,6 +121,7 @@ static void appendNodeJson(JsonArray nodesArr, const PeerRegistry& registry, uin
   nobj["addr"]                  = addr;
   nobj["online"]                = online;
   nobj["peer_last_seen_ms_ago"] = millis() - lastSeenMs;
+  nobj["crawl_pending"]         = crawlPending;
   JsonArray devArr = nobj["devices"].to<JsonArray>();
   for (uint8_t s = 0; s < slotCount; s++) {
     appendDeviceJson(devArr.add<JsonObject>(), slots[s]);

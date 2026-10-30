@@ -230,7 +230,7 @@ LOCAL:
   node (R4).
 - When LOCAL's control table for a node changes (new device, new metric, changed unit or scale),
   LOCAL sends an immediate PING to that node, not only on the next beacon.
-- LOCAL sends a keep-alive PING to every REMOTE idle for 60 s.
+- LOCAL sends a keep-alive PING to every REMOTE idle for 90 s (`PING_IDLE_THRESHOLD_MS`).
 - REMOTE runs the same keep-alive towards LOCAL (the same `PingTask` code on both tiers). LOCAL
   answers every PING with an ACK. After the idle threshold and three unanswered PINGs the peer is
   marked offline in the cache registry (`online:false` in the REST views); any received frame
@@ -412,8 +412,8 @@ Rules:
   of the sender's control table for the target node). The firmware checks this by TYPE, not by the schema.
   nanopb generates `has_fw_version`, `has_uptime_s` and `has_registry_rev` for the `optional` fields.
 - Unknown fields are ignored (forward compatibility).
-- A `Measurement` whose `metric_id` or `Data.device` is not in the LOCAL cache is shown in REST as
-  `device_<n>/metric_<id>` and triggers a `Describe` (§12).
+- A `Measurement` whose `metric_id` or `Data.device` is not in the cache triggers an immediate
+  `Describe` crawl via `cachedRegistry().requestCrawl()` (§12).
 - A device that has no value yet answers `Read` with `STATUS_OK` and an empty `values` list.
 - The REMOTE rejects a registration (a new device or metric from the SoftAP REST API, answered with HTTP 400)
   if the resulting encoded `Device` plus the `Response` overhead would exceed 186 B, or if worst-case `Data` / `Response(Data)`
@@ -637,13 +637,16 @@ sequenceDiagram
 
     Sensor->>R: POST /api/lora/sensor/data {"device":"SensorA","metrics":{...}}
     Note over R: SensorRegistry auto-assigns device_idx and metric_ids
-    Note over R: registry_rev increments if schema is new
+    Note over R: registry_rev increments (new schema)
     R-->>Sensor: 200 {"accepted":[...],"registry_rev":2}
 
-    R->>L: BEACON(boot_id, registry_rev=2)
-    Note over L: registry_rev changed - start Describe crawl
-    L->>R: PING(boot_id, registry_rev)
-    R-->>L: ACK(acked_type=1, acked_seq)
+    Note over R: registry_rev changed - PingTask sends PING immediately
+    R->>L: PING(boot_id, registry_rev=2)
+    L-->>R: ACK(acked_type=1, acked_seq)
+    Note over L: registry_rev=2 is new - crawlPending set, crawl starts
+
+    R->>L: DATA(device=1, values) [fire-and-forget, arrives ~same time as crawl starts]
+
     L->>R: REQUEST(Describe 1)
     R-->>L: RESPONSE(Device 1 "SensorA", metrics)
     L->>R: REQUEST(Describe 2)

@@ -184,9 +184,10 @@ called the **Describe crawl** and is triggered automatically.
 
 **What triggers the crawl:**
 
-- When a sensor device posts new data to a REMOTE node for the first time, REMOTE includes an
-  updated `registry_rev` counter in its next BEACON to LOCAL. LOCAL sees the new revision and
-  starts the crawl.
+- When a sensor device posts new data to a REMOTE node for the first time, REMOTE sends an
+  immediate PING to LOCAL carrying the new `registry_rev`. LOCAL sees the new revision and
+  starts the crawl. If the DATA frame arrives before the PING is processed, the DATA handler
+  also schedules the crawl directly.
 - When a control setpoint is POSTed to LOCAL for a new device, LOCAL sends an immediate PING
   to the target REMOTE carrying the new `registry_rev`. REMOTE sees it and starts the crawl.
 
@@ -194,8 +195,7 @@ called the **Describe crawl** and is triggered automatically.
 
 | Scenario | Expected delay before data is visible |
 | :--- | :--- |
-| New sensor on REMOTE, REMOTE in undiscovered state (fast beacon every 5 s) | 5-15 s |
-| New sensor on REMOTE, REMOTE already discovered (slow beacon every 60 s) | up to ~70 s |
+| New sensor on REMOTE (first POST of a new device/metric) | a few seconds (PING sent immediately) |
 | New control setpoint POSTed to LOCAL | a few seconds (PING sent immediately) |
 | Each additional new device | ~200-400 ms extra per device (one radio round-trip each) |
 

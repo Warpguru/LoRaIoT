@@ -185,21 +185,21 @@ void PeerRegistry::markCrawlComplete(uint8_t addr, uint32_t finalRev) {
   xSemaphoreGive(mutex);
 }
 
-bool PeerRegistry::storeData(uint8_t addr, const loraiot_Data& data) {
+DeviceTableResult PeerRegistry::storeData(uint8_t addr, const loraiot_Data& data) {
   if (mutex == nullptr) {
-    return false;
+    return DeviceTableResult::UNKNOWN_DEVICE;
   }
   xSemaphoreTake(mutex, portMAX_DELAY);
 
   int8_t idx = findPeer(addr);
   if (idx < 0) {
     xSemaphoreGive(mutex);
-    return false;
+    return DeviceTableResult::UNKNOWN_DEVICE;
   }
 
   DeviceTableResult res = peers[idx].table.applyData(data, millis());
   xSemaphoreGive(mutex);
-  return (res == DeviceTableResult::OK || res == DeviceTableResult::UNKNOWN_METRIC);
+  return res;
 }
 
 // ---- Liveness --------------------------------------------------------------

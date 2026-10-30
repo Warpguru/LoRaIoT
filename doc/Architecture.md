@@ -723,21 +723,24 @@ Every BEACON frame (REMOTE to LOCAL) and every unicast PING frame carries an opt
 `registry_rev` field - a counter that increments whenever a new device or metric is registered
 on the owner node. The cache node watches this counter and schedules a crawl when it changes.
 
-Two events trigger a crawl on the cache side (both handled in `onLoRaReceive()` in
+Three events set the `crawlPending` flag in `cachedRegistry()`, which `describeCrawlerLoop()`
+picks up on the next `applicationLoop()` tick (all handled in `onLoRaReceive()` in
 [`src/LoRaIoT/src/Application.cpp`](../src/LoRaIoT/src/Application.cpp)):
 
 1. **New `boot_id`** - the peer has rebooted. The cache discards all state it held for that
-   peer and starts a fresh crawl from device index 1.
+   peer and starts a fresh crawl from device index 1. Set by `cachedRegistry().updatePeerMeta()`.
 2. **`registry_rev` advanced** - a new device or metric was registered on the owner. A targeted
-   crawl fetches the new definition without discarding existing ones.
+   crawl fetches the new definition without discarding existing ones. Set by
+   `cachedRegistry().updatePeerMeta()`.
+3. **DATA or DATA_ACK for an unknown device** - the cache node receives a value frame but does
+   not yet have the schema for that device. `cachedRegistry().requestCrawl()` schedules an
+   immediate crawl. For `DATA_ACK` the receiver additionally returns `STATUS_BAD_REQUEST` so
+   the REST caller sees HTTP 202 (`"delivery":"after_describe"`).
 
-In both cases `cachedRegistry().updatePeerMeta()` sets a `crawlPending` flag in the registry
-and `describeCrawlerSchedule()` logs the intent. The actual crawl is started by
-`describeCrawlerLoop()` on the next `applicationLoop()` tick.
-
-For a `DATA_ACK` with an unknown device or metric, the receiver immediately returns
-`STATUS_BAD_REQUEST` in the ACK and calls `describeCrawlerSchedule()`. The REST caller sees
-HTTP 202 (`"delivery":"after_describe"`).
+On the sensor path, REMOTE now also calls `pingTaskNotifyControlChange(LOCAL)` whenever a
+`POST /api/lora/sensor/data` increments `registry_rev`. This sends a PING to LOCAL carrying the
+new `registry_rev` before the DATA frame is even transmitted, so LOCAL can start the crawl
+before the data arrives rather than waiting for the next periodic BEACON.
 
 ### 7.3 The Crawl State Machine
 
@@ -789,7 +792,7 @@ sequenceDiagram
     Own->>Cache: BEACON or PING with registry_rev=N (new or changed)
     Cache->>Reg: updatePeerMeta(src, boot_id, registry_rev=N)
     Reg-->>Cache: crawlPending = true
-    Cache->>DC: describeCrawlerSchedule(addr) - flag set, crawl starts next applicationLoop tick
+    Note over Cache,DC: describeCrawlerLoop() picks up crawlPending on next applicationLoop() tick
 
     loop for deviceIdx = 1, 2, ... until BAD_REQUEST
         DC->>Own: REQUEST(Describe{device=deviceIdx}) via LoRaTransport.sendFrame()
@@ -814,18 +817,26 @@ current radio conditions:
 
 | Phase | Typical duration |
 |---|---|
-| Owner sends BEACON / PING carrying new `registry_rev` | up to 60 s (slow beacon) or immediate (control POST triggers a PING) |
-| Cache schedules crawl and sends first `REQUEST(Describe{1})` | next `applicationLoop()` tick, < 10 ms |
+| Owner notifies cache of new `registry_rev` | seconds: PING sent immediately on any schema change (both sensor and control paths) |
+| Cache sets `crawlPending` and sends first `REQUEST(Describe{1})` | next `applicationLoop()` tick, < 10 ms |
 | One `REQUEST(Describe)` round-trip at 62.5 kbps | ~100-200 ms per device (radio + processing) |
 | `PushTask` pushes all device values after crawl completes | one `DATA_ACK` round-trip per device |
 
-For sensor data the BEACON interval dominates: a new sensor registered on a REMOTE node in
-`UNDISCOVERED` state sends a fast beacon every 5 s, so the crawl starts within 5 s. In
-`DISCOVERED` state the interval is 60 s, but a reboot triggers the fast rate again.
+Both sensor and control paths now send an immediate PING carrying the new `registry_rev` the
+moment a `POST` changes the schema:
 
-For control data the delay is shorter: `POST /api/lora/nodes/control` calls
-`pingTaskNotifyControlChange()` immediately, so the REMOTE receives a PING with the new
-`registry_rev` within seconds and starts the crawl itself.
+- **Sensor data:** `POST /api/lora/sensor/data` calls `pingTaskNotifyControlChange(LOCAL)`
+  when `registry_rev` increments, so LOCAL receives a PING and starts the crawl before the
+  DATA frame even arrives over LoRa.
+- **Control data:** `POST /api/lora/nodes/control` calls `pingTaskNotifyControlChange(addr)`,
+  so REMOTE receives a PING and starts the crawl of LOCAL.
+- **DATA with unknown device:** if a DATA frame arrives at the cache before the PING is
+  processed, `cachedRegistry().requestCrawl()` in the DATA handler schedules the crawl
+  immediately as a belt-and-suspenders fallback.
+
+The BEACON interval is no longer on the critical path for new-schema latency. It remains
+important for reboot detection and for the DISCOVERED/UNDISCOVERED state transition that
+controls beacon rate.
 
 Until the crawl completes, `GET /api/lora/nodes/sensor` (or `control`) on the cache node
 returns the last known values or an empty list for the new device. The dashboard shows the

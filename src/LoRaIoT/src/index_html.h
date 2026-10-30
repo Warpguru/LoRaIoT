@@ -46,8 +46,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     .badge.ok   { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; }
     .badge.bad  { background: #fdecea; border-color: #f5b5b0; color: #8a1c14; }
     .badge.tier { background: #eaf2fc; border-color: #b7d3f3; color: #1f5fa8; }
+    #crawlerStatus {
+      margin-left: auto; font-size: 1.1rem; color: #e07b00;
+      opacity: .15; transition: opacity .15s;
+    }
+    #crawlerStatus.active { opacity: 1; }
     #wsActivity {
-      margin-left: auto; font-size: 1.1rem; color: #3b82d4;
+      font-size: 1.1rem; color: #3b82d4;
       opacity: .15; transition: opacity .15s;
     }
     #wsActivity.active { opacity: 1; }
@@ -77,6 +82,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <span class="badge tier" id="tier">-</span>
     <span class="badge bad" id="wsStatus">Disconnected</span>
     <span class="muted">Uptime <span id="uptime">-</span></span>
+    <span id="crawlerStatus" title="Schema crawl pending">&#x1F577;</span>
     <span id="wsActivity" title="WebSocket activity">&#9889;</span>
   </div>
   <h2>Nodes</h2>
@@ -127,9 +133,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     var nodesEl      = document.getElementById('nodes');
     var echoSection  = document.getElementById('echoSection');
     var echoEl       = document.getElementById('echo');
-    var wsActivityEl = document.getElementById('wsActivity');
+    var wsActivityEl    = document.getElementById('wsActivity');
+    var crawlerStatusEl = document.getElementById('crawlerStatus');
     var wsActivityTimer = null;
     var lastData = null;  /* last received payload, re-rendered as stale when the link drops */
+
+    /* Show/hide the crawler icon based on whether any peer has a pending Describe crawl. */
+    function setCrawlerActive(anyPending) {
+      if (anyPending) {
+        crawlerStatusEl.classList.add('active');
+      } else {
+        crawlerStatusEl.classList.remove('active');
+      }
+    }
 
     /* Flash the activity symbol briefly - called on every received message. */
     function flashActivity() {
@@ -259,6 +275,15 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         crcEl.textContent = d.lora.crc_errors;
         ackEl.textContent = d.lora.ack_loss;
       }
+      var anyPending = false;
+      var nodes = d.nodes || [];
+      for (var n = 0; n < nodes.length; n++) {
+        if (nodes[n].crawl_pending) {
+          anyPending = true;
+          break;
+        }
+      }
+      setCrawlerActive(anyPending);
       renderNodes(d.nodes);
       renderEcho(d.echo);
     }

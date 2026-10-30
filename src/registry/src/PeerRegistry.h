@@ -116,10 +116,12 @@ class PeerRegistry {
 
   /**
    * Apply a DATA frame. Partial update: only named metrics are changed.
-   * Returns true if the device was found (OK or UNKNOWN_METRIC), false when the peer
-   * or device is unknown (schema not crawled yet).
+   * Returns OK when every metric was applied, UNKNOWN_METRIC when the device is known
+   * but at least one metric_id is not (the known ones were still applied), and
+   * UNKNOWN_DEVICE when the peer or device is unknown. Anything but OK means the
+   * cached schema is stale and the caller should request a Describe crawl.
    */
-  bool storeData(uint8_t addr, const loraiot_Data& data);
+  DeviceTableResult storeData(uint8_t addr, const loraiot_Data& data);
 
   // ---- Liveness (called by PingTask, Application) ----
 

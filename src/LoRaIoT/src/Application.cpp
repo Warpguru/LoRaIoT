@@ -444,16 +444,34 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                    beacon.has_registry_rev ? beacon.registry_rev : 0,
                    crawlNeeded ? " (crawl scheduled)" : "");
           if (crawlNeeded) {
-            describeCrawlerSchedule(frame.src);
+            Log_info("PING from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
           }
         } else {
           Log_warn("PING from 0x%02X seq=%u - Beacon decode failed: %s",
                    frame.src, frame.seq, PB_GET_ERROR(&pbIn));
         }
       } else {
-        // LOCAL: a REMOTE keep-alive PING. The markSeen() above already refreshed the
-        // liveness of a known REMOTE; no registry metadata is taken from it.
-        Log_debug("PING from 0x%02X seq=%u (REMOTE keep-alive)", frame.src, frame.seq);
+        // LOCAL: a REMOTE PING. The markSeen() above already refreshed the liveness of a
+        // known REMOTE. A PING with registry_rev (sent right after REMOTE registered a new
+        // device or metric) must schedule a Describe crawl. Only a peer LOCAL already knows
+        // (created by its BEACON) is updated, so a stray PING cannot occupy a peer slot.
+        loraiot_Beacon beacon = loraiot_Beacon_init_zero;
+        pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
+        if (pb_decode(&pbIn, loraiot_Beacon_fields, &beacon)) {
+          uint32_t knownRev = 0;
+          if (beacon.has_registry_rev && SensorRegistry.getPendingRev(frame.src, knownRev)) {
+            const bool crawlNeeded = SensorRegistry.updatePeerMeta(
+                frame.src, beacon.boot_id, beacon.has_registry_rev, beacon.registry_rev);
+            Log_info("PING from 0x%02X boot_id=0x%08X registry_rev=%u%s",
+                     frame.src, beacon.boot_id, beacon.registry_rev,
+                     crawlNeeded ? " (crawl scheduled)" : "");
+          } else {
+            Log_debug("PING from 0x%02X seq=%u (REMOTE keep-alive)", frame.src, frame.seq);
+          }
+        } else {
+          Log_warn("PING from 0x%02X seq=%u - Beacon decode failed: %s",
+                   frame.src, frame.seq, PB_GET_ERROR(&pbIn));
+        }
       }
       // Both tiers answer every PING so the sender's keep-alive (PingTask) gets its ACK.
       sendPingAck(frame);
@@ -565,7 +583,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                    beacon.has_registry_rev ? beacon.registry_rev : 0,
                    crawlNeeded ? " (crawl scheduled)" : "");
           if (crawlNeeded) {
-            describeCrawlerSchedule(frame.src);
+            Log_info("BEACON from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
           }
           // Answer the BEACON with a PING so the REMOTE learns it was discovered and
           // drops to the slow beacon rate. Queued, not sent here, because waiting for
@@ -588,16 +606,18 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                  frame.src, frame.seq, PB_GET_ERROR(&pbIn));
         break;
       }
-      if (cachedRegistry().storeData(frame.src, data)) {
+      const DeviceTableResult stored = cachedRegistry().storeData(frame.src, data);
+      if (stored == DeviceTableResult::OK) {
         Log_info("DATA from 0x%02X device=%u values=%u stored",
                  frame.src, data.device, data.values_count);
       } else {
-        // Device schema not yet known - crawl immediately so the next DATA
-        // frame is not dropped too. The current frame's values are lost but
-        // the window shrinks from the BEACON interval to one crawl round-trip.
-        describeCrawlerSchedule(frame.src);
-        Log_info("DATA from 0x%02X device=%u: schema unknown, Describe crawl scheduled",
-                 frame.src, data.device);
+        // Device or metric schema not yet known - schedule a crawl immediately. Values of
+        // unknown devices are lost (known metrics of a known device were still applied);
+        // the owner pushes all current values again when the crawl completes.
+        cachedRegistry().requestCrawl(frame.src);
+        Log_info("DATA from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
+                 frame.src, data.device,
+                 stored == DeviceTableResult::UNKNOWN_METRIC ? "metric" : "device");
       }
       break;
     }
@@ -611,15 +631,18 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         sendDataAck(frame, loraiot_Status_STATUS_BAD_REQUEST);
         break;
       }
-      if (cachedRegistry().storeData(frame.src, data)) {
+      const DeviceTableResult stored = cachedRegistry().storeData(frame.src, data);
+      if (stored == DeviceTableResult::OK) {
         Log_info("DATA_ACK from 0x%02X device=%u values=%u stored",
                  frame.src, data.device, data.values_count);
         sendDataAck(frame, loraiot_Status_STATUS_OK);
       } else {
-        // Device schema not yet known - crawl immediately and answer BAD_REQUEST
-        describeCrawlerSchedule(frame.src);
-        Log_info("DATA_ACK from 0x%02X device=%u: schema unknown, Describe crawl scheduled",
-                 frame.src, data.device);
+        // Device or metric schema not yet known - schedule a crawl immediately and answer
+        // BAD_REQUEST so the sender knows the schema must be described first.
+        cachedRegistry().requestCrawl(frame.src);
+        Log_info("DATA_ACK from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
+                 frame.src, data.device,
+                 stored == DeviceTableResult::UNKNOWN_METRIC ? "metric" : "device");
         sendDataAck(frame, loraiot_Status_STATUS_BAD_REQUEST);
       }
       break;

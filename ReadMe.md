@@ -250,7 +250,7 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
    - The receiving node replies with a framed `ACK`; the sender logs the RTT.
 5. **Sensor data push (REMOTE):**
    - An IoT sensor on REMOTE (via its SoftAP in `AP` / `AP_STA` mode, or its LAN address in `STA` mode) POSTs readings to `POST /api/lora/sensor/data`. REMOTE stores them in `SensorRegistry` and increments `registry_rev` when the schema changes.
-   - The next BEACON carries the new `registry_rev`. LOCAL fetches the updated definitions from REMOTE over LoRa (definition crawl, [`REQUEST(Describe)`](doc/LoRaProtocol.md)), then REMOTE's `PushTask` pushes the current values as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)).
+   - When `registry_rev` changes, REMOTE immediately sends a PING to LOCAL carrying the new revision. LOCAL fetches the updated definitions from REMOTE over LoRa (definition crawl, [`REQUEST(Describe)`](doc/LoRaProtocol.md)), then REMOTE's `PushTask` pushes the current values as confirmed data frames ([`DATA_ACK`](doc/LoRaProtocol.md)).
    - A LAN client reads the values from LOCAL via `GET /api/lora/nodes/sensor?addr=2`.
 6. **Control setpoint push (LOCAL) and retrieval (REMOTE):**
    - A LAN controller POSTs a setpoint to LOCAL via `POST /api/lora/nodes/control?addr=2`. LOCAL stores it in `ControlRegistry` and immediately pushes it to REMOTE as a confirmed data frame ([`DATA_ACK`](doc/LoRaProtocol.md)). If REMOTE acknowledges, LOCAL returns `200 {"delivery":"ok"}`.

@@ -726,7 +726,7 @@ Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful fo
 
 ## POST /api/lora/sensor/data
 
-REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
+REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes and immediately sends a PING to LOCAL carrying the new revision, so LOCAL starts the Describe crawl before the DATA frame even arrives. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
 
 **Request body:** `application/json`
 
@@ -763,6 +763,9 @@ ignored. Nothing is sent while no client is connected.
 `GET /api/lora/nodes/control` on REMOTE (without `boot_id` and `registry_rev`), and is `[]` when
 no peer is known.
 
+`crawl_pending` is `true` while a Describe crawl is in progress for that peer (schema is being
+fetched). The dashboard spider icon is lit while any node has `crawl_pending: true`.
+
 ```json
 {
   "uptime_s": 312,
@@ -770,7 +773,7 @@ no peer is known.
   "lora": {"tx_frames": 20, "rx_frames": 23, "crc_errors": 0, "ack_loss": 0},
   "nodes": [
     {
-      "addr": 3, "online": true, "peer_last_seen_ms_ago": 53000,
+      "addr": 3, "online": true, "peer_last_seen_ms_ago": 53000, "crawl_pending": false,
       "devices": [
         {
           "device": 1, "name": "Lenovo W510", "has_data": true, "age_ms": 247000, "alert": false,

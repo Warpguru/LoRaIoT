@@ -90,15 +90,6 @@ static uint16_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
 
 // ---- Public API -------------------------------------------------------------
 
-void describeCrawlerSchedule(uint8_t addr) {
-  // updatePeerMeta() on the cached registry already set crawlPending before this is called.
-  // describeCrawlerLoop() picks it up on the next applicationLoop tick.
-  // This function must NOT touch any mutex: it is called from loraTransportTask
-  // (the receive callback), and crawlerMutex is owned by describeCrawlerLoop()
-  // which runs on the applicationLoop task - taking it here would deadlock.
-  Log_info("DescribeCrawler: crawl scheduled for node 0x%02X", addr);
-}
-
 void describeCrawlerLoop() {
   // Lazy-init mutex on first call (called from applicationLoop, single task)
   if (crawlerMutex == nullptr) {

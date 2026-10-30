@@ -9,19 +9,21 @@
  *
  * Runs on both nodes; on each node it crawls the peer's owned registry via cachedRegistry().
  *
- * Triggered whenever updatePeerMeta() on the cached registry returns true (boot_id
- * changed or registry_rev advanced on a peer). Iterates Describe
- * requests (device indices 1, 2, ...) until it receives STATUS_BAD_REQUEST,
- * which signals the end of the device list. Device index 0 is reserved for
- * the node itself and always returns BAD_REQUEST, so crawling starts
- * at DESCRIBE_FIRST_DEVICE_IDX (1). Stores each Device definition in
- * the cached registry and calls markCrawlComplete() when finished.
+ * Triggered whenever cachedRegistry().requestCrawl() sets crawlPending for a peer. This
+ * happens in three situations:
+ *   1. updatePeerMeta() detects a boot_id change or a registry_rev advance (BEACON/PING).
+ *   2. A DATA or DATA_ACK frame arrives for a device not yet in the cache (Application.cpp).
+ *   3. A REST ?refresh=true request is handled (RestService.cpp).
+ *
+ * Iterates Describe requests (device indices 1, 2, ...) until it receives STATUS_BAD_REQUEST,
+ * which signals the end of the device list. Device index 0 is reserved for the node itself
+ * and always returns BAD_REQUEST, so crawling starts at DESCRIBE_FIRST_DEVICE_IDX (1).
+ * Stores each Device definition in the cached registry and calls markCrawlComplete() when done.
  *
  * Integration points (called from Application.cpp):
  *   - describeCrawlerLoop() must be called from applicationLoop() on every tick.
  *   - describeCrawlerOnResponse() must be called from the LoRa receive callback
  *     when a RESPONSE frame carrying a Device definition or BAD_REQUEST is decoded.
- *   - describeCrawlerSchedule() may be called to force a crawl for a node.
  *
  * Threading: describeCrawlerLoop() runs on the Arduino main task (Core 1 on
  * dual-core). describeCrawlerOnResponse() is called from the loraTransportTask
@@ -38,12 +40,6 @@ static constexpr uint8_t DESCRIBE_MAX_RETRIES = 3;
 // Device index 0 is reserved for the REMOTE node itself (always BAD_REQUEST);
 // SoftAP-registered devices are assigned indices starting at 1.
 static constexpr uint8_t DESCRIBE_FIRST_DEVICE_IDX = 1;
-
-/**
- * Schedule a Describe crawl for the given node address.
- * Safe to call from any task; the crawlPending flag is set by the cached registry.
- */
-void describeCrawlerSchedule(uint8_t addr);
 
 /**
  * Drive the Describe crawl state machine. Call from applicationLoop() on both nodes.

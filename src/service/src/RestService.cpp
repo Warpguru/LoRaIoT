@@ -518,7 +518,6 @@ void RestService::registerRoutes() {
         request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node not found\"}");
         return;
       }
-      describeCrawlerSchedule(addr);
       char body[ERROR_BODY_SIZE];
       snprintf(body, sizeof(body), "{\"status\":\"crawl_scheduled\",\"addr\":%u}", (unsigned)addr);
       request->send(HTTP_STATUS_ACCEPTED, "application/json", body);
@@ -659,7 +658,6 @@ void RestService::registerRoutes() {
           request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"node not found\"}");
           return;
         }
-        describeCrawlerSchedule(LORA_DEFAULT_ADDR_LOCAL);
         request->send(HTTP_STATUS_ACCEPTED, "application/json", "{\"status\":\"crawl_scheduled\"}");
         return;
       }
@@ -1198,6 +1196,9 @@ void RestService::registerRoutes() {
       JsonDocument respDoc;
       JsonArray accepted = respDoc["accepted"].to<JsonArray>();
       JsonArray rejected = respDoc["rejected"].to<JsonArray>();
+      // Snapshot the registry revision before processing metrics so we can
+      // detect schema changes and notify LOCAL before pushing data over LoRa.
+      const uint32_t revBefore = SensorRegistry.getRegistryRev(LORA_DEFAULT_ADDR_LOCAL);
       // Track unique device indices that had at least one accepted metric so we
       // can push each one to LOCAL over LoRa after the loop.
       uint32_t pushedDevIdx[DEVICE_TABLE_MAX_DEVICES];
@@ -1265,7 +1266,19 @@ void RestService::registerRoutes() {
           rejected.add(metricName);
         }
       }
+      // If the schema changed, notify LOCAL via an immediate PING carrying the new
+      // registry_rev. This causes LOCAL's SensorRegistry.updatePeerMeta() to set
+      // crawlPending, so the DescribeCrawler starts before the DATA frames arrive.
+      const uint32_t revAfter = SensorRegistry.getRegistryRev(LORA_DEFAULT_ADDR_LOCAL);
+      if (revAfter != revBefore) {
+        pingTaskNotifyControlChange(LORA_DEFAULT_ADDR_LOCAL);
+        Log_info("POST /api/lora/sensor/data: registry_rev %u -> %u, notifying LOCAL for crawl",
+                 revBefore, revAfter);
+      }
+
       // Fire-and-forget LoRa push for each unique accepted device.
+      // The PING above (when rev changed) is enqueued first; PingTask sends it before
+      // this DATA reaches LOCAL, giving the crawler a head start on the schema.
       for (uint8_t i = 0; i < pushedCount; i++) {
         loraiot_Data loraData = loraiot_Data_init_zero;
         if (SensorRegistry.toProtoData(LORA_DEFAULT_ADDR_LOCAL, pushedDevIdx[i], loraData)) {
