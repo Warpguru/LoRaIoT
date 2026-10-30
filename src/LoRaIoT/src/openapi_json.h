@@ -793,7 +793,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "name":  { "type": "string" },
           "unit":  { "type": "string" },
           "scale": { "type": "integer" },
-          "value": { "type": "integer", "nullable": true, "description": "null when has_data is false for this device" }
+          "value": { "oneOf": [{ "type": "integer" }, { "type": "string" }], "nullable": true, "description": "Numeric measurement, string text (max 12 bytes UTF-8), or null when no value stored" }
         }
       },
       "LoRaStatsResponse": {
@@ -846,19 +846,19 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "device": { "type": "string", "maxLength": 12, "description": "Device name, e.g. SensorA" },
           "metrics": {
             "type": "object",
-            "description": "Map of metric name to measurement. Each value is an object with value (required), unit (optional), scale (optional).",
+            "description": "Map of metric name to measurement. Each value is an object with value (required, number or string up to 12 bytes UTF-8), unit (optional, max 5 chars), scale (optional, default 1, ignored for strings).",
             "additionalProperties": {
               "type": "object",
               "required": ["value"],
               "properties": {
-                "value": { "type": "integer", "description": "Scaled integer measurement" },
+                "value": { "oneOf": [{ "type": "integer" }, { "type": "string" }, { "type": "boolean" }], "description": "Numeric value (scaled integer), string (max 12 bytes UTF-8; JSON type is discriminator), or boolean (stored as text 'true'/'false'). Strings > 12 bytes or invalid types cause rejection." },
                 "unit":  { "type": "string",  "maxLength": 5 },
-                "scale": { "type": "integer", "description": "Divisor for real value reconstruction. Default 1." }
+                "scale": { "type": "integer", "description": "Divisor for real value reconstruction (numbers only; ignored for strings). Default 1." }
               }
             }
           }
         },
-        "example": { "device": "SensorA", "metrics": { "Voltage": { "value": 335, "unit": "V", "scale": 100 }, "Temp": { "value": 215, "unit": "C", "scale": 10 } } }
+        "example": { "device": "SensorA", "metrics": { "Voltage": { "value": 335, "unit": "V", "scale": 100 }, "Date": { "value": "30.10.2026" }, "Enabled": { "value": true } } }
       },
       "SensorDataResponse": {
         "type": "object",

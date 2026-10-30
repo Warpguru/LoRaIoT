@@ -592,8 +592,14 @@ LOCAL only. Registers control devices and metrics in `ControlRegistry[addr]`, st
 **Request body:** `application/json`
 
 ```json
-{"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
+{"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100},"Mode":{"value":"auto"},"Active":{"value":true}}}
 ```
+
+Value types:
+- **Numeric:** integer or float (e.g. `333`), with optional `scale` (divisor, default 1).
+- **String:** opaque text up to 12 bytes UTF-8 (e.g. `"auto"`, `"enabled"`, `"30.10.2026"`). JSON type is the discriminator (even if digits only, a JSON string is treated as text). `scale` is ignored for strings.
+- **Boolean:** JSON `true`/`false` is stored as text `"true"`/`"false"`.
+- Strings longer than 12 bytes, `null`, arrays, or objects are rejected (listed in `rejected`, HTTP 400).
 
 | Status | Meaning |
 |---|---|
@@ -725,8 +731,14 @@ REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assign
 **Request body:** `application/json`
 
 ```json
-{"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100},"Temp":{"value":215,"unit":"C","scale":10}}}
+{"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100},"Date":{"value":"30.10.2026"},"Enabled":{"value":true}}}
 ```
+
+Value types:
+- **Numeric:** integer or float (e.g. `335`), with optional `scale` (divisor, default 1).
+- **String:** opaque text up to 12 bytes UTF-8 (e.g. `"30.10.2026"`, `"10:45:00"`, `"enabled"`). JSON type is the discriminator (even if digits only, a JSON string is treated as text). `scale` is ignored for strings.
+- **Boolean:** JSON `true`/`false` is stored as text `"true"`/`"false"`.
+- Strings longer than 12 bytes, `null`, arrays, or objects are rejected (listed in `rejected`, HTTP 400).
 
 | Status | Meaning |
 |---|---|

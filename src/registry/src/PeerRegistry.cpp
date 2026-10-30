@@ -53,6 +53,21 @@ void PeerRegistry::storeValue(uint8_t addr, uint32_t deviceIdx, uint32_t metricI
   xSemaphoreGive(mutex);
 }
 
+void PeerRegistry::storeTextValue(uint8_t addr, uint32_t deviceIdx, uint32_t metricId,
+                                  const char* text) {
+  if (mutex == nullptr || text == nullptr) {
+    return;
+  }
+  xSemaphoreTake(mutex, portMAX_DELAY);
+
+  int8_t idx = findPeer(addr);
+  if (idx >= 0) {
+    peers[idx].table.storeTextValue(deviceIdx, metricId, text, millis());
+  }
+
+  xSemaphoreGive(mutex);
+}
+
 uint32_t PeerRegistry::getRegistryRev(uint8_t addr) const {
   if (mutex == nullptr) {
     return 0;

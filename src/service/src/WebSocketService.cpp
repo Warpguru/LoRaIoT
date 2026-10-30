@@ -96,7 +96,11 @@ static void appendDeviceJson(JsonObject dobj, const DeviceSlot& slot) {
     mo["unit"]  = slot.metrics[m].unit;   // pointer - slot must stay alive
     mo["scale"] = slot.metrics[m].scale;
     if (slot.metrics[m].hasValue) {
-      mo["value"] = slot.metrics[m].value;
+      if (slot.metrics[m].isText) {
+        mo["value"] = slot.metrics[m].text;
+      } else {
+        mo["value"] = slot.metrics[m].value;
+      }
     } else {
       mo["value"] = nullptr;
     }

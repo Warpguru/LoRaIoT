@@ -117,7 +117,18 @@ PING from LOCAL (`0x01`) to REMOTE (`0x02`), SEQ 1, payload `Beacon{boot_id = 0x
 Full UART write: `00 02 17 AA 55 01 01 01 02 00 01 06 08 F8 AC D1 91 01 72 0D`.
 (The CRC value was computed with the reference implementation above.)
 
-### 4.3 Receiver rules
+### 4.3 Role of the VER byte
+
+The `VER` byte (`0x01`) is part of the fixed binary frame header, checked by the framing layer
+before any protobuf decoding. It guards breaking changes of binary header layout, CRC scope/algorithm,
+or frame `TYPE` meaning. Protobuf field-number evolution handles compatible payload changes (such
+as adding new fields or `oneof` branches); `VER` is intentionally not inside the proto3 payload
+because the receiver must know the binary frame layout before it can decode the payload.
+Compatible payload changes (such as adding the `text` field to `Measurement` with field number 2
+retained for numeric values) are wire-compatible (older receivers ignore unknown protobuf fields)
+and therefore do not bump `VER` (which remains `0x01`).
+
+### 4.4 Receiver rules
 
 Drop silently (log at DEBUG, count in the error counter) on: bad CRC, unknown VER, unknown
 TYPE, DST that is neither the own address nor `0xFF`. If the SYNC bytes are missing the
@@ -290,8 +301,11 @@ message Device {
 // with the same id, found through Data.device.
 message Measurement {
   uint32 metric_id = 1;  // Which Metric this is, e.g. 1 = "Voltage" of that device
-  sint32 value = 2;      // The scaled integer. sint32 keeps negative numbers short
+  oneof val {
+    sint32 num = 2;      // The scaled integer. sint32 keeps negative numbers short
                          // (a plain int32 would need 10 bytes for -5)
+    string text = 3;     // Opaque text value (max 12 bytes UTF-8). Scale is ignored.
+  }
 }
 
 // A set of measurements from ONE device. Payload of DATA and DATA_ACK, and the
@@ -402,16 +416,20 @@ Rules:
   `device_<n>/metric_<id>` and triggers a `Describe` (§12).
 - A device that has no value yet answers `Read` with `STATUS_OK` and an empty `values` list.
 - The REMOTE rejects a registration (a new device or metric from the SoftAP REST API, answered with HTTP 400)
-  if the resulting encoded `Device` plus the `Response` overhead would exceed 186 B. A `Describe` answer
-  therefore always fits one frame. The same applies to `Echo.text` (175 chars) and `Data.values` (16 values).
+  if the resulting encoded `Device` plus the `Response` overhead would exceed 186 B, or if worst-case `Data` / `Response(Data)`
+  would exceed 186 B. A `Describe` or `Read` answer and a `Data` push therefore always fit one frame.
+- Text values are opaque strings of at most 12 bytes UTF-8 (`loraiot.Measurement.text max_size:13` in `.options`).
+  Scale is ignored for text values (scale applies to `num` only). A string longer than 12 bytes is rejected
+  on ingestion (never truncated, so multi-byte UTF-8 sequences are never cut). Empty strings are allowed.
 - The nanopb `.options` file (`src/lora/proto/loraiot.options`) bounds all strings and repeated fields
-  (`Metric.name` 12, `Metric.unit` 5, `Device.name` 12, `Device.metrics` 8, `Data.values` 16, `Echo.text` 175)
-  so no heap is used. Measured encoded sizes against the 186 B payload limit: `Data` with 16 worst-case
+  (`Metric.name` 12, `Metric.unit` 5, `Device.name` 12, `Device.metrics` 8, `Measurement.text` 12, `Data.values` 16, `Echo.text` 175)
+  so no heap is used. Measured encoded sizes against the 186 B payload limit: `Data` with 16 worst-case numeric
   values 171 B (fits); `Response(Echo)` with 175 characters 185 B (fits); `Response(Device)` with 4
-  maximum-length metrics 138 B (fits); `Device` with 8 maximum-length metrics 241 B (does NOT fit). At most 5
-  maximum-length metrics fit, so the schema bound alone does not guarantee that a `Device` fits and the
-  registration check above is mandatory. How to regenerate the C sources and repeat the measurements:
-  `doc/NanopbGeneration.md`.
+  maximum-length metrics 138 B (fits); `Device` with 8 maximum-length metrics 241 B (does NOT fit); `Data` with 8 worst-case
+  12-byte text metrics 165 B (fits); `Response(Data)` with 8 worst-case 12-byte text metrics 165 B (fits). At most 5
+  maximum-length metrics fit in `Device` and all 8 full-width text metrics fit in `Response(Data)`, so the schema bound alone
+  does not guarantee that all Device frames fit and the registration check in `registerMetric()` is mandatory. How to regenerate
+  the C sources and repeat the measurements: `doc/NanopbGeneration.md`.
 - New message fields use new numbers; existing numbers are never reused.
 
 ---
@@ -427,7 +445,9 @@ Suggested but not enforced:
   It is case-sensitive, so `Voltage` and `voltage` are two different metrics.
 - Use SI base units with a `scale` that keeps the value inside `sint32` (about +/-2.1e9). Example:
   230.4 W is `value=2304, scale=10`. For quantities that would overflow (uptime in ms), choose a coarser unit.
-- A boolean is `0` or `1` with `scale = 0` (meaning 1).
+- Values can be numeric (scaled integers) or opaque text strings (up to 12 bytes UTF-8).
+- For text values (e.g. "30.10.2026", "enabled", "auto"), scale is ignored (no division).
+- Booleans sent over REST as JSON `true`/`false` are stored as text `"true"`/`"false"`.
 
 ---
 

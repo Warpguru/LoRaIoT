@@ -40,7 +40,12 @@ typedef struct _loraiot_Device {
  with the same id, found through Data.device. */
 typedef struct _loraiot_Measurement {
     uint32_t metric_id; /* Which Metric this is, e.g. 1 = "Voltage" of that device */
-    int32_t value; /* The scaled integer. sint32 keeps negative numbers short */
+    pb_size_t which_val;
+    union {
+        int32_t num; /* The scaled integer. sint32 keeps negative numbers short */
+        /* (a plain int32 would need 10 bytes for -5) */
+        char text[13]; /* Opaque text value (max 12 bytes UTF-8). Scale is ignored. */
+    } val;
 } loraiot_Measurement;
 
 /* A set of measurements from ONE device. Payload of DATA and DATA_ACK, and the
@@ -89,7 +94,7 @@ typedef struct _loraiot_Read {
 
 /* "Tell me what this device is and what it reports." The answer is a Device. */
 typedef struct _loraiot_Describe {
-    uint32_t device; /* Device index to describe. LOCAL asks 0, 1, 2, ... until it gets */
+    uint32_t device; /* Device index to describe. The asker starts at 1 and goes 1, 2, ... until */
 } loraiot_Describe;
 
 /* "Send my text back". Used for link testing and for measuring the payload limit. */
@@ -147,7 +152,7 @@ extern "C" {
 /* Initializer values for message structs */
 #define loraiot_Metric_init_default              {0, "", "", 0}
 #define loraiot_Device_init_default              {0, "", 0, {loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default, loraiot_Metric_init_default}}
-#define loraiot_Measurement_init_default         {0, 0}
+#define loraiot_Measurement_init_default         {0, 0, {0}}
 #define loraiot_Data_init_default                {0, 0, {loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default, loraiot_Measurement_init_default}, 0, 0}
 #define loraiot_Ack_init_default                 {0, 0, _loraiot_Status_MIN}
 #define loraiot_Beacon_init_default              {0, false, 0, false, 0, false, 0}
@@ -158,7 +163,7 @@ extern "C" {
 #define loraiot_Response_init_default            {0, _loraiot_Status_MIN, 0, {loraiot_Data_init_default}}
 #define loraiot_Metric_init_zero                 {0, "", "", 0}
 #define loraiot_Device_init_zero                 {0, "", 0, {loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero, loraiot_Metric_init_zero}}
-#define loraiot_Measurement_init_zero            {0, 0}
+#define loraiot_Measurement_init_zero            {0, 0, {0}}
 #define loraiot_Data_init_zero                   {0, 0, {loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero, loraiot_Measurement_init_zero}, 0, 0}
 #define loraiot_Ack_init_zero                    {0, 0, _loraiot_Status_MIN}
 #define loraiot_Beacon_init_zero                 {0, false, 0, false, 0, false, 0}
@@ -177,7 +182,8 @@ extern "C" {
 #define loraiot_Device_name_tag                  2
 #define loraiot_Device_metrics_tag               3
 #define loraiot_Measurement_metric_id_tag        1
-#define loraiot_Measurement_value_tag            2
+#define loraiot_Measurement_num_tag              2
+#define loraiot_Measurement_text_tag             3
 #define loraiot_Data_device_tag                  1
 #define loraiot_Data_values_tag                  2
 #define loraiot_Data_age_ms_tag                  3
@@ -220,7 +226,8 @@ X(a, STATIC,   REPEATED, MESSAGE,  metrics,           3)
 
 #define loraiot_Measurement_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   metric_id,         1) \
-X(a, STATIC,   SINGULAR, SINT32,   value,             2)
+X(a, STATIC,   ONEOF,    SINT32,   (val,num,val.num),   2) \
+X(a, STATIC,   ONEOF,    STRING,   (val,text,val.text),   3)
 #define loraiot_Measurement_CALLBACK NULL
 #define loraiot_Measurement_DEFAULT NULL
 
@@ -314,15 +321,15 @@ extern const pb_msgdesc_t loraiot_Response_msg;
 #define LORAIOT_LORAIOT_PB_H_MAX_SIZE            loraiot_Response_size
 #define loraiot_Ack_size                         14
 #define loraiot_Beacon_size                      24
-#define loraiot_Data_size                        238
+#define loraiot_Data_size                        366
 #define loraiot_Describe_size                    6
 #define loraiot_Device_size                      300
 #define loraiot_Echo_size                        178
-#define loraiot_Measurement_size                 12
+#define loraiot_Measurement_size                 20
 #define loraiot_Metric_size                      33
 #define loraiot_Read_size                        6
 #define loraiot_Request_size                     181
-#define loraiot_Response_size                    311
+#define loraiot_Response_size                    377
 
 #ifdef __cplusplus
 } /* extern "C" */

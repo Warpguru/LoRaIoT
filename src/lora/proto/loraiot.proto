@@ -48,8 +48,11 @@ message Device {
 // with the same id, found through Data.device.
 message Measurement {
   uint32 metric_id = 1;  // Which Metric this is, e.g. 1 = "Voltage" of that device
-  sint32 value = 2;      // The scaled integer. sint32 keeps negative numbers short
+  oneof val {
+    sint32 num = 2;      // The scaled integer. sint32 keeps negative numbers short
                          // (a plain int32 would need 10 bytes for -5)
+    string text = 3;     // Opaque text value (max 12 bytes UTF-8). Scale is ignored.
+  }
 }
 
 // A set of measurements from ONE device. Payload of DATA and DATA_ACK, and the

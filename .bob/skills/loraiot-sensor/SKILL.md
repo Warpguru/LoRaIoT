@@ -1,12 +1,12 @@
 ---
 name: loraiot-sensor
 description: >-
-  Use when the user wants to verify that sensor data ingested on REMOTE is pushed
-  over LoRa to LOCAL and cached correctly - POSTs sensor data on REMOTE, verifies
-  REMOTE's own device view, checks LOCAL's cache, and inspects logs for the DATA_ACK
-  exchange.
+  Use when the user wants to verify that sensor data ingested on REMOTE is
+  pushed over LoRa to LOCAL and cached correctly - POSTs sensor data on REMOTE,
+  verifies REMOTE's own device view, checks LOCAL's cache, and inspects logs for
+  the DATA_ACK exchange.
 metadata:
-  disable-model-invocation: false
+  disable-model-invocation: true
 ---
 
 # LoRaIoT Sensor Push Verification

@@ -163,11 +163,18 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     }
 
     function formatValue(metric) {
-      if (metric.value === null || metric.value === undefined) {
+      if (!metric || metric.value === null || metric.value === undefined) {
         return '-';
       }
+      if (typeof metric.value !== 'number') {
+        return String(metric.value);
+      }
       var scale = metric.scale ? metric.scale : 1;
-      return (metric.value / scale).toFixed(SCALE_DECIMALS);
+      var scaled = metric.value / scale;
+      if (isNaN(scaled) || !isFinite(scaled)) {
+        return String(metric.value);
+      }
+      return scaled.toFixed(SCALE_DECIMALS);
     }
 
     /* ---- DOM builders (textContent only: node/device names come from the radio link) ---- */
@@ -192,7 +199,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         var tr = el('tr');
         tr.appendChild(el('td', 'name', metric.name));
         tr.appendChild(el('td', 'val', formatValue(metric) + (metric.unit ? ' ' + metric.unit : '')));
-        tr.appendChild(el('td', 'age', dev.has_data && metric.value !== null ? formatAge(dev.age_ms) : ''));
+        tr.appendChild(el('td', 'age', dev.has_data && metric.value !== null && metric.value !== undefined ? formatAge(dev.age_ms) : ''));
         table.appendChild(tr);
       }
       box.appendChild(table);

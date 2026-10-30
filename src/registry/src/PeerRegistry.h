@@ -72,11 +72,18 @@ class PeerRegistry {
                       uint32_t& outDeviceIdx, uint32_t& outMetricId);
 
   /**
-   * Store a measured value for an already-registered metric.
+   * Store a measured numeric value for an already-registered metric.
    * No-op if addr/deviceIdx/metricId are unknown.
    */
   void storeValue(uint8_t addr, uint32_t deviceIdx, uint32_t metricId,
                   int32_t scaledValue);
+
+  /**
+   * Store an opaque text value for an already-registered metric.
+   * No-op if addr/deviceIdx/metricId are unknown or text is null.
+   */
+  void storeTextValue(uint8_t addr, uint32_t deviceIdx, uint32_t metricId,
+                      const char* text);
 
   /**
    * Current registry_rev for peer addr.

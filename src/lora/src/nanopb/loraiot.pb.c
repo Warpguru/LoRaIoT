@@ -15,7 +15,7 @@ PB_BIND(loraiot_Device, loraiot_Device, 2)
 PB_BIND(loraiot_Measurement, loraiot_Measurement, AUTO)
 
 
-PB_BIND(loraiot_Data, loraiot_Data, AUTO)
+PB_BIND(loraiot_Data, loraiot_Data, 2)
 
 
 PB_BIND(loraiot_Ack, loraiot_Ack, AUTO)

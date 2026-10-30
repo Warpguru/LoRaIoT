@@ -41,6 +41,28 @@ static constexpr uint8_t DEVICE_TABLE_NAME_LEN = 13;
 // Maximum unit string length (matches loraiot proto: max 5 chars + NUL).
 static constexpr uint8_t DEVICE_TABLE_UNIT_LEN = 6;
 
+// Maximum text value length in bytes (excluding terminating NUL).
+// Matches Metric.name / Device.name (12 chars / 13 bytes). UTF-8 allowed;
+// strings over this limit are rejected on ingestion, never truncated.
+static constexpr uint8_t DEVICE_TABLE_TEXT_MAX_LEN = 12;
+
+// Maximum text value buffer size in bytes (including terminating NUL).
+// Always TEXT_MAX_LEN + 1.
+static constexpr uint8_t DEVICE_TABLE_TEXT_BUF_SIZE = DEVICE_TABLE_TEXT_MAX_LEN + 1;
+
+static_assert(DEVICE_TABLE_TEXT_BUF_SIZE == sizeof(loraiot_Measurement::val.text),
+              "DEVICE_TABLE_TEXT_BUF_SIZE must match sizeof(loraiot_Measurement::val.text)");
+
+// Worst-case nanopb encoded sizes used in registerMetric() and Diagnostics.cpp.
+// See DeviceTable.cpp for the full derivation in the comment block above these constants.
+
+// Response wrapper (11B) + Data fixed fields (10B) = 21B total overhead before measurements.
+static constexpr size_t PB_DATA_FIXED_OVERHEAD = 21;
+
+// Worst-case encoded size of one Measurement wrapped in its field tag+length:
+// tag(1) + len(1) + metric_id(tag 1 + varint 1) + text(tag 1 + len 1 + 12 bytes) = 18B.
+static constexpr size_t PB_MEASUREMENT_ENCODED_MAX_SIZE = 18;
+
 /**
  * Result codes returned by cache functions.
  */
@@ -58,9 +80,13 @@ struct MetricSlot {
   char     name[DEVICE_TABLE_NAME_LEN];  ///< Human-readable metric name, e.g. "Voltage".
   char     unit[DEVICE_TABLE_UNIT_LEN];  ///< Unit string, e.g. "V". May be empty string.
   uint32_t scale;                         ///< Divisor for real-value reconstruction: real = value / scale (0 treated as 1).
-  int32_t  value;                         ///< Most recent scaled integer value received.
+  union {
+    int32_t value;                        ///< Most recent scaled integer value received (when !isText).
+    char    text[DEVICE_TABLE_TEXT_BUF_SIZE]; ///< Most recent text value received (when isText, NUL-terminated).
+  };
   uint32_t valueMs;                       ///< millis() when value was last stored.
   bool     hasValue;                      ///< True once at least one value has been stored.
+  bool     isText;                        ///< True if stored value is text, false if numeric.
 };
 
 /**
@@ -144,10 +170,16 @@ class DeviceTable {
   // ---- Common functions ------------------------------------------------------
 
   /**
-   * Store a measured value for an already-registered metric.
-   * No-op if deviceIdx / metricId are unknown.
+   * Store a measured numeric value for an already-registered metric.
+   * Sets isText to false. No-op if deviceIdx / metricId are unknown.
    */
   void storeValue(uint32_t deviceIdx, uint32_t metricId, int32_t scaledValue, uint32_t nowMs);
+
+  /**
+   * Store an opaque text value for an already-registered metric.
+   * Sets isText to true. No-op if deviceIdx / metricId are unknown or textValue is null.
+   */
+  void storeTextValue(uint32_t deviceIdx, uint32_t metricId, const char* textValue, uint32_t nowMs);
 
   /**
    * Fill a loraiot_Device proto struct from the stored definition.
@@ -207,4 +239,11 @@ class DeviceTable {
                                           const char* extraMetricName,
                                           const char* extraUnit,
                                           uint32_t extraScale);
+
+  /**
+   * Estimate the worst-case nanopb-encoded byte size of a loraiot_Data / Response(Data)
+   * for a device slot plus one hypothetical new metric with 12-byte text.
+   * Used by registerMetric() to guarantee a DATA push never overflows LORA_MAX_PAYLOAD_LEN.
+   */
+  static size_t estimateEncodedDataSize(const DeviceSlot& dev);
 };

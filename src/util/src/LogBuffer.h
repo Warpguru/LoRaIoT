@@ -1,5 +1,10 @@
 #pragma once
 
+/* On PC builds, pc_shim.h (force-included via -include) defines
+ * LOGBUFFER_H_INCLUDED and provides all Log_* stubs before this header
+ * is reached. Skip the Arduino-dependent body in that case. */
+#ifndef LOGBUFFER_H_INCLUDED
+
 #include <Arduino.h>
 
 /**
@@ -200,3 +205,5 @@ extern LogBufferClass LogBuffer;
 #define Log_info(fmt, ...) LogBuffer.logInfo(__FILE__, __LINE__, fmt, ##__VA_ARGS__)    // NOLINT
 #define Log_debug(fmt, ...) LogBuffer.logDebug(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
 #define Log_trace(fmt, ...) LogBuffer.logTrace(__FILE__, __LINE__, fmt, ##__VA_ARGS__)  // NOLINT
+
+#endif /* LOGBUFFER_H_INCLUDED */

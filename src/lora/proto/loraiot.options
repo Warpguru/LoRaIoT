@@ -1,9 +1,64 @@
 # nanopb size limits for loraiot.proto (no heap use).
 # String max_size includes the terminating NUL, so it is the character limit + 1.
 # Limits are defined in doc/LoRaProtocol.md section 10.
-loraiot.Metric.name      max_size:13
-loraiot.Metric.unit      max_size:6
-loraiot.Device.name      max_size:13
-loraiot.Device.metrics   max_count:8
-loraiot.Data.values      max_count:16
-loraiot.Echo.text        max_size:176
+
+# Metric.name: human-readable metric key, e.g. "Voltage", "CPU Temp.", "Status".
+# 12 characters max (ASCII or UTF-8). max_size:13 reserves the extra byte for NUL.
+# Examples that fit:  "Voltage", "Current", "CPU Temp.", "Humidity", "Status"
+# Does NOT fit:       "CPU Frequency" (13 chars), "Battery Level" (13 chars)
+loraiot.Metric.name       max_size:13
+
+# Metric.unit: unit string shown next to the value, e.g. "V", "mA", "degC".
+# 5 characters max. max_size:6 reserves the extra byte for NUL.
+# Examples that fit:  "V", "mA", "degC", "hPa", "rpm", "%RH"
+# Does NOT fit:       "km/h" (4 chars, fits), "mg/dL" (5 chars, fits),
+#                     "kWh/m2" (6 chars, over)
+loraiot.Metric.unit       max_size:6
+
+# Device.name: human-readable device label, e.g. "Sensor A", "Lenovo W510".
+# 12 characters max (ASCII or UTF-8). max_size:13 reserves the extra byte for NUL.
+# Same limit as Metric.name.
+# Examples that fit:  "Sensor A", "Lenovo W510", "Weather Box"
+# Does NOT fit:       "Temperature Hub" (15 chars), "Living Room CO2" (15 chars)
+loraiot.Device.name       max_size:13
+
+# Device.metrics: at most 8 metric definitions per device.
+# The REMOTE enforces this at registration time (registerMetric() in DeviceTable.cpp).
+# Note: not all 8 metrics may fit in a single Describe/Response(Device) frame at
+# maximum name/unit length - registerMetric() checks the encoded Device size too.
+loraiot.Device.metrics    max_count:8
+
+# Measurement.text: 12 bytes max (UTF-8, not characters), matching Metric.name and Device.name.
+# max_size:13 includes the terminating NUL; the usable payload is 12 bytes.
+# The limit is in BYTES. Over-long strings are rejected, never truncated, so
+# multi-byte UTF-8 sequences are never cut in the middle.
+#
+# Fits within 12 bytes (examples):
+#   "on", "off", "true", "false", "enabled", "auto", "standby"  - short states
+#   "30.10.2026"  (10 bytes), "2026-10-30"  (10 bytes)  - date only
+#   "10:45:00"    (8 bytes)                              - time only
+#   "1730264700"  (10 bytes)                             - 10-digit Unix timestamp
+#   "Error 404"   (9 bytes)                              - short error string
+#
+# Does NOT fit (rejected on ingestion):
+#   "2026-10-30T10:45:00"  (19 bytes)  - ISO date-time: send date and time as two
+#                                        separate metrics instead (see examples above)
+#   "temporarily disabled" (20 bytes)  - too long
+#   6 x 3-byte UTF-8 char (18 bytes)   - over limit even though only 6 characters
+#
+# Worst-case DATA frame budget: 8 metrics x 12 bytes text gives 8 x 18 B per
+# Measurement wrapper + 10 B Data fixed + 11 B Response wrapper = 165 B, well within
+# the 186 B payload limit. See DeviceTable.cpp for the detailed breakdown and the
+# enforcing static_assert.
+loraiot.Measurement.text  max_size:13
+
+# Data.values: at most 16 measurements per DATA frame (number of Measurement entries,
+# not the text size). In practice a device rarely reports more than 8 metrics, so
+# this headroom is for devices with many independent sensors.
+loraiot.Data.values       max_count:16
+
+# Echo.text: link-test payload, returned reversed by the REMOTE.
+# 175 characters max. max_size:176 reserves the extra byte for NUL.
+# This is the largest payload that fits in a Response(Echo) frame (185 B < 186 B).
+# Examples that fit:  any string up to 175 ASCII characters
+loraiot.Echo.text         max_size:176

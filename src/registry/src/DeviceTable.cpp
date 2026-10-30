@@ -38,10 +38,14 @@
  *   toProtoData() derives age_ms from the oldest valueMs present, which matches
  *   what a Read response consumer expects ("how long ago were these measured?").
  *
- * SIZE NOTE
- *   sizeof(MetricSlot)  = 4+13+6+4+4+4+1 = 36 bytes  (+ 3 padding -> 40 B)
- *   sizeof(DeviceSlot)  = 4+13+1+8*40    = 338 bytes  (+ padding   -> 340 B)
- *   sizeof(DeviceTable) = 4*340+1+4       = about 1365 bytes per instance
+ * SIZE NOTE (DEVICE_TABLE_TEXT_BUF_SIZE = 13, i.e. 12-byte text limit)
+ *   MetricSlot layout:  id(4) + name[13] + unit[6] + padding(1) + scale(4)
+ *                       + union{value(4)/text[13]} padded to 16 + valueMs(4)
+ *                       + hasValue(1) + isText(1) + padding(2) = 52 B
+ *   sizeof(DeviceSlot)  = index(4) + name[13] + metricCount(1) + padding(2)
+ *                       + metrics[8*52](416) = 436 B
+ *   sizeof(DeviceTable) = devices[4*436](1744) + deviceCount(1) + padding(3)
+ *                       + rev(4) = about 1752 bytes per instance
  */
 
 // ---- nanopb size estimation constants --------------------------------------
@@ -60,9 +64,31 @@
 //     field 4 (scale uint32): tag 1B + varint max 5B = 6B
 //     metric body total:      33B
 //   per metric wrapper:       tag(1) + len(1) + body(33) = 35B
+//
+// loraiot_Data / Response(Data) wire layout (proto3) worst-case. The Response
+// path (REQUEST(Read) answer) is the tighter of the two, so it is the budget.
+// Device index is 1..DEVICE_TABLE_MAX_DEVICES (4) and metric_id is
+// 1..DEVICE_TABLE_MAX_METRICS (8), so both always encode as a 1 byte varint.
+//   Response wrapper overhead: request_seq (tag 1B + varint max 5B = 6B)
+//                              status (tag 1B + varint 1B = 2B)
+//                              result Data wrapper (tag 1B + len max 2B = 3B)
+//                              total Response wrapper = 11B
+//   Data fixed overhead:       field 1 (device uint32): tag 1B + varint 1B = 2B
+//                              field 3 (age_ms uint32): tag 1B + varint max 5B = 6B
+//                              field 4 (alert bool):    tag 1B + varint 1B = 2B
+//                              total Data fixed = 10B
+//   per Measurement (field 2): tag 1B + len 1B + Measurement body
+//     field 1 (metric_id):     tag 1B + varint 1B = 2B
+//     oneof val (text 12B):    tag 1B + len 1B + chars 12B = 14B (worst case vs sint32 6B)
+//     Measurement body total:  16B
+//   per Measurement wrapper:   tag(1) + len(1) + body(16) = 18B
+//   8 full-width text metrics: 11 + 10 + 8*18 = 165B <= 186B  (all 8 fit)
+//   Verify Data body length:   10 + 8*18 = 154B > 127B -> Data wrapper len uses 2 bytes (correct above)
 
 static constexpr size_t PB_DEVICE_FIXED_OVERHEAD  = 6 + 14;  // device field + name field
-static constexpr size_t PB_METRIC_ENCODED_MAX_SIZE = 35;      // worst-case per metric
+static constexpr size_t PB_METRIC_ENCODED_MAX_SIZE = 35;      // worst-case per metric (unchanged)
+// PB_DATA_FIXED_OVERHEAD and PB_MEASUREMENT_ENCODED_MAX_SIZE are declared in DeviceTable.h
+// so that Diagnostics.cpp can use them for the budget static_assert check too.
 
 // ---- Constructor -----------------------------------------------------------
 
@@ -103,10 +129,11 @@ bool DeviceTable::registerMetric(const char* deviceName, const char* metricName,
     DeviceSlot tmp;
     memset(&tmp, 0, sizeof(tmp));
     tmp.index = static_cast<uint32_t>(deviceCount + 1);
-    size_t estimatedSize = estimateEncodedDeviceSize(tmp, metricName, unit, scale);
-    if (estimatedSize > LORA_MAX_PAYLOAD_LEN) {
-      Log_warn("DeviceTable::registerMetric - payload limit exceeded (%u > %u), rejected metric='%s'",
-               (unsigned)estimatedSize, (unsigned)LORA_MAX_PAYLOAD_LEN, metricName);
+    size_t estimatedDevSize  = estimateEncodedDeviceSize(tmp, metricName, unit, scale);
+    size_t estimatedDataSize = estimateEncodedDataSize(tmp);
+    if (estimatedDevSize > LORA_MAX_PAYLOAD_LEN || estimatedDataSize > LORA_MAX_PAYLOAD_LEN) {
+      Log_warn("DeviceTable::registerMetric - payload limit exceeded (dev=%u, data=%u > %u), rejected metric='%s'",
+               (unsigned)estimatedDevSize, (unsigned)estimatedDataSize, (unsigned)LORA_MAX_PAYLOAD_LEN, metricName);
       return false;
     }
 
@@ -131,10 +158,11 @@ bool DeviceTable::registerMetric(const char* deviceName, const char* metricName,
     }
 
     // Payload size check: add the new metric on top of the existing ones.
-    size_t estimatedSize = estimateEncodedDeviceSize(dev, metricName, unit, scale);
-    if (estimatedSize > LORA_MAX_PAYLOAD_LEN) {
-      Log_warn("DeviceTable::registerMetric - payload limit exceeded (%u > %u), rejected metric='%s' on device='%s'",
-               (unsigned)estimatedSize, (unsigned)LORA_MAX_PAYLOAD_LEN, metricName, deviceName);
+    size_t estimatedDevSize  = estimateEncodedDeviceSize(dev, metricName, unit, scale);
+    size_t estimatedDataSize = estimateEncodedDataSize(dev);
+    if (estimatedDevSize > LORA_MAX_PAYLOAD_LEN || estimatedDataSize > LORA_MAX_PAYLOAD_LEN) {
+      Log_warn("DeviceTable::registerMetric - payload limit exceeded (dev=%u, data=%u > %u), rejected metric='%s' on device='%s'",
+               (unsigned)estimatedDevSize, (unsigned)estimatedDataSize, (unsigned)LORA_MAX_PAYLOAD_LEN, metricName, deviceName);
       return false;
     }
 
@@ -216,9 +244,15 @@ DeviceTableResult DeviceTable::applyDevice(const loraiot_Device& dev) {
       const MetricSlot& old = slot.metrics[oldIdx];
       if (old.scale == src.scale &&
           strncmp(old.unit, src.unit, DEVICE_TABLE_UNIT_LEN) == 0) {
-        merged[i].value    = old.value;
+        if (old.isText) {
+          strncpy(merged[i].text, old.text, DEVICE_TABLE_TEXT_BUF_SIZE - 1);
+          merged[i].text[DEVICE_TABLE_TEXT_BUF_SIZE - 1] = '\0';
+        } else {
+          merged[i].value = old.value;
+        }
         merged[i].valueMs  = old.valueMs;
         merged[i].hasValue = old.hasValue;
+        merged[i].isText   = old.isText;
       }
     }
   }
@@ -253,12 +287,21 @@ DeviceTableResult DeviceTable::applyData(const loraiot_Data& data, uint32_t nowM
       continue;
     }
     MetricSlot& ms = slot.metrics[mIdx];
-    ms.value = m.value;
-    // Convert the wire age_ms into a local absolute timestamp so that
-    // toProtoData() can reconstruct age_ms correctly at any future read time.
-    // Clamp to 0 to guard against age_ms > nowMs (e.g. clock wrap).
-    ms.valueMs  = (nowMs >= data.age_ms) ? (nowMs - data.age_ms) : 0;
-    ms.hasValue = true;
+    if (m.which_val == loraiot_Measurement_num_tag) {
+      ms.value    = m.val.num;
+      ms.isText   = false;
+      ms.valueMs  = (nowMs >= data.age_ms) ? (nowMs - data.age_ms) : 0;
+      ms.hasValue = true;
+    } else if (m.which_val == loraiot_Measurement_text_tag) {
+      strncpy(ms.text, m.val.text, DEVICE_TABLE_TEXT_BUF_SIZE - 1);
+      ms.text[DEVICE_TABLE_TEXT_BUF_SIZE - 1] = '\0';
+      ms.isText   = true;
+      ms.valueMs  = (nowMs >= data.age_ms) ? (nowMs - data.age_ms) : 0;
+      ms.hasValue = true;
+    } else {
+      Log_warn("DeviceTable::applyData - unknown measurement val tag=%u for metric=%u",
+               (unsigned)m.which_val, (unsigned)m.metric_id);
+    }
   }
 
   return result;
@@ -272,9 +315,34 @@ void DeviceTable::storeValue(uint32_t deviceIdx, uint32_t metricId,
     if (devices[i].index == deviceIdx) {
       for (uint8_t m = 0; m < devices[i].metricCount; m++) {
         if (devices[i].metrics[m].id == metricId) {
-          devices[i].metrics[m].value    = scaledValue;
-          devices[i].metrics[m].valueMs  = nowMs;
-          devices[i].metrics[m].hasValue = true;
+          MetricSlot& slot = devices[i].metrics[m];
+          slot.value    = scaledValue;
+          slot.valueMs  = nowMs;
+          slot.hasValue = true;
+          slot.isText   = false;
+          return;
+        }
+      }
+      return;  // device found, metric not found - silent no-op per spec
+    }
+  }
+}
+
+void DeviceTable::storeTextValue(uint32_t deviceIdx, uint32_t metricId,
+                                  const char* textValue, uint32_t nowMs) {
+  if (textValue == nullptr) {
+    return;
+  }
+  for (uint8_t i = 0; i < deviceCount; i++) {
+    if (devices[i].index == deviceIdx) {
+      for (uint8_t m = 0; m < devices[i].metricCount; m++) {
+        if (devices[i].metrics[m].id == metricId) {
+          MetricSlot& slot = devices[i].metrics[m];
+          strncpy(slot.text, textValue, DEVICE_TABLE_TEXT_BUF_SIZE - 1);
+          slot.text[DEVICE_TABLE_TEXT_BUF_SIZE - 1] = '\0';
+          slot.valueMs  = nowMs;
+          slot.hasValue = true;
+          slot.isText   = true;
           return;
         }
       }
@@ -320,7 +388,14 @@ bool DeviceTable::toProtoData(uint32_t deviceIdx, loraiot_Data& out, uint32_t no
       continue;
     }
     out.values[valCount].metric_id = src.metrics[m].id;
-    out.values[valCount].value     = src.metrics[m].value;
+    if (src.metrics[m].isText) {
+      out.values[valCount].which_val = loraiot_Measurement_text_tag;
+      strncpy(out.values[valCount].val.text, src.metrics[m].text, sizeof(out.values[valCount].val.text) - 1);
+      out.values[valCount].val.text[sizeof(out.values[valCount].val.text) - 1] = '\0';
+    } else {
+      out.values[valCount].which_val = loraiot_Measurement_num_tag;
+      out.values[valCount].val.num   = src.metrics[m].value;
+    }
     valCount++;
     // Track the oldest absolute timestamp so age_ms reflects the stalest metric.
     if (!hasAny || src.metrics[m].valueMs < oldestMs) {
@@ -425,4 +500,20 @@ size_t DeviceTable::estimateEncodedDeviceSize(const DeviceSlot& dev,
   total += 2 + 6 + (2 + extraNameLen) + (2 + extraUnitLen) + 6;
 
   return total;
+}
+
+// Compile-time proof that DEVICE_TABLE_MAX_METRICS full-width text measurements
+// always fit in one LoRa payload. If any constant changes to break this, the
+// build fails here before a subtle runtime overflow can occur.
+static_assert(
+  PB_DATA_FIXED_OVERHEAD + DEVICE_TABLE_MAX_METRICS * PB_MEASUREMENT_ENCODED_MAX_SIZE
+    <= LORA_MAX_PAYLOAD_LEN,
+  "8 full-width text metrics must fit in one LoRa payload (LORA_MAX_PAYLOAD_LEN)");
+
+size_t DeviceTable::estimateEncodedDataSize(const DeviceSlot& dev) {
+  // Conservative worst-case estimate of the nanopb-encoded Data (or Response(Data))
+  // with dev.metricCount + 1 metrics, each holding worst-case 12-byte text.
+  // The +1 accounts for the new metric being registered: after acceptance the device
+  // will have metricCount+1 metrics, and all must fit in one frame.
+  return PB_DATA_FIXED_OVERHEAD + static_cast<size_t>(dev.metricCount + 1) * PB_MEASUREMENT_ENCODED_MAX_SIZE;
 }

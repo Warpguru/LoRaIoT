@@ -23,6 +23,10 @@ This is an ESP32 embedded firmware project (Arduino C++, FreeRTOS). The Maven/Ec
   ```
   cmd /c D:\Development\SetupEnvPython3.cmd && python script.py
   ```
+- **GIT:** the Git environment is not on the global PATH. Always source the environment setup first:
+  ```
+  cmd /c D:\Development\SetupEnvGit.cmd && git <command>
+  ```
 
 ## Single-core / Dual-core Portability
 

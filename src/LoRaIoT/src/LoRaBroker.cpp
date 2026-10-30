@@ -329,7 +329,7 @@ BrokerResult loraSendDataReliable(uint8_t dstAddr, const loraiot_Data& data,
   }
 
   // Encode the Data payload into LoRaFrame
-  uint8_t payloadBuf[loraiot_Data_size];
+  uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
   pb_ostream_t stream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&stream, loraiot_Data_fields, &data)) {
     xSemaphoreGive(brokerMutex);

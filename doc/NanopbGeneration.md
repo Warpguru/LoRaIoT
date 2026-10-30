@@ -8,7 +8,8 @@ source of truth; the `.proto` file is a copy and the generated files are derived
 
 > **Status:** the generated code is part of the `lora` library and is compiled by both the Arduino IDE and
 > PlatformIO. It is called at every boot by `runPingEncodeCheck()` in `src/diagnostics/src/Diagnostics.cpp`
-> and on every `GET /api/diag/e220` request.
+> and on every `GET /api/diag/e220` request. The DeviceTable logic tests (`devicetable_test.cpp`) run
+> entirely on the PC and cover the same checks without any ESP32 involvement.
 
 ## 1. What is in the repository
 
@@ -20,6 +21,9 @@ source of truth; the `.proto` file is a copy and the generated files are derived
 | `src/lora/src/nanopb/pb.h`, `pb_common.*`, `pb_encode.*`, `pb_decode.*` | nanopb runtime 0.4.9.1 (zlib license, see `LICENSE.txt` next to it) | No, replace as a set |
 | `tools/nanopb_test/check_proto.py` | Wire-size checks (Python) | Yes |
 | `tools/nanopb_test/roundtrip.c` | Round trip of the generated C code on the PC | Yes |
+| `tools/nanopb_test/devicetable_test.cpp` | DeviceTable logic tests on the PC (all 13 checks from `Diagnostics.cpp`) | Yes |
+| `tools/nanopb_test/pc_shim.h`, `pc_shim.cpp` | Arduino/LogBuffer stubs that let firmware C++ compile on the PC | No |
+| `tools/nanopb_test/Arduino.h` | Minimal `<Arduino.h>` stub resolved by `-Itools/nanopb_test` | No |
 
 The generated and runtime files are in `src/lora/src/nanopb/` because the Arduino IDE compiles only
 `src/` of a library and only that folder (recursively) for sources. All of them include each other with
@@ -80,6 +84,7 @@ Current limits:
 | `Metric.name` | 12 | `max_size:13` |
 | `Metric.unit` | 5 | `max_size:6` |
 | `Device.name` | 12 | `max_size:13` |
+| `Measurement.text` | 12 bytes | `max_size:13` |
 | `Echo.text` | 175 | `max_size:176` |
 | `Device.metrics` | 8 entries | `max_count:8` |
 | `Data.values` | 16 entries | `max_count:16` |
@@ -135,8 +140,13 @@ A C compiler is needed. If none is installed, the Python package `ziglang` provi
 
 ```
 python -m pip install ziglang
-python -m ziglang cc -std=c99 -Wall -Wextra -Isrc\lora\src\nanopb -o roundtrip.exe tools\nanopb_test\roundtrip.c src\lora\src\nanopb\loraiot.pb.c src\lora\src\nanopb\pb_common.c src\lora\src\nanopb\pb_encode.c src\lora\src\nanopb\pb_decode.c
-roundtrip.exe
+```
+
+Build and run from the repository root:
+
+```
+cmd /c "D:\Development\SetupEnvPython3.cmd >nul 2>&1 & python -m ziglang cc -std=c99 -Wall -Wextra -Isrc\lora\src\nanopb -o tools\nanopb_test\roundtrip.exe tools\nanopb_test\roundtrip.c src\lora\src\nanopb\loraiot.pb.c src\lora\src\nanopb\pb_common.c src\lora\src\nanopb\pb_encode.c src\lora\src\nanopb\pb_decode.c"
+tools\nanopb_test\roundtrip.exe
 ```
 
 (With an installed `gcc` or `clang`, replace `python -m ziglang cc` by `gcc`.) Expected last line:
@@ -151,23 +161,39 @@ Example output of `roundtrip.exe` (a line starting with `OK` is a passed check, 
 is a failed one; the indented lines are information):
 
 ```
+=== Struct size checks ===
+OK   sizeof(Metric.name)      == 13
+OK   sizeof(Metric.unit)      ==  6
+OK   sizeof(Device.name)      == 13
+OK   sizeof(Device.metrics[]) == 8 entries
+OK   sizeof(Measurement.text) == 13
+OK   sizeof(Echo.text)        == 176
+OK   sizeof(Data.values[])    == 16 entries
+
+=== PING / BEACON ===
 OK   encode PING
      PING payload: 08 F8 AC D1 91 01
 OK   PING payload equals the documented bytes
 OK   decode PING
-OK   PING decodes with absent optional fields
-OK   encode BEACON
-OK   BEACON registry_rev=0 is present after decode
-OK   encode Data ({"device":"Sensor A","data":{"Voltage":3.35,"Current":-0.12}})
-     Data payload: 08 01 12 05 08 01 10 9E 05 12 05 08 02 10 EF 01
-OK   Data round trip incl. negative sint32
+...
+=== Measurement.text (max 12 bytes, buf 13) ===
+OK   Measurement.text max (12 bytes) encodes
+OK   Measurement.text max (12 bytes) round trip
+OK   Measurement.text max+1 (13 bytes on wire) rejected at decode
+...
+=== Full message round trips ===
+OK   encode Data (Voltage + Current + Date text)
+     Data payload: 08 01 12 05 08 01 10 9E 05 12 05 08 02 10 EF 01 12 0E 08 03 1A 0A 33 30 2E 31 30 2E 32 30 32 36
+OK   Data round trip incl. negative sint32 and text
 OK   encode Response(Device)
      Response(Device) size: 98 B
 OK   Response(Device) round trip
-OK   struct sizes match the .options limits
-OK   encode Metric with 12-character name
-     loraiot_Device_size   = 300
-     loraiot_Response_size = 311
+
+=== Generated worst-case size macros ===
+     loraiot_Measurement_size = 20
+     loraiot_Data_size        = 366
+     loraiot_Device_size      = 300
+     loraiot_Response_size    = 377
 
 ALL CHECKS PASSED
 ```
@@ -195,17 +221,83 @@ PS> $LASTEXITCODE
 0
 ```
 
-What it verifies:
+What it verifies (35 checks total):
 
-- the PING payload is `08 F8 AC D1 91 01`, identical to the Python result and to `LoRaProtocol.md` section 4.2
-- optional fields: absent in a PING (`has_registry_rev == false`), present when set to 0
-- `Data` with a negative `sint32` value survives a round trip
-- `Response(Device)` with four metrics (`Sensor A`: Voltage, Current, Temperature, Humidity) round-trips; its
-  size is 98 B
-- the struct sizes match the limits (`name[13]`, `unit[6]`, `Device.name[13]`)
+- every bounded struct array is exactly the size the `.options` file specifies
+- PING/BEACON payload bytes match `LoRaProtocol.md` section 4.2
+- max and max+1 boundary for every bounded field: `Metric.name`, `Metric.unit`, `Device.name`,
+  `Device.metrics`, `Measurement.text`, `Data.values`, `Echo.text`
+- `Data` with mixed numeric + text values survives a round trip
+- `Response(Device)` with four metrics round-trips at 98 B
 - the code compiles without warnings under `-Wall -Wextra`
 
-### 4.3 Compile in the Arduino IDE or PlatformIO
+### 4.3 DeviceTable logic tests (PC C++ compiler)
+
+This test suite compiles `DeviceTable.cpp` (the registry data structure) together with the nanopb runtime
+for the PC and runs 36 checks that cover the full business logic of the DeviceTable class. It is the PC
+equivalent of `runDeviceTableCheck()` in `src/diagnostics/src/Diagnostics.cpp`.
+
+**Why a separate test suite?** `DeviceTable.cpp` depends on `Arduino.h` (for integer types) and
+`LogBuffer.h` (for logging). On the PC neither exists. The `tools/nanopb_test/` directory contains
+three small *shim* files - Zwischenstucke (Ersatzteile) - that satisfy those dependencies without the
+ESP32 toolchain:
+
+| Shim file | Replaces | How |
+|---|---|---|
+| `Arduino.h` | `<Arduino.h>` from Espressif | Provides `uint8_t`, `uint32_t` etc. via `<stdint.h>` |
+| `pc_shim.h` / `pc_shim.cpp` | `LogBuffer.h` + FreeRTOS | Redefines `Log_*` macros as `printf`/`fprintf`; stubs out `LogBufferClass` |
+
+The shim is injected into every translation unit via the `-include` compiler flag, which makes it appear
+before any other header. `src/util/src/LogBuffer.h` has a matching `#ifndef LOGBUFFER_H_INCLUDED` guard
+so it becomes a no-op when the shim is already active.
+
+Build from the repository root (two steps because `.c` and `.cpp` need different flags):
+
+```
+rem Step 1: compile nanopb C runtime (do this once; reuse the .o files for roundtrip.exe too)
+cmd /c "D:\Development\SetupEnvPython3.cmd >nul 2>&1 & python -m ziglang cc -std=c99 -Isrc\lora\src\nanopb -c src\lora\src\nanopb\loraiot.pb.c  -o tools\nanopb_test\loraiot.pb.o  && python -m ziglang cc -std=c99 -Isrc\lora\src\nanopb -c src\lora\src\nanopb\pb_common.c  -o tools\nanopb_test\pb_common.o  && python -m ziglang cc -std=c99 -Isrc\lora\src\nanopb -c src\lora\src\nanopb\pb_encode.c   -o tools\nanopb_test\pb_encode.o   && python -m ziglang cc -std=c99 -Isrc\lora\src\nanopb -c src\lora\src\nanopb\pb_decode.c   -o tools\nanopb_test\pb_decode.o"
+
+rem Step 2: compile and link C++ sources
+cmd /c "D:\Development\SetupEnvPython3.cmd >nul 2>&1 & python -m ziglang c++ -std=c++17 -Wall -Wextra -include tools/nanopb_test/pc_shim.h -Itools/nanopb_test -Isrc/lora/src/nanopb -Isrc/lora/src -Isrc/registry/src -Isrc/util/src -o tools\nanopb_test\devicetable_test.exe tools\nanopb_test\devicetable_test.cpp tools\nanopb_test\pc_shim.cpp src\registry\src\DeviceTable.cpp tools\nanopb_test\loraiot.pb.o tools\nanopb_test\pb_common.o tools\nanopb_test\pb_encode.o tools\nanopb_test\pb_decode.o"
+
+tools\nanopb_test\devicetable_test.exe
+```
+
+Expected last line: `ALL CHECKS PASSED`, exit code 0.
+
+Example output (abbreviated):
+
+```
+=== DeviceTable PC-side test suite ===
+--- Check 1: register two devices, two metrics each ---
+OK   register SensorA metrics
+OK   SensorA indices correct
+...
+--- Check 13: Response(Data) budget with 8 x 12-byte text ---
+OK   pb_encode Response(Data) 8 x 12-byte text succeeds
+     encoded size: 151 B  (limit 186 B)
+OK   encoded size <= LORA_MAX_PAYLOAD_LEN (186 B)
+OK   encoded size <= constant-based estimate (proves constants are correct)
+     estimate: 165 B  actual: 151 B
+
+36 checks run, 0 failed.
+
+ALL CHECKS PASSED
+```
+
+What it verifies (36 checks):
+
+- `registerMetric()`: index assignment, revision counter, device/metric table capacity limits
+- name and unit length limits enforced
+- `applyData()`: partial update (only named metrics touched), unknown device/metric error codes
+- `applyDevice()`: value-preservation when scale is unchanged, value-clearing when scale changes
+- `storeTextValue()` / `storeValue()`: storage and read-back, type flip between numeric and text
+- `toProtoData()` + nanopb encode + decode + `applyData()` full round trip with mixed data
+- UTF-8 multi-byte text at exactly `DEVICE_TABLE_TEXT_MAX_LEN` (12) bytes stored correctly
+- Over-limit text (13 bytes) correctly identified as over limit
+- `Response(Data)` with 8 x 12-byte text metrics encodes to 151 B, well within the 186 B limit
+
+### 4.4 Compile in the Arduino IDE or PlatformIO
 
 Both builds compile the files in `src/lora/src/nanopb/` as part of the `lora` library. A successful build
 shows that the files are found and compile for the ESP32.
@@ -239,10 +331,11 @@ values measured in section 4.1. Use them only to size buffers:
 
 | Macro | Value |
 |---|---|
-| `loraiot_Data_size` | 238 |
+| `loraiot_Measurement_size` | 20 |
+| `loraiot_Data_size` | 366 |
 | `loraiot_Device_size` | 300 |
-| `loraiot_Response_size` | 311 |
+| `loraiot_Response_size` | 377 |
 
-`loraiot_Response_size` (311 B) is larger than the 186-byte frame payload. This is consistent with the
+`loraiot_Response_size` (377 B) is larger than the 186-byte frame payload. This is consistent with the
 rule above: size the encode buffer from the macro, but check the **actual** encoded length
 (`pb_ostream_t.bytes_written`) against 186 before sending.

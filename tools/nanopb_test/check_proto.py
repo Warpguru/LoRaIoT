@@ -34,6 +34,7 @@ NAME_MAX = 12                # Metric.name and Device.name, characters
 UNIT_MAX = 5                 # Metric.unit, characters
 METRICS_MAX = 8              # Device.metrics
 VALUES_MAX = 16              # Data.values
+TEXT_MAX = 12                # Measurement.text, bytes (UTF-8)
 ECHO_MAX = 175               # Echo.text, characters
 # Protobuf integers are "varints": small values take 1 byte, large ones up to 5
 # (or 10 for negative plain int32). Using the extremes gives the largest encoding.
@@ -131,13 +132,21 @@ def main():
     print("%-4s %-52s" % ("OK" if passed else "FAIL", "optional registry_rev=0 is sent, absent is not"))
 
     # Worst-case Data message: largest age_ms, alert set, and the maximum number of
-    # values, each with the most expensive sint32 value.
+    # values, each with the most expensive sint32 value (5 B) vs 12 B text value (14 B with tag+len).
+    # Text (12 B) is larger than sint32 (5 B).
     loraiot_data_message = loraiot_module.Data(device=TEST_DEVICE_ID, age_ms=UINT32_MAX, alert=True)
     for metric_id in range(1, VALUES_MAX + 1):
         loraiot_measurement_message = loraiot_data_message.values.add()
         loraiot_measurement_message.metric_id = metric_id
-        loraiot_measurement_message.value = INT32_MIN
-    check_wire_size("Data, 16 worst-case values", len(loraiot_data_message.SerializeToString()))
+        loraiot_measurement_message.num = INT32_MIN
+    check_wire_size("Data, 16 worst-case numeric values", len(loraiot_data_message.SerializeToString()))
+
+    loraiot_data_text_message = loraiot_module.Data(device=TEST_DEVICE_ID, age_ms=UINT32_MAX, alert=True)
+    for metric_id in range(1, VALUES_MAX + 1):
+        loraiot_measurement_message = loraiot_data_text_message.values.add()
+        loraiot_measurement_message.metric_id = metric_id
+        loraiot_measurement_message.text = "x" * TEXT_MAX
+    check_wire_size("Data, 16 worst-case text values (must NOT fit)", len(loraiot_data_text_message.SerializeToString()), must_fit=False)
 
     loraiot_typical_device_message = build_loraiot_device_message(loraiot_module, 4, 7, 4)
     check_wire_size("Device, 4 typical metrics",

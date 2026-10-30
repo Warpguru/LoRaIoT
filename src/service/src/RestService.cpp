@@ -85,7 +85,11 @@ static void writeDeviceSlotJson(JsonObject dobj, const DeviceSlot& slot) {
     mo["unit"]  = slot.metrics[m].unit;   // pointer - slot must stay alive
     mo["scale"] = slot.metrics[m].scale;
     if (slot.metrics[m].hasValue) {
-      mo["value"] = slot.metrics[m].value;
+      if (slot.metrics[m].isText) {
+        mo["value"] = slot.metrics[m].text;
+      } else {
+        mo["value"] = slot.metrics[m].value;
+      }
     } else {
       mo["value"] = nullptr;
     }
@@ -875,15 +879,48 @@ void RestService::registerRoutes() {
 
       for (JsonPair kv : metrics) {
         const char* metricName = kv.key().c_str();
-        int32_t value = kv.value()["value"].as<int32_t>();
+        JsonVariant valVar     = kv.value()["value"];
         const char* unit  = kv.value()["unit"].is<const char*>()  ? kv.value()["unit"].as<const char*>()  : "";
         uint32_t scale    = kv.value()["scale"].is<uint32_t>()    ? kv.value()["scale"].as<uint32_t>()    : 1;
         if (scale == 0) {
           scale = 1;
         }
+
+        bool isText = false;
+        const char* textValue = nullptr;
+        int32_t numValue = 0;
+        bool valid = false;
+
+        if (valVar.is<bool>()) {
+          isText = true;
+          textValue = valVar.as<bool>() ? "true" : "false";
+          valid = true;
+        } else if (valVar.is<const char*>()) {
+          isText = true;
+          textValue = valVar.as<const char*>();
+          if (textValue != nullptr && strlen(textValue) <= DEVICE_TABLE_TEXT_MAX_LEN) {
+            valid = true;
+          } else {
+            valid = false;
+          }
+        } else if (valVar.is<int32_t>() || valVar.is<float>() || valVar.is<double>()) {
+          isText = false;
+          numValue = valVar.as<int32_t>();
+          valid = true;
+        }
+
+        if (!valid) {
+          rejected.add(metricName);
+          continue;
+        }
+
         uint32_t devIdx = 0, metricId = 0;
         if (ControlRegistry.registerMetric(addr, deviceName, metricName, unit, scale, devIdx, metricId)) {
-          ControlRegistry.storeValue(addr, devIdx, metricId, value);
+          if (isText) {
+            ControlRegistry.storeTextValue(addr, devIdx, metricId, textValue);
+          } else {
+            ControlRegistry.storeValue(addr, devIdx, metricId, numValue);
+          }
           JsonObject a = accepted.add<JsonObject>();
           a["metric"]    = metricName;
           a["device_idx"]= devIdx;
@@ -1167,12 +1204,48 @@ void RestService::registerRoutes() {
       uint8_t  pushedCount = 0;
       for (JsonPair kv : metrics) {
         const char* metricName = kv.key().c_str();
-        int32_t value = kv.value()["value"].as<int32_t>();
+        JsonVariant valVar     = kv.value()["value"];
         const char* unit  = kv.value()["unit"].is<const char*>()  ? kv.value()["unit"].as<const char*>()  : "";
         uint32_t scale    = kv.value()["scale"].is<uint32_t>()    ? kv.value()["scale"].as<uint32_t>()    : 1;
+        if (scale == 0) {
+          scale = 1;
+        }
+
+        bool isText = false;
+        const char* textValue = nullptr;
+        int32_t numValue = 0;
+        bool valid = false;
+
+        if (valVar.is<bool>()) {
+          isText = true;
+          textValue = valVar.as<bool>() ? "true" : "false";
+          valid = true;
+        } else if (valVar.is<const char*>()) {
+          isText = true;
+          textValue = valVar.as<const char*>();
+          if (textValue != nullptr && strlen(textValue) <= DEVICE_TABLE_TEXT_MAX_LEN) {
+            valid = true;
+          } else {
+            valid = false;
+          }
+        } else if (valVar.is<int32_t>() || valVar.is<float>() || valVar.is<double>()) {
+          isText = false;
+          numValue = valVar.as<int32_t>();
+          valid = true;
+        }
+
+        if (!valid) {
+          rejected.add(metricName);
+          continue;
+        }
+
         uint32_t devIdx = 0, metricId = 0;
         if (SensorRegistry.registerMetric(LORA_DEFAULT_ADDR_LOCAL, deviceName, metricName, unit, scale, devIdx, metricId)) {
-          SensorRegistry.storeValue(LORA_DEFAULT_ADDR_LOCAL, devIdx, metricId, value);
+          if (isText) {
+            SensorRegistry.storeTextValue(LORA_DEFAULT_ADDR_LOCAL, devIdx, metricId, textValue);
+          } else {
+            SensorRegistry.storeValue(LORA_DEFAULT_ADDR_LOCAL, devIdx, metricId, numValue);
+          }
           JsonObject a = accepted.add<JsonObject>();
           a["metric"]    = metricName;
           a["device_idx"]= devIdx;
