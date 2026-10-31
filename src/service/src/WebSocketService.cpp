@@ -11,6 +11,7 @@
 #include "../../registry/src/PeerRegistry.h"
 #include "../../registry/src/DeviceTable.h"
 #include "RestService.h"
+#include "MqttService.h"
 
 /**
  * WebSocketService.cpp - WebSocket broadcast task (server push only, no inbound commands).
@@ -29,6 +30,7 @@
  *     "crc_errors": <uint32>,
  *     "ack_loss":   <uint32>
  *   },
+ *   "mqtt":        "idle" | "disconnected" | "connected" | "error",  // LOCAL only; absent on REMOTE
  *   "nodes": [                           // same shape as GET /api/lora/nodes/sensor (LOCAL)
  *     {                                  // or GET /api/lora/nodes/control (REMOTE); [] if no peers
  *       "addr":                   <uint8>,
@@ -184,6 +186,12 @@ void WebSocketService::broadcastTask(void* param) {
     lora["rx_frames"]  = stats.rxFrames;
     lora["crc_errors"] = stats.crcErrors;
     lora["ack_loss"]   = stats.ackLoss;
+
+    // MQTT exists on LOCAL only; the dashboard shows its connection icon when this key is present.
+    // getState() is a lock-free read, so the broadcast task never waits on the MQTT config mutex.
+    if (Gateway.isLocal()) {
+      doc["mqtt"] = mqttStateName(MqttService.getState());
+    }
 
     JsonArray nodesArr = doc["nodes"].to<JsonArray>();
     for (uint8_t n = 0; n < peerCount; n++) {

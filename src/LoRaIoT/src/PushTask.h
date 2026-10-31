@@ -55,9 +55,11 @@ static constexpr uint32_t PUSH_TASK_STACK_SIZE = 4096;
 // Below loraTransportTask (priority 2) to avoid starving radio packet reception.
 static constexpr UBaseType_t PUSH_TASK_PRIORITY = 1;
 
-// Capacity of the push notification queue.
-// If full, items are dropped safely because next crawl or beacon will trigger sync.
-static constexpr UBaseType_t PUSH_QUEUE_LENGTH = 4;
+// Capacity of the push notification queue (items are 3 bytes, so this is cheap).
+// If full, crawl-complete and node-back items are dropped safely because the next crawl or
+// beacon will trigger a sync. A dropped setpoint item is NOT resynchronised until the peer
+// returns or re-crawls, so the queue is sized for a short burst of MQTT setpoints.
+static constexpr UBaseType_t PUSH_QUEUE_LENGTH = 8;
 
 // Delay before retrying when the LoRaBroker is busy with another transaction (ms).
 static constexpr uint32_t PUSH_BUSY_RETRY_MS = 500;
@@ -68,12 +70,14 @@ static constexpr uint8_t PUSH_MAX_BUSY_RETRIES = 3;
 // Push reason codes for logging and diagnostics.
 static constexpr uint8_t PUSH_REASON_CRAWL_COMPLETE = 0;
 static constexpr uint8_t PUSH_REASON_NODE_BACK      = 1;
+static constexpr uint8_t PUSH_REASON_SETPOINT       = 2;  // single device, requested by MQTT /set
 
 // ---- Queue item structure ---------------------------------------------------
 
 struct PushItem {
-  uint8_t peerAddr;  // Target peer LoRa address (e.g. 0x01 or 0x02)
-  uint8_t reason;    // PUSH_REASON_CRAWL_COMPLETE or PUSH_REASON_NODE_BACK
+  uint8_t peerAddr;   // Target peer LoRa address (e.g. 0x01 or 0x02)
+  uint8_t reason;     // PUSH_REASON_CRAWL_COMPLETE, PUSH_REASON_NODE_BACK or PUSH_REASON_SETPOINT
+  uint8_t deviceIdx;  // Device to push; only used by PUSH_REASON_SETPOINT (all devices otherwise)
 };
 
 // ---- Public interface -------------------------------------------------------
@@ -98,3 +102,14 @@ void pushTaskNotifyCrawlComplete(uint8_t peerAddr);
  * @param peerAddr The LoRa address of the peer that was revived.
  */
 void pushTaskNotifyNodeBack(uint8_t peerAddr);
+
+/**
+ * Enqueue a push of ONE device's control values to a peer (MQTT setpoint, LOCAL only).
+ * Non-blocking (queue send with timeout 0): safe to call from mqttTask, which must never
+ * wait on the LoRa link. The transmission itself runs on the push task via
+ * loraSendDataReliable().
+ *
+ * @param peerAddr  The LoRa address of the REMOTE the setpoint is for.
+ * @param deviceIdx The device index (1..DEVICE_TABLE_MAX_DEVICES) in ControlRegistry.
+ */
+void pushTaskNotifySetpoint(uint8_t peerAddr, uint8_t deviceIdx);

@@ -40,7 +40,8 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
     { "name": "Diagnostics", "description": "Logging, hardware status, and E220 wiring check" },
     { "name": "LoRa-Nodes",  "description": "Remote node registry and telemetry" },
     { "name": "LoRa-Control","description": "Ping, echo, beacon and data dispatch" },
-    { "name": "Sensor",      "description": "SoftAP sensor data ingestion" }
+    { "name": "Sensor",      "description": "SoftAP sensor data ingestion" },
+    { "name": "MQTT",        "description": "MQTT broker configuration and connection status (LOCAL node)" }
   ],
   "paths": {
     "/api/tier": {
@@ -250,6 +251,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         }
       },
       "put": {
+        "x-tier": "REMOTE",
         "tags": ["Gateway"],
         "summary": "Set active LoRa node address",
         "description": "Sets the REMOTE node address (2-254). Persisted in NVS; takes effect on next reboot. REMOTE only.",
@@ -282,7 +284,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
             }
           },
           "400": {
-            "description": "Body is not valid JSON, field missing, out of range, or not a REMOTE instance",
+            "description": "Body is not valid JSON, field missing, or out of range",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           }
         }
@@ -536,7 +538,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "x-tier": "LOCAL",
         "tags": ["LoRa-Control"],
         "summary": "Register control devices, store setpoint values, and push to remote",
-        "description": "Registers devices and metrics in ControlRegistry for the specified node `addr`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK. Returns accepted/rejected metrics, registry revision, and delivery status.",
+        "description": "Registers devices and metrics in ControlRegistry for the specified node `addr`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK. Returns accepted/rejected metrics, registry revision, and delivery status. The same logic is also reachable via the MQTT /set topic (<prefix>/Local/Remote_Node_<n>/<device>/<metric>/set).",
         "parameters": [
           { "name": "addr", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 2, "maximum": 254 }, "description": "Target remote node LoRa address" }
         ],
@@ -658,7 +660,52 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         },
         "responses": {
           "200": { "description": "All metrics accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } },
-          "400": { "description": "Some metrics rejected (payload limit, table full, or not a REMOTE instance)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } }
+          "400": { "description": "Invalid JSON, missing fields, or some metrics rejected (payload limit, table full)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensorDataResponse" } } } }
+        }
+      }
+    },
+    "/api/mqtt/config": {
+      "get": {
+        "x-tier": "LOCAL",
+        "tags": ["MQTT"],
+        "summary": "Get MQTT broker configuration",
+        "description": "Returns current MQTT settings. Password is never returned; passSet indicates whether one is stored. LOCAL only: the route is not registered on REMOTE nodes (404).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MqttConfigResponse" } } }
+          }
+        }
+      },
+      "put": {
+        "x-tier": "LOCAL",
+        "tags": ["MQTT"],
+        "summary": "Update MQTT broker configuration",
+        "description": "Partial update: any omitted field keeps its current value. Persisted to NVS and applied live - no reboot needed. Omit 'pass' to keep the current password; pass an explicit empty string to clear it. LOCAL only: the route is not registered on REMOTE nodes (404).",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MqttConfigPutRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings accepted and applied",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MqttConfigResponse" } } }
+          },
+          "400": { "description": "Validation error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/mqtt/status": {
+      "get": {
+        "x-tier": "LOCAL",
+        "tags": ["MQTT"],
+        "summary": "MQTT connection status",
+        "description": "Returns the live MQTT connection state: idle, disconnected, connected or error. Fields are conditional - broker/port only when configured, reason only when idle, lastError/retryInSec only when error or disconnected. LOCAL only: the route is not registered on REMOTE nodes (404).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MqttStatusResponse" } } }
+          }
         }
       }
     }
@@ -867,6 +914,49 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
           "rejected":      { "type": "array",   "items": { "type": "string" }, "description": "Metric names that were rejected (payload limit, table full)" },
           "registry_rev":  { "type": "integer", "description": "Current registry revision after this request" }
         }
+      },
+      "MqttConfigResponse": {
+        "type": "object",
+        "properties": {
+          "mqttBroker":    { "type": "string",  "description": "Broker hostname or IP address (empty string if not configured)" },
+          "mqttPort":      { "type": "integer", "description": "Broker TCP port (1-65535)" },
+          "mqttUser":      { "type": "string",  "description": "Optional username (empty string if none)" },
+          "mqttPassSet":   { "type": "boolean", "description": "true when a password is currently stored (password itself is never returned)" },
+          "mqttPrefix":    { "type": "string",  "description": "Root MQTT topic prefix" },
+          "mqttRetain":    { "type": "boolean", "description": "true when telemetry topics are published with retain=true" },
+          "mqttDiscovery": { "type": "boolean", "description": "true when Home Assistant auto-discovery publishing is enabled" },
+          "mqttEnabled":   { "type": "boolean", "description": "true when the MQTT service is active" }
+        },
+        "example": { "mqttBroker": "192.168.1.10", "mqttPort": 1883, "mqttUser": "mqttuser", "mqttPassSet": true, "mqttPrefix": "LoRaIoT", "mqttRetain": true, "mqttDiscovery": false, "mqttEnabled": true }
+      },
+      "MqttConfigPutRequest": {
+        "type": "object",
+        "description": "All fields are optional (partial update). Omit mqttPass to keep the current password; set to empty string to clear it. Defaults: port=1883, prefix=LoRaIoT, retain=true, discovery=false, enabled=false.",
+        "properties": {
+          "mqttBroker":    { "type": "string",  "maxLength": 63, "description": "Broker hostname or IPv4 address" },
+          "mqttPort":      { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Broker TCP port (default 1883)" },
+          "mqttUser":      { "type": "string",  "maxLength": 31, "description": "Optional username" },
+          "mqttPass":      { "type": "string",  "maxLength": 31, "description": "Optional password. Omit to keep current; set to empty string to clear. Never returned." },
+          "mqttPrefix":    { "type": "string",  "minLength": 1, "maxLength": 31, "description": "Root topic prefix (no '+', '#', spaces, or leading/trailing '/'; default LoRaIoT)" },
+          "mqttRetain":    { "type": "boolean", "description": "Enable retain flag on telemetry and status topics (default true)" },
+          "mqttDiscovery": { "type": "boolean", "description": "Enable Home Assistant MQTT auto-discovery (Sub-Task 6, currently unused; default false)" },
+          "mqttEnabled":   { "type": "boolean", "description": "Master enable switch for the MQTT service (default false)" }
+        },
+        "example": { "mqttBroker": "192.168.1.10", "mqttPort": 1883, "mqttUser": "mqttuser", "mqttPass": "change-me", "mqttPrefix": "LoRaIoT", "mqttRetain": true, "mqttDiscovery": false, "mqttEnabled": true }
+      },
+      "MqttStatusResponse": {
+        "type": "object",
+        "properties": {
+          "enabled":    { "type": "boolean", "description": "The configured mqttEnabled switch" },
+          "state":      { "type": "string",  "enum": ["idle", "disconnected", "connected", "error"], "description": "Live connection state. idle: not active (see reason). disconnected: was connected, now reconnecting. connected: broker link is up. error: last connect attempt failed." },
+          "reason":     { "type": "string",  "enum": ["disabled", "no broker"], "description": "Only present when state is idle. disabled: mqttEnabled is false. no broker: enabled but broker is empty." },
+          "broker":     { "type": "string",  "description": "Configured broker hostname or IP. Only present when a broker is configured." },
+          "port":       { "type": "integer", "description": "Configured broker TCP port. Only present when a broker is configured." },
+          "lastError":  { "type": "integer", "description": "lwmqtt error code from the last failed connect. Only present when state is error." },
+          "returnCode": { "type": "integer", "description": "MQTT CONNACK return code when non-zero. Only present when state is error and the broker returned a CONNACK." },
+          "retryInSec": { "type": "integer", "description": "Seconds until the next reconnect attempt. Only present when state is error or disconnected and a retry is scheduled." },
+          "since":      { "type": "integer", "description": "Uptime seconds (millis()/1000) when state last changed." }
+        }
       }
     }
   }
@@ -925,7 +1015,7 @@ static const char OPENAPI_UI_TEMPLATE[] PROGMEM =
               "return function(spec){"
                 "Object.keys(spec.paths||{}).forEach(function(path){"
                   "var item=spec.paths[path];"
-                  "['get','post'].forEach(function(m){"
+                  "['get','post','put'].forEach(function(m){"
                     "if(item[m]&&item[m]['x-tier']&&item[m]['x-tier']!==TIER)"
                       "delete item[m];"
                   "});"

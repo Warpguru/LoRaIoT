@@ -11,6 +11,7 @@
 #include "../../registry/src/PeerRegistry.h"
 #include "LoRaBroker.h"
 #include "LoRaConfig.h"
+#include "../../service/src/MqttService.h"
 
 /**
  * PingTask.cpp - link-liveness task, identical on LOCAL and REMOTE. See PingTask.h for the
@@ -158,6 +159,10 @@ static void checkIdleNode(uint8_t addr) {
     }
 
     cachedRegistry().markOffline(addr);
+    // LOCAL only: mqttServiceNotifyPeerStatus() is a no-op on REMOTE (no mqttTask). The
+    // MQTT side re-reads the registry and dedupes, so a peer that was already offline
+    // does not produce a second publish.
+    mqttServiceNotifyPeerStatus(addr, false);
     Log_warn("PingTask: node 0x%02X did not answer %u PINGs - marked offline",
              addr, PING_OFFLINE_ATTEMPTS);
 }

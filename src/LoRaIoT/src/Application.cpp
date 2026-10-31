@@ -21,6 +21,7 @@
 #include "PingTask.h"
 #include "PushTask.h"
 #include "../../service/src/WiFiConfig.h"
+#include "../../service/src/MqttService.h"
 
 /**
  * Application.cpp - Main application setup and loop.
@@ -405,6 +406,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
   if (cachedRegistry().markSeen(frame.src)) {
     Log_info("Node 0x%02X is back online", frame.src);
     if (isLocal) {
+      mqttServiceNotifyPeerStatus(frame.src, true);
       pushTaskNotifyNodeBack(frame.src);
     }
   }
@@ -575,9 +577,17 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         loraiot_Beacon beacon = loraiot_Beacon_init_zero;
         pb_istream_t pbIn = pb_istream_from_buffer(frame.payload, frame.len);
         if (pb_decode(&pbIn, loraiot_Beacon_fields, &beacon)) {
+          // A brand-new peer is created online by updatePeerMeta() and has no offline->online
+          // transition (markSeen() ignores unknown peers), so detect it by its absence here.
+          uint32_t seenLastMs = 0;
+          bool     seenOnline = false;
+          const bool knownBefore = SensorRegistry.getLiveness(frame.src, seenLastMs, seenOnline);
           const bool crawlNeeded = SensorRegistry.updatePeerMeta(
               frame.src, beacon.boot_id,
               beacon.has_registry_rev, beacon.registry_rev);
+          if (!knownBefore && SensorRegistry.getLiveness(frame.src, seenLastMs, seenOnline)) {
+            mqttServiceNotifyPeerStatus(frame.src, true);
+          }
           Log_info("BEACON from 0x%02X boot_id=0x%08X registry_rev=%u%s",
                    frame.src, beacon.boot_id,
                    beacon.has_registry_rev ? beacon.registry_rev : 0,
@@ -610,6 +620,9 @@ static void onLoRaReceive(const LoRaFrame& frame) {
       if (stored == DeviceTableResult::OK) {
         Log_info("DATA from 0x%02X device=%u values=%u stored",
                  frame.src, data.device, data.values_count);
+        if (isLocal) {
+          mqttServiceNotifyPublish(frame.src, static_cast<uint8_t>(data.device));
+        }
       } else {
         // Device or metric schema not yet known - schedule a crawl immediately. Values of
         // unknown devices are lost (known metrics of a known device were still applied);
@@ -635,6 +648,9 @@ static void onLoRaReceive(const LoRaFrame& frame) {
       if (stored == DeviceTableResult::OK) {
         Log_info("DATA_ACK from 0x%02X device=%u values=%u stored",
                  frame.src, data.device, data.values_count);
+        if (isLocal) {
+          mqttServiceNotifyPublish(frame.src, static_cast<uint8_t>(data.device));
+        }
         sendDataAck(frame, loraiot_Status_STATUS_OK);
       } else {
         // Device or metric schema not yet known - schedule a crawl immediately and answer
@@ -711,6 +727,9 @@ void applicationSetup() {
     // beacons and detects dead REMOTEs, REMOTE detects a dead LOCAL.
     if (Gateway.isRemote()) {
       beaconTaskBegin();
+    }
+    if (Gateway.isLocal()) {
+      mqttServiceBegin();
     }
     pingTaskBegin();
     pushTaskBegin();

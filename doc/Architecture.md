@@ -16,11 +16,15 @@ servers, LoRaIoT enforces a strict multi-threaded layout using FreeRTOS.
      +---------------------------------+      +---------------------------------+
      | - WiFi Stack & LwIP             |      | - Main Arduino loop()           |
      | - ESPAsyncWebServer (Callbacks) |      |   applicationSetup/Loop()       |
-     +---------------------------------+      | - loraTransportTask (Priority 2)|
-                      |                       | - WebSocketService broadcastTask|
-                      |                       |   (Priority 1)                  |
+     +---------------------------------+      |   (Priority 1)                  |
+                      |                       | - loraTransportTask (Priority 2)|
+                      |                       | - WSBroadcast (Priority 1)      |
                       |                       | - BeaconTask [REMOTE only]      |
                       |                       |   (Priority 1)                  |
+                      |                       | - PingTask   (Priority 1)       |
+                      |                       | - PushTask   (Priority 1)       |
+                      |                       | - MqttTask [LOCAL only]         |
+                      |                       |   (Priority 0)                  |
                       |                       +---------------------------------+
                       |                                        |
                       +======= [ txQueue (Serialized) ] =======+
@@ -38,7 +42,8 @@ servers, LoRaIoT enforces a strict multi-threaded layout using FreeRTOS.
   events). The WiFi stack serves one radio. In `AP_STA` mode the SoftAP and the station
   interface share it, so both interfaces run on the same channel.
 - **Core 1 (Application Core):** Runs the primary application loop, the low-level
-  `loraTransportTask`, WebSocket broadcast, and (on REMOTE) the beacon task.
+  `loraTransportTask`, WebSocket broadcast, PingTask, PushTask, and on REMOTE the
+  beacon task. On LOCAL, `MqttTask` also runs here at the lowest user priority (0).
 
 ### Concurrency Rules
 
@@ -55,6 +60,9 @@ servers, LoRaIoT enforces a strict multi-threaded layout using FreeRTOS.
    E220 UART state during the diagnostics Mode 3 sequence.
 4. **Shared State Mutexes:** All shared state structs (`LoRaState`, `SensorRegistry`,
    `ControlRegistry`, `LogBuffer`) are protected by FreeRTOS mutexes.
+5. **Network I/O Tasks Must Run Below the Arduino Loop:** Any task that performs blocking
+   TCP/socket I/O (e.g. `MqttTask`) must be assigned **priority 0** - strictly below the
+   Arduino loop task (priority 1). See §8 for the full explanation.
 
 ---
 
@@ -841,3 +849,99 @@ controls beacon rate.
 Until the crawl completes, `GET /api/lora/nodes/sensor` (or `control`) on the cache node
 returns the last known values or an empty list for the new device. The dashboard shows the
 same cached state and will update automatically once the `PushTask` push arrives.
+
+---
+
+## 8. MQTT Telemetry Service - Threading Constraints
+
+### 8.1 Overview
+
+`MqttTask` (LOCAL tier only) runs the 256dpi `MQTTClient` library over a `WiFiClient` TCP
+socket. It connects to the configured broker, publishes a retained `online` status message,
+and then enters a loop that calls `client.loop()` (processes incoming MQTT packets) and
+`drainPublishQueue()` (publishes queued telemetry) every `MQTT_LOOP_MS` (100 ms).
+
+New telemetry is signalled from `loraTransportTask` via `MqttServiceClass::notifyPublish()`,
+which uses a `portMUX_TYPE` spinlock to append an `(addr, deviceIdx)` entry to a fixed-size
+pending array and then calls `xTaskNotifyGive()` to wake `MqttTask` early.
+
+Incoming control setpoints (`<prefix>/Local/Remote_Node_<n>/<device>/<metric>/set`) follow the
+opposite direction without ever blocking `MqttTask`: the 256dpi callback (invoked inside
+`client.loop()` on `MqttTask`) only copies topic and payload into a small static queue. After
+`client.loop()` returns, `MqttTask` parses it, updates `ControlRegistry` (the registry takes its
+own mutex) and calls `pushTaskNotifySetpoint()`, a non-blocking queue send. `PushTask`
+(priority 1) performs the blocking `loraSendDataReliable()`. `MqttTask` must never call
+`loraSendDataReliable()` itself. See `doc/MqttFeasibility.md` section 4.3.
+
+### 8.2 Why MqttTask Must Run at Priority 0
+
+`MqttTask` must be assigned **priority 0** - strictly below the Arduino loop task (priority 1).
+
+**The failure mode when run at priority 1:**
+
+The boot sequence includes a diagnostics phase driven by `applicationLoop()` (the Arduino loop
+task, priority 1, Core 1). `diagnosticsLoop()` calls `LoRaTransport.pause()`, which suspends
+`loraTransportTask` and closes UART2, then runs the E220 wiring check, and finally calls
+`LoRaTransport.resume()` to reopen UART2 and resume the transport task.
+
+`MqttTask` is also on Core 1. With priority 1 and the MQTT broker reachable at boot, the
+Arduino loop task did not complete its first `applicationLoop()` pass. The E220 check in
+that pass suspends `loraTransportTask` and closes UART2 (`LoRaTransport.pause()`) and
+reopens them at the end (`LoRaTransport.resume()`). If the pass never finishes, UART2 stays
+closed and `loraTransportTask` stays suspended - zero LoRa RX for the whole session, and a
+reboot does not help.
+
+The symptom was observed in practice: after flashing the MQTT changes with the broker up,
+`GET /api/lora/stats` showed `rx_frames=0` persistently (300+ seconds) and the log never
+contained `applicationLoop: boot diagnostics complete - LoRa radio gate opened`, while
+REMOTE was transmitting BEACONs every 5.5 s. With priority 0 the same code receives frames
+normally.
+
+The exact mechanism (a lock held across the blocking socket call versus plain scheduling)
+is not proven; priority 0 is a verified workaround. See `doc/Learnings.md` chapter 1 for
+the evidence, what is still open, and how to settle it.
+
+At priority 0, `MqttTask` is preempted by any priority-1 task the moment one becomes
+runnable. The Arduino loop task always gets to complete `applicationLoop()` before `MqttTask`
+resumes, and the diagnostics / LoRa gate sequence is never interrupted.
+
+**The throughput impact is negligible:** `loraTransportTask` yields every 10 ms;
+the Arduino loop yields whenever it calls `vTaskDelay` inside `describeCrawlerLoop()` and
+`LoRaState.purgeStale()`. `MqttTask` gets CPU time far more often than the MQTT keepalive
+interval (15 s) requires.
+
+### 8.3 The `setOptions` Timeout Is in Milliseconds
+
+The 256dpi `MQTTClient::setOptions(keepAlive, cleanSession, timeout)` takes `timeout` in
+**milliseconds**. This timeout governs:
+- How long `client.connect()` waits for a CONNACK from the broker.
+- How long `client.publish()` waits for the TCP write to complete.
+- The socket read loop inside `client.loop()`.
+
+The constant `MQTT_CONNECT_TIMEOUT_MS = 5000` is in milliseconds and must be passed
+**directly** to `setOptions`. Dividing it by 1000 produces `timeout = 5 ms`, which is far
+too short for a WiFi TCP round-trip (typically 10-50 ms). The result is
+`LWMQTT_MISSING_OR_WRONG_PACKET (-9)` on every connect attempt because the CONNACK never
+arrives within 5 ms.
+
+Correct call (in `MqttServiceClass::begin()`):
+```cpp
+client.setOptions(/*keepAlive=*/15, /*cleanSession=*/true,
+                  /*timeout=*/MQTT_CONNECT_TIMEOUT_MS);   // 5000 ms, NOT /1000
+```
+
+### 8.4 Topic Case Sensitivity
+
+MQTT topics are **case-sensitive**. The default prefix stored in NVS is `LoRaIoT`
+(capital I, capital o, capital T as in the project name). Subscribers must match exactly:
+
+```
+# Correct
+mosquitto_sub -t "LoRaIoT/#"
+mosquitto_sub -t "LoRaIoT/Remote_Node_2/Today/#"
+
+# Wrong - lowercase letters do not match
+mosquitto_sub -t "LoRaIot/#"
+```
+
+The current prefix can always be verified with `GET /api/mqtt/config` (`mqttPrefix` field).

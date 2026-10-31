@@ -48,5 +48,26 @@ class RestService {
   void registerRoutes();
 
  private:
+  /**
+   * Register the LOCAL-only routes (node registry, control POST, echo, ping, stats,
+   * and the MQTT group). Called from registerRoutes() on LOCAL nodes only; on a
+   * REMOTE node these paths are not registered (default 404). Registers the bare
+   * GET /api/lora/nodes last among the /api/lora/nodes/* routes (first-match-wins).
+   */
+  void registerLocalRoutes();
+
+  /**
+   * Register the REMOTE-only routes (PUT /api/lora/address, POST /api/lora/sensor/data).
+   * Called from registerRoutes() on REMOTE nodes only; on a LOCAL node these paths
+   * are not registered (default 404).
+   */
+  void registerRemoteRoutes();
+
+  /**
+   * Register the /api/mqtt/* routes. Called from registerLocalRoutes(); REMOTE
+   * nodes do not expose any MQTT endpoint.
+   */
+  void registerMqttRoutes();
+
   AsyncWebServer* server;
 };

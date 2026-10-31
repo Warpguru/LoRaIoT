@@ -45,7 +45,12 @@ in `AP` and `AP_STA` mode.
 | GET,POST | `/api/lora/nodes/ping` | `RestService.cpp` | LOCAL | Unicast ping to a remote node (`?addr=`) |
 | GET | `/api/lora/ping` | `RestService.cpp` | LOCAL | Broadcast ping |
 | POST | `/api/lora/sensor/data` | `RestService.cpp` | REMOTE | Ingest sensor data from an IoT device (via the SoftAP in `AP` / `AP_STA` mode, or via the LAN address in `STA` / `AP_STA` mode) |
+| GET | `/api/mqtt/config` | `RestService.cpp` | LOCAL | Get MQTT broker configuration (password masked) |
+| PUT | `/api/mqtt/config` | `RestService.cpp` | LOCAL | Update MQTT broker configuration (partial update, applied live) |
+| GET | `/api/mqtt/status` | `RestService.cpp` | LOCAL | Live MQTT connection state |
 | WS | `/ws/data` | `WebSocketService.cpp` | Both | Live state push (1 s, server to client only) |
+
+**Tier-specific endpoints:** they are registered only on the tier that supports them. On the other tier the path does not exist (default `404`). Endpoints marked `Both` whose behaviour differs per tier (`/api/lora/nodes/sensor`, `/api/lora/nodes/control`) validate parameters inside the handler and answer `400` for parameters that do not apply to the running tier.
 
 ---
 
@@ -421,7 +426,7 @@ Returns the currently configured LoRa node address. This endpoint is available o
 
 ## PUT /api/lora/address
 
-Sets the active LoRa address. The new address is persisted in NVS and survives reboots. The E220 module is programmed at boot, so the new address takes effect after the next reboot. This endpoint is only available on REMOTE instances. Accessing it on a LOCAL instance returns a bad request.
+Sets the active LoRa address. The new address is persisted in NVS and survives reboots. The E220 module is programmed at boot, so the new address takes effect after the next reboot. This endpoint is only available on REMOTE instances. The route is not registered on LOCAL nodes, which answer `404`.
 
 **Request body:** `application/json`
 
@@ -434,7 +439,7 @@ Allowed values: integer between 2 and 254 (inclusive). `1` is reserved for the L
 | Status | Meaning |
 |---|---|
 | `200` | Address changed. Body: `{"address":2}` |
-| `400` | Body is not valid JSON, `address` is missing, out of range, or this is a LOCAL instance. |
+| `400` | Body is not valid JSON, `address` is missing, or out of range |
 
 ---
 
@@ -486,7 +491,7 @@ Supported frequencies (with active WiFi radio):
 
 ## GET /api/lora/nodes
 
-Returns all remote node addresses that LOCAL has observed via BEACON. LOCAL only.
+Returns all remote node addresses that LOCAL has observed via BEACON. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 `online` is `false` when a keep-alive check failed (3 unanswered PINGs after 90 s of silence).
 Offline nodes stay in the list with their cached definitions; the next frame from the node
@@ -583,7 +588,7 @@ fall back to your safe state, optionally after `?refresh=true` or `?live=true&de
 
 ## POST /api/lora/nodes/control
 
-LOCAL only. Registers control devices and metrics in `ControlRegistry[addr]`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK with retry.
+LOCAL only: the route is not registered on REMOTE nodes, which answer `404`. Registers control devices and metrics in `ControlRegistry[addr]`, stores the setpoint values, and pushes the updated device data to the remote node via DATA_ACK with retry. The same logic is also reachable via the MQTT `/set` topic (`<prefix>/Local/Remote_Node_<n>/<device>/<metric>/set`) - see [`doc/MqttFeasibility.md`](doc/MqttFeasibility.md) section 4.3.
 
 | Query parameter | Required | Description |
 |---|---|---|
@@ -630,7 +635,7 @@ LOCAL stores the setpoint value regardless of delivery outcome. The remote will 
 
 ## GET /api/lora/stats
 
-Returns cumulative LoRa transport counters since boot.
+Returns cumulative LoRa transport counters since boot. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 **Response:** `200 application/json`
 
@@ -642,7 +647,7 @@ Returns cumulative LoRa transport counters since boot.
 
 ## POST /api/lora/nodes/echo
 
-Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns it, proving end-to-end frame processing. Blocks until RESPONSE or timeout. LOCAL only.
+Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns it, proving end-to-end frame processing. Blocks until RESPONSE or timeout. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 | Query parameter | Required | Description |
 |---|---|---|
@@ -667,7 +672,7 @@ Sends a REQUEST(Echo) to the remote node. REMOTE reverses the text and returns i
 
 Returns the result of the last `POST /api/lora/nodes/echo` call without blocking. The result is
 stored in RAM by the echo handler and survives until the next echo call replaces it or the node reboots.
-LOCAL only.
+LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 **Request body:** none
 
@@ -696,7 +701,7 @@ LOCAL only.
 
 Sends a PING to the specified remote node and waits for an ACK. Returns the responder address and RTT.
 `boot_id` is taken from the last BEACON of that node and is omitted if none has been received yet
-(the ACK frame itself carries no `boot_id`). LOCAL only.
+(the ACK frame itself carries no `boot_id`). LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 | Query parameter | Required | Description |
 |---|---|---|
@@ -713,7 +718,7 @@ Sends a PING to the specified remote node and waits for an ACK. Returns the resp
 
 ## GET /api/lora/ping
 
-Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful for discovering reachable nodes. LOCAL only.
+Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful for discovering reachable nodes. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
 
 | Status | Meaning |
 |---|---|
@@ -726,7 +731,7 @@ Sends a broadcast PING (addr 0xFF) and returns the first ACK received. Useful fo
 
 ## POST /api/lora/sensor/data
 
-REMOTE only. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes and immediately sends a PING to LOCAL carrying the new revision, so LOCAL starts the Describe crawl before the DATA frame even arrives. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
+REMOTE only: the route is not registered on LOCAL nodes, which answer `404`. Accepts sensor data from a SoftAP-connected IoT device. Auto-assigns stable `device_idx` and `metric_id` for new keys. Increments `registry_rev` on schema changes and immediately sends a PING to LOCAL carrying the new revision, so LOCAL starts the Describe crawl before the DATA frame even arrives. Rejects metrics that would cause the encoded `loraiot_Device` proto to exceed 186 bytes.
 
 **Request body:** `application/json`
 
@@ -743,7 +748,7 @@ Value types:
 | Status | Meaning |
 |---|---|
 | `200` | All metrics accepted |
-| `400` | Some metrics rejected, or not a REMOTE instance |
+| `400` | Invalid JSON, missing fields, or some metrics rejected |
 
 **Response body** (both `200` and `400`):
 
@@ -759,6 +764,11 @@ Pushes a JSON state snapshot to all connected clients once per second. It drives
 dashboard served at `GET /`. The endpoint is server-push only: messages sent by a client are
 ignored. Nothing is sent while no client is connected.
 
+`mqtt` is the MQTT connection state (`idle`, `disconnected`, `connected` or `error`, same values as
+`state` in `GET /api/mqtt/status`). It is present on LOCAL only and absent on REMOTE. The dashboard
+shows a globe icon (U+1F310) in front of the spider icon only when the key is present: full colour
+when `connected`, grey when `disconnected` or `error`, faint when `idle`.
+
 `nodes[]` has the same shape as `GET /api/lora/nodes/sensor` on LOCAL and
 `GET /api/lora/nodes/control` on REMOTE (without `boot_id` and `registry_rev`), and is `[]` when
 no peer is known.
@@ -771,6 +781,7 @@ fetched). The dashboard spider icon is lit while any node has `crawl_pending: tr
   "uptime_s": 312,
   "tier": "LOCAL",
   "lora": {"tx_frames": 20, "rx_frames": 23, "crc_errors": 0, "ack_loss": 0},
+  "mqtt": "connected",
   "nodes": [
     {
       "addr": 3, "online": true, "peer_last_seen_ms_ago": 53000, "crawl_pending": false,
@@ -789,3 +800,88 @@ fetched). The dashboard spider icon is lit while any node has `crawl_pending: tr
 `echo` is `null` until an echo test has run, then
 `{"sent":"...","received":"...","seq_no":n,"round_trip_ms":n,"success":true}`.
 `value` is `null` for a metric that has not received data yet; the real value is `value / scale`.
+
+---
+
+## GET /api/mqtt/config
+
+Returns the current MQTT broker configuration. JSON keys match the NVS key names exactly. The password is never returned; `mqttPassSet` indicates whether one is stored. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
+
+**Response:** `200 application/json`
+
+```json
+{"mqttBroker":"192.168.1.10","mqttPort":1883,"mqttUser":"mqttuser","mqttPassSet":true,"mqttPrefix":"LoRaIoT","mqttRetain":true,"mqttDiscovery":false,"mqttEnabled":true}
+```
+
+---
+
+## PUT /api/mqtt/config
+
+Updates MQTT broker settings. Partial update: any omitted field keeps its current stored value. Persisted to NVS and applied live - the broker connection is re-established immediately without a reboot. JSON keys match the NVS key names. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
+
+**Request body:** `application/json` (all fields optional)
+
+```json
+{"mqttBroker":"192.168.1.10","mqttPort":1883,"mqttUser":"mqttuser","mqttPass":"change-me","mqttPrefix":"LoRaIoT","mqttRetain":true,"mqttDiscovery":false,"mqttEnabled":true}
+```
+
+| Key | Type | Limits | Default | Meaning |
+|---|---|---|---|---|
+| `mqttBroker` | string | max 63 chars | `""` | Broker hostname or IPv4 address |
+| `mqttPort` | integer | 1-65535 | `1883` | Broker TCP port |
+| `mqttUser` | string | max 31 chars | `""` | Optional username |
+| `mqttPass` | string | max 31 chars | `""` | Optional password. Omit to keep current; set to `""` to clear. Never returned. |
+| `mqttPrefix` | string | 1-31 chars | `"LoRaIoT"` | Root topic prefix; no `+`, `#`, spaces, or leading/trailing `/` |
+| `mqttRetain` | boolean | - | `true` | Publish telemetry and status topics with retain=true |
+| `mqttDiscovery` | boolean | - | `false` | Home Assistant MQTT auto-discovery (Sub-Task 6, currently unused) |
+| `mqttEnabled` | boolean | - | `false` | Master enable switch for the MQTT service |
+
+| Status | Meaning |
+|---|---|
+| `200` | Settings accepted, persisted, and applied |
+| `400` | Validation error (message in `error` field) |
+
+**Response body (`200`):** same format as `GET /api/mqtt/config`.
+
+---
+
+## GET /api/mqtt/status
+
+Returns the live MQTT connection state and diagnostics. Fields are conditional - only present when relevant. LOCAL only: the route is not registered on REMOTE nodes, which answer `404`.
+
+| Field | Presence | Meaning |
+|---|---|---|
+| `enabled` | always | The configured `mqttEnabled` switch |
+| `state` | always | Live connection: `idle`, `disconnected`, `connected`, `error` |
+| `reason` | only when `state` is `idle` | `"disabled"` (switch off) or `"no broker"` (enabled but broker empty) |
+| `broker`, `port` | only when a broker is configured | As configured |
+| `lastError` | only when `state` is `error` | lwmqtt error code from the last failed connect (`client.lastError()`) |
+| `returnCode` | only when `state` is `error` and non-zero | MQTT CONNACK return code from the broker |
+| `retryInSec` | only when `state` is `error` or `disconnected` | Seconds until the next reconnect attempt |
+| `since` | always | Uptime seconds (`millis()/1000`) when `state` last changed |
+
+`state` values:
+- `"idle"` - not active; see `reason` for why.
+- `"disconnected"` - enabled and broker set, currently attempting to reconnect.
+- `"connected"` - broker link is up, publishing telemetry.
+- `"error"` - last connect attempt failed; retrying with exponential backoff (2 s to 64 s).
+
+`lastError` is the raw `int` returned by `arduino-mqtt` / lwmqtt `client.lastError()`. Common values are library-specific (negative = lwmqtt internal errors, positive = CONNACK codes). Check the arduino-mqtt source under `.pio/libdeps/*/MQTT/` for the full `lwmqtt_err_t` enum.
+
+**Examples:**
+
+```json
+{"enabled":true,"state":"connected","broker":"192.168.1.10","port":1883,"since":412}
+```
+
+```json
+{"enabled":false,"state":"idle","reason":"disabled","since":35}
+```
+
+```json
+{"enabled":true,"state":"error","broker":"192.168.1.10","port":1883,"lastError":-3,"retryInSec":16,"since":120}
+```
+
+For the full MQTT topic scheme (telemetry, availability, control `/set`, LWT) see [`doc/MqttFeasibility.md`](doc/MqttFeasibility.md).
+
+---

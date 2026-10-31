@@ -17,6 +17,8 @@
 #include "../../lora/src/nanopb/pb_encode.h"
 #include "../../LoRaIoT/src/Application.h"
 #include "../../LoRaIoT/src/PingTask.h"
+#include "MqttService.h"
+#include "ControlSetpoint.h"
 
 /**
  * RestService.cpp - LoRaIoT REST API handlers.
@@ -332,46 +334,7 @@ void RestService::registerRoutes() {
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
 
-  // PUT /api/lora/address - set active LoRa address (only on REMOTE).
-  server->on(
-      "/api/lora/address", HTTP_PUT,
-      [](AsyncWebServerRequest* request) {
-        if (!Gateway.isRemote()) {
-          Log_warn("PUT /api/lora/address failed - not a REMOTE instance");
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
-        }
-      },
-      nullptr,
-      [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-        if (!Gateway.isRemote()) {
-          return;
-        }
-
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, data, len);
-        if (err || !doc["address"].is<int>()) {
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Expected {\\\"address\\\":1}\"}");
-          return;
-        }
-
-        int addr = doc["address"].as<int>();
-        if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
-          char errMsg[ERROR_BODY_SIZE];
-          snprintf(errMsg, sizeof(errMsg), "{\"error\":\"Address must be between %d and %d\"}", LORA_DEFAULT_ADDR_REMOTE, LORA_MAX_ADDR_REMOTE);
-          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);
-          return;
-        }
-
-        LoRaConfig.setAddress((uint8_t)addr);
-        LoRaConfig.save();
-
-        Log_info("LoRa address changed via API to %d", LoRaConfig.getAddress());
-
-        String json = "{\"address\":";
-        json += String(LoRaConfig.getAddress());
-        json += "}";
-        request->send(HTTP_STATUS_OK, "application/json", json);
-      });
+  // PUT /api/lora/address is REMOTE only: see registerRemoteRoutes().
 
   // Note: loraKey has no REST endpoint - it is set only via the captive portal during
   // provisioning and takes effect on next reboot. The boot log shows whether encryption
@@ -425,8 +388,8 @@ void RestService::registerRoutes() {
       });
 
   // -------------------------------------------------------------------------
-  // LOCAL-only: LoRa node registry and telemetry endpoints (read-only, 2c)
-  // All require tier=LOCAL. Parameters are query strings (see doc/TechDebt.md §2).
+  // LoRa node telemetry endpoints shared by both tiers (behaviour differs per tier).
+  // Parameters are query strings (see doc/TechDebt.md §2).
   // -------------------------------------------------------------------------
 
   // GET /api/lora/nodes/sensor - sensor telemetry view (available on all nodes).
@@ -824,17 +787,30 @@ void RestService::registerRoutes() {
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
 
-  // POST /api/lora/nodes/control?addr=2  (LOCAL only) - Control device registration, value storage, and push
+  // Tier-specific endpoints are registered only on the tier that supports them; the
+  // other tier answers the server default 404. The tier is final here: the captive
+  // portal, the only place that changes it, has completed before registerRoutes() runs.
+  if (Gateway.isLocal()) {
+    registerLocalRoutes();
+  } else if (Gateway.isRemote()) {
+    registerRemoteRoutes();
+  }
+
+  Log_info("RestService: routes registered.");
+}
+
+// -------------------------------------------------------------------------
+// LOCAL-only endpoints. Registered from registerRoutes() only when
+// Gateway.isLocal(); on a REMOTE node these paths do not exist (default 404).
+// -------------------------------------------------------------------------
+void RestService::registerLocalRoutes() {
+  // POST /api/lora/nodes/control?addr=2 - Control device registration, value storage, and push
   // Body: {"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
   // Returns 200 (ok), 202 (after_describe - schema changed or peer BAD_REQUEST), 503 (busy), 504 (timeout).
   server->on("/api/lora/nodes/control", HTTP_POST,
     [](AsyncWebServerRequest* request) {},
     nullptr,
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      if (!Gateway.isLocal()) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
-        return;
-      }
       if (!request->hasArg("addr")) {
         request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"missing param: addr\"}");
         return;
@@ -877,48 +853,11 @@ void RestService::registerRoutes() {
 
       for (JsonPair kv : metrics) {
         const char* metricName = kv.key().c_str();
-        JsonVariant valVar     = kv.value()["value"];
-        const char* unit  = kv.value()["unit"].is<const char*>()  ? kv.value()["unit"].as<const char*>()  : "";
-        uint32_t scale    = kv.value()["scale"].is<uint32_t>()    ? kv.value()["scale"].as<uint32_t>()    : 1;
-        if (scale == 0) {
-          scale = 1;
-        }
 
-        bool isText = false;
-        const char* textValue = nullptr;
-        int32_t numValue = 0;
-        bool valid = false;
-
-        if (valVar.is<bool>()) {
-          isText = true;
-          textValue = valVar.as<bool>() ? "true" : "false";
-          valid = true;
-        } else if (valVar.is<const char*>()) {
-          isText = true;
-          textValue = valVar.as<const char*>();
-          if (textValue != nullptr && strlen(textValue) <= DEVICE_TABLE_TEXT_MAX_LEN) {
-            valid = true;
-          } else {
-            valid = false;
-          }
-        } else if (valVar.is<int32_t>() || valVar.is<float>() || valVar.is<double>()) {
-          isText = false;
-          numValue = valVar.as<int32_t>();
-          valid = true;
-        }
-
-        if (!valid) {
-          rejected.add(metricName);
-          continue;
-        }
-
+        // Shared with the MQTT /set path (ControlSetpoint.cpp): validates the value,
+        // registers the metric and stores the value in ControlRegistry.
         uint32_t devIdx = 0, metricId = 0;
-        if (ControlRegistry.registerMetric(addr, deviceName, metricName, unit, scale, devIdx, metricId)) {
-          if (isText) {
-            ControlRegistry.storeTextValue(addr, devIdx, metricId, textValue);
-          } else {
-            ControlRegistry.storeValue(addr, devIdx, metricId, numValue);
-          }
+        if (controlApplyMetric(addr, deviceName, metricName, kv.value(), devIdx, metricId)) {
           JsonObject a = accepted.add<JsonObject>();
           a["metric"]    = metricName;
           a["device_idx"]= devIdx;
@@ -1171,16 +1110,83 @@ void RestService::registerRoutes() {
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
 
-  // POST /api/lora/sensor/data  (REMOTE only) - SoftAP sensor ingestion
+  // GET /api/lora/nodes - list all known remote node addresses.
+  // Registered LAST among all /api/lora/nodes/* routes because ESPAsyncWebServer
+  // uses first-match-wins and this bare path would otherwise swallow all sub-paths.
+  // The shared sensor and control GET routes are registered earlier in registerRoutes(),
+  // which runs before this method.
+  server->on("/api/lora/nodes", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/lora/nodes");
+    uint8_t addrs[LORA_MAX_PEERS];
+    uint8_t count = SensorRegistry.listPeers(addrs, LORA_MAX_PEERS);
+    JsonDocument doc;
+    JsonArray arr = doc["nodes"].to<JsonArray>();
+    for (uint8_t i = 0; i < count; i++) {
+      uint32_t bootId, regRev, lastSeenMs;
+      bool online, crawlPending;
+      if (SensorRegistry.getNodeInfo(addrs[i], bootId, regRev, lastSeenMs, online, crawlPending)) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["addr"]          = addrs[i];
+        obj["boot_id"]       = bootId;
+        obj["registry_rev"]  = regRev;
+        obj["last_seen_ms"]  = lastSeenMs;
+        obj["online"]        = online;
+        obj["devices"]       = SensorRegistry.getDeviceCount(addrs[i]);
+        obj["crawl_pending"] = crawlPending;
+      }
+    }
+    String json;
+    serializeJson(doc, json);
+    request->send(HTTP_STATUS_OK, "application/json", json);
+  });
+
+  // MQTT endpoints (LOCAL only, same group).
+  registerMqttRoutes();
+}
+
+// -------------------------------------------------------------------------
+// REMOTE-only endpoints. Registered from registerRoutes() only when
+// Gateway.isRemote(); on a LOCAL node these paths do not exist (default 404).
+// -------------------------------------------------------------------------
+void RestService::registerRemoteRoutes() {
+  // PUT /api/lora/address - set active LoRa address (GET stays on both tiers).
+  server->on(
+      "/api/lora/address", HTTP_PUT,
+      [](AsyncWebServerRequest* request) {},
+      nullptr,
+      [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err || !doc["address"].is<int>()) {
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Expected {\\\"address\\\":1}\"}");
+          return;
+        }
+
+        int addr = doc["address"].as<int>();
+        if (addr < LORA_DEFAULT_ADDR_REMOTE || addr > LORA_MAX_ADDR_REMOTE) {
+          char errMsg[ERROR_BODY_SIZE];
+          snprintf(errMsg, sizeof(errMsg), "{\"error\":\"Address must be between %d and %d\"}", LORA_DEFAULT_ADDR_REMOTE, LORA_MAX_ADDR_REMOTE);
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", errMsg);
+          return;
+        }
+
+        LoRaConfig.setAddress((uint8_t)addr);
+        LoRaConfig.save();
+
+        Log_info("LoRa address changed via API to %d", LoRaConfig.getAddress());
+
+        String json = "{\"address\":";
+        json += String(LoRaConfig.getAddress());
+        json += "}";
+        request->send(HTTP_STATUS_OK, "application/json", json);
+      });
+
+  // POST /api/lora/sensor/data - SoftAP sensor ingestion
   // Body: {"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100}}}
   server->on("/api/lora/sensor/data", HTTP_POST,
     [](AsyncWebServerRequest* request) {},
     nullptr,
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-      if (!Gateway.isRemote()) {
-        request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"endpoint not supported\"}");
-        return;
-      }
       JsonDocument doc;
       if (deserializeJson(doc, data, len)) {
         request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"invalid JSON\"}");
@@ -1291,34 +1297,198 @@ void RestService::registerRoutes() {
       int status = rejected.size() > 0 ? HTTP_STATUS_BAD_REQUEST : HTTP_STATUS_OK;
       request->send(status, "application/json", json);
     });
+}
 
-  // GET /api/lora/nodes - list all known remote node addresses.
-  // Registered LAST among all /api/lora/nodes/* routes because ESPAsyncWebServer
-  // uses first-match-wins and this bare path would otherwise swallow all sub-paths.
-  server->on("/api/lora/nodes", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/nodes");
-    uint8_t addrs[LORA_MAX_PEERS];
-    uint8_t count = SensorRegistry.listPeers(addrs, LORA_MAX_PEERS);
+// -------------------------------------------------------------------------
+// MQTT configuration and status endpoints (LOCAL only, see registerRoutes()).
+// -------------------------------------------------------------------------
+void RestService::registerMqttRoutes() {
+  // GET /api/mqtt/config - return current MQTT broker settings.
+  // Password is never returned; mqttPassSet indicates whether one is stored.
+  // JSON keys match the NVS key constants (MQTT_NVS_KEY_*) exactly.
+  server->on("/api/mqtt/config", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/mqtt/config");
+    MqttConfig cfg = MqttService.getConfig();
     JsonDocument doc;
-    JsonArray arr = doc["nodes"].to<JsonArray>();
-    for (uint8_t i = 0; i < count; i++) {
-      uint32_t bootId, regRev, lastSeenMs;
-      bool online, crawlPending;
-      if (SensorRegistry.getNodeInfo(addrs[i], bootId, regRev, lastSeenMs, online, crawlPending)) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["addr"]          = addrs[i];
-        obj["boot_id"]       = bootId;
-        obj["registry_rev"]  = regRev;
-        obj["last_seen_ms"]  = lastSeenMs;
-        obj["online"]        = online;
-        obj["devices"]       = SensorRegistry.getDeviceCount(addrs[i]);
-        obj["crawl_pending"] = crawlPending;
-      }
-    }
+    doc[MQTT_NVS_KEY_BROKER]    = cfg.broker;
+    doc[MQTT_NVS_KEY_PORT]      = cfg.port;
+    doc[MQTT_NVS_KEY_USER]      = cfg.user;
+    doc[MQTT_NVS_KEY_PASS_SET]  = (cfg.pass[0] != '\0');
+    doc[MQTT_NVS_KEY_PREFIX]    = cfg.prefix;
+    doc[MQTT_NVS_KEY_RETAIN]    = (cfg.retain != 0);
+    doc[MQTT_NVS_KEY_DISCOVERY] = (cfg.discovery != 0);
+    doc[MQTT_NVS_KEY_ENABLED]   = (cfg.enabled != 0);
     String json;
     serializeJson(doc, json);
     request->send(HTTP_STATUS_OK, "application/json", json);
   });
 
-  Log_info("RestService: routes registered.");
+  // PUT /api/mqtt/config - update MQTT broker settings; partial update allowed.
+  // Validated server-side; persisted to NVS and applied live (no reboot needed).
+  // JSON keys match NVS key constants. mqttPass is accepted but never returned.
+  server->on(
+      "/api/mqtt/config", HTTP_PUT,
+      [](AsyncWebServerRequest* request) {},
+      nullptr,
+      [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err) {
+          request->send(HTTP_STATUS_BAD_REQUEST, "application/json", "{\"error\":\"Invalid JSON\"}");
+          return;
+        }
+
+        // Load current config as the base for a partial update.
+        MqttConfig cfg = MqttService.getConfig();
+
+        if (doc[MQTT_NVS_KEY_BROKER].is<const char*>()) {
+          const char* v = doc[MQTT_NVS_KEY_BROKER].as<const char*>();
+          if (strlen(v) >= MQTT_BROKER_MAX_LEN) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttBroker exceeds maximum length\"}");
+            return;
+          }
+          strncpy(cfg.broker, v, sizeof(cfg.broker) - 1);
+          cfg.broker[sizeof(cfg.broker) - 1] = '\0';
+        }
+
+        if (doc[MQTT_NVS_KEY_PORT].is<int>()) {
+          int p = doc[MQTT_NVS_KEY_PORT].as<int>();
+          if (p < 1 || p > 65535) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttPort must be between 1 and 65535\"}");
+            return;
+          }
+          cfg.port = (uint16_t)p;
+        }
+
+        if (doc[MQTT_NVS_KEY_USER].is<const char*>()) {
+          const char* v = doc[MQTT_NVS_KEY_USER].as<const char*>();
+          if (strlen(v) >= MQTT_USER_MAX_LEN) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttUser exceeds maximum length\"}");
+            return;
+          }
+          strncpy(cfg.user, v, sizeof(cfg.user) - 1);
+          cfg.user[sizeof(cfg.user) - 1] = '\0';
+        }
+
+        // mqttPass: omitting the key keeps the current password; explicit empty string clears it.
+        if (doc[MQTT_NVS_KEY_PASS].is<const char*>()) {
+          const char* v = doc[MQTT_NVS_KEY_PASS].as<const char*>();
+          if (strlen(v) >= MQTT_PASS_MAX_LEN) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttPass exceeds maximum length\"}");
+            return;
+          }
+          strncpy(cfg.pass, v, sizeof(cfg.pass) - 1);
+          cfg.pass[sizeof(cfg.pass) - 1] = '\0';
+        }
+
+        if (doc[MQTT_NVS_KEY_PREFIX].is<const char*>()) {
+          const char* v = doc[MQTT_NVS_KEY_PREFIX].as<const char*>();
+          size_t vlen = strlen(v);
+          // mqttPrefix must be non-empty and must not contain '+', '#', spaces, or start/end with '/'.
+          if (vlen == 0 || vlen >= MQTT_PREFIX_MAX_LEN) {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttPrefix must be 1-31 characters\"}");
+            return;
+          }
+          if (v[0] == '/' || v[vlen - 1] == '/') {
+            request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                          "{\"error\":\"mqttPrefix must not start or end with '/'\"}");
+            return;
+          }
+          for (size_t i = 0; i < vlen; i++) {
+            if (v[i] == '+' || v[i] == '#' || v[i] == ' ') {
+              request->send(HTTP_STATUS_BAD_REQUEST, "application/json",
+                            "{\"error\":\"mqttPrefix must not contain '+', '#', or spaces\"}");
+              return;
+            }
+          }
+          strncpy(cfg.prefix, v, sizeof(cfg.prefix) - 1);
+          cfg.prefix[sizeof(cfg.prefix) - 1] = '\0';
+        }
+
+        if (doc[MQTT_NVS_KEY_RETAIN].is<bool>()) {
+          cfg.retain = doc[MQTT_NVS_KEY_RETAIN].as<bool>() ? 1 : 0;
+        }
+
+        if (doc[MQTT_NVS_KEY_DISCOVERY].is<bool>()) {
+          cfg.discovery = doc[MQTT_NVS_KEY_DISCOVERY].as<bool>() ? 1 : 0;
+        }
+
+        if (doc[MQTT_NVS_KEY_ENABLED].is<bool>()) {
+          cfg.enabled = doc[MQTT_NVS_KEY_ENABLED].as<bool>() ? 1 : 0;
+        }
+
+        MqttService.applyConfig(cfg);
+
+        Log_info("MQTT config updated via API - broker='%s' port=%u prefix='%s' enabled=%u",
+                 cfg.broker, cfg.port, cfg.prefix, cfg.enabled);
+
+        // Return the new stored state (password never returned).
+        JsonDocument resp;
+        resp[MQTT_NVS_KEY_BROKER]    = cfg.broker;
+        resp[MQTT_NVS_KEY_PORT]      = cfg.port;
+        resp[MQTT_NVS_KEY_USER]      = cfg.user;
+        resp[MQTT_NVS_KEY_PASS_SET]  = (cfg.pass[0] != '\0');
+        resp[MQTT_NVS_KEY_PREFIX]    = cfg.prefix;
+        resp[MQTT_NVS_KEY_RETAIN]    = (cfg.retain != 0);
+        resp[MQTT_NVS_KEY_DISCOVERY] = (cfg.discovery != 0);
+        resp[MQTT_NVS_KEY_ENABLED]   = (cfg.enabled != 0);
+        String json;
+        serializeJson(resp, json);
+        request->send(HTTP_STATUS_OK, "application/json", json);
+      });
+
+  // GET /api/mqtt/status - live MQTT connection state.
+  // Fields are conditional; see doc/RestApi.md for the full contract.
+  server->on("/api/mqtt/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+    Log_info("GET /api/mqtt/status");
+    MqttStatus st  = MqttService.getStatus();
+    MqttConfig cfg = MqttService.getConfig();
+    JsonDocument doc;
+
+    doc["enabled"] = (cfg.enabled != 0);
+    doc["state"]   = mqttStateName(st.state);
+
+    // reason is only present when state is idle.
+    if (st.state == MqttState::Idle) {
+      if (cfg.enabled == 0) {
+        doc["reason"] = "disabled";
+      } else {
+        doc["reason"] = "no broker";
+      }
+    }
+
+    // broker and port only when a broker is configured.
+    if (cfg.broker[0] != '\0') {
+      doc["broker"] = cfg.broker;
+      doc["port"]   = cfg.port;
+    }
+
+    // lastError (and optional returnCode) only when state is error.
+    if (st.state == MqttState::Error) {
+      doc["lastError"] = st.lastError;
+      if (st.lastReturnCode != 0) {
+        doc["returnCode"] = st.lastReturnCode;
+      }
+    }
+
+    // retryInSec when state is error or disconnected and a retry is scheduled.
+    if ((st.state == MqttState::Error || st.state == MqttState::Disconnected) &&
+        st.retryAtMs != 0) {
+      uint32_t now = millis();
+      uint32_t retryInSec = (st.retryAtMs > now) ? ((st.retryAtMs - now + 999) / 1000) : 0;
+      doc["retryInSec"] = retryInSec;
+    }
+
+    // since: uptime seconds when state last changed.
+    doc["since"] = (st.stateSinceMs / 1000);
+
+    String json;
+    serializeJson(doc, json);
+    request->send(HTTP_STATUS_OK, "application/json", json);
+  });
 }

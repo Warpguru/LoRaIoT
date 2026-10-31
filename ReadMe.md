@@ -110,6 +110,20 @@ curl -s -X POST "http://<LOCAL-IP>/api/lora/nodes/control?addr=2" \
       }'
 ```
 
+### MQTT telemetry and control
+
+The LOCAL node can forward received sensor data to an MQTT broker and accept setpoint commands over MQTT, without any change to the LoRa protocol or the REMOTE nodes.
+
+- **Settings:** `PUT /api/mqtt/config` (broker, port, user, password, topic prefix, retain, enable). Persisted to NVS; applied live without a reboot.
+- **Telemetry topics:** `<prefix>/Remote_Node_<n>/<device>/<metric>` - scaled decimal values, one topic per metric.
+- **Availability topics:** `<prefix>/Remote_Node_<n>/status` (`online` / `offline`) and `<prefix>/Local/status` (LWT).
+- **Control `/set` topic:** `<prefix>/Local/Remote_Node_<n>/<device>/<metric>/set` - JSON payload identical to one metric entry of `POST /api/lora/nodes/control`. Translates directly into a LoRa `DATA_ACK` push.
+- **Status:** `GET /api/mqtt/status` returns live connection state (`idle`, `disconnected`, `connected`, `error`).
+
+For the full topic specification, payload format, validation rules, and configuration defaults see [`doc/MqttFeasibility.md`](doc/MqttFeasibility.md).
+
+---
+
 ### Live dashboard
 
 Every node serves a self-contained, real-time dashboard at `http://<node-ip>/`. The page is stored in flash (about 12 KB, no CDN, no external assets) and is updated once per second over the WebSocket endpoint `/ws/data`. It shows the node tier, WebSocket connection state, uptime, the peer nodes with their devices and metrics (scaled value, unit, age), and the LoRa link counters (TX, RX, CRC errors, ACK loss). If no update arrives for 3 s the page marks the link as lost and reconnects automatically.

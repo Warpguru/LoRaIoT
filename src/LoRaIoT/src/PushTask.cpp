@@ -61,7 +61,7 @@ void pushTaskNotifyCrawlComplete(uint8_t peerAddr) {
   if (pushQueue == nullptr) {
     return;
   }
-  PushItem item = {peerAddr, PUSH_REASON_CRAWL_COMPLETE};
+  PushItem item = {peerAddr, PUSH_REASON_CRAWL_COMPLETE, 0};
   if (xQueueSend(pushQueue, &item, 0) != pdTRUE) {
     Log_warn("PushTask: queue full, dropped crawl-complete push for 0x%02X", peerAddr);
   }
@@ -77,13 +77,69 @@ void pushTaskNotifyNodeBack(uint8_t peerAddr) {
   if (pushQueue == nullptr) {
     return;
   }
-  PushItem item = {peerAddr, PUSH_REASON_NODE_BACK};
+  PushItem item = {peerAddr, PUSH_REASON_NODE_BACK, 0};
   if (xQueueSend(pushQueue, &item, 0) != pdTRUE) {
     Log_warn("PushTask: queue full, dropped node-back push for 0x%02X", peerAddr);
   }
 }
 
+/**
+ * Enqueue a single-device push for an MQTT setpoint.
+ *
+ * Called from mqttTask after the value has been stored in ControlRegistry.
+ */
+void pushTaskNotifySetpoint(uint8_t peerAddr, uint8_t deviceIdx) {
+  if (pushQueue == nullptr) {
+    return;
+  }
+  PushItem item = {peerAddr, PUSH_REASON_SETPOINT, deviceIdx};
+  if (xQueueSend(pushQueue, &item, 0) != pdTRUE) {
+    Log_warn("PushTask: queue full, dropped setpoint push for 0x%02X device=%u", peerAddr, deviceIdx);
+  }
+}
+
 // ---- FreeRTOS task ----------------------------------------------------------
+
+/**
+ * Push the current control values of one device to a peer, with broker-busy retries.
+ * A device slot that does not exist is skipped silently.
+ */
+static void pushDevice(uint8_t peerAddr, uint8_t deviceIdx) {
+  loraiot_Data protoData = loraiot_Data_init_zero;
+  // Extract latest metric values for this device into a protobuf Data structure
+  if (!ownedRegistry().toProtoData(peerAddr, deviceIdx, protoData)) {
+    return;
+  }
+
+  // Transmit with broker busy retry logic
+  for (uint8_t attempt = 0; attempt < PUSH_MAX_BUSY_RETRIES; attempt++) {
+    loraiot_Status ackStatus = loraiot_Status_STATUS_OK;
+    const BrokerResult result = loraSendDataReliable(peerAddr, protoData, ackStatus);
+
+    if (result == BrokerResult::BUSY) {
+      // Broker currently held by another task (e.g. PingTask or REST call)
+      if (attempt + 1 < PUSH_MAX_BUSY_RETRIES) {
+        vTaskDelay(pdMS_TO_TICKS(PUSH_BUSY_RETRY_MS));
+      } else {
+        Log_warn("PushTask: broker busy, abandoned push for 0x%02X device=%u", peerAddr, deviceIdx);
+      }
+    } else if (result == BrokerResult::TIMEOUT) {
+      // Frame was transmitted but no ACK received after full retransmit cycle
+      Log_warn("PushTask: no ACK from 0x%02X device=%u", peerAddr, deviceIdx);
+      return;
+    } else if (result == BrokerResult::OK) {
+      if (ackStatus == loraiot_Status_STATUS_BAD_REQUEST) {
+        Log_info("PushTask: BAD_REQUEST for device=%u from 0x%02X, peer needs crawl", deviceIdx, peerAddr);
+      } else {
+        Log_info("PushTask: pushed device=%u to 0x%02X OK", deviceIdx, peerAddr);
+      }
+      return;
+    } else {
+      Log_error("PushTask: encode error for device=%u to 0x%02X", deviceIdx, peerAddr);
+      return;
+    }
+  }
+}
 
 /**
  * Internal FreeRTOS worker task.
@@ -99,9 +155,15 @@ static void pushTask(void* /*param*/) {
   Log_info("PushTask: LoRa gate open - starting push loop");
 
   for (;;) {
-    PushItem item = {0, 0};
-    // Block until a notification arrives from sendDescribeResponse or markSeen
+    PushItem item = {0, 0, 0};
+    // Block until a notification arrives from sendDescribeResponse, markSeen or MQTT
     if (xQueueReceive(pushQueue, &item, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+
+    if (item.reason == PUSH_REASON_SETPOINT) {
+      Log_info("PushTask: pushing setpoint device %u to 0x%02X", item.deviceIdx, item.peerAddr);
+      pushDevice(item.peerAddr, item.deviceIdx);
       continue;
     }
 
@@ -110,40 +172,7 @@ static void pushTask(void* /*param*/) {
 
     // Enumerate all possible device slots for this peer
     for (uint8_t deviceIdx = 1; deviceIdx <= DEVICE_TABLE_MAX_DEVICES; deviceIdx++) {
-      loraiot_Data protoData = loraiot_Data_init_zero;
-      // Extract latest metric values for this device into a protobuf Data structure
-      if (!ownedRegistry().toProtoData(item.peerAddr, deviceIdx, protoData)) {
-        continue;
-      }
-
-      // Transmit with broker busy retry logic
-      for (uint8_t attempt = 0; attempt < PUSH_MAX_BUSY_RETRIES; attempt++) {
-        loraiot_Status ackStatus = loraiot_Status_STATUS_OK;
-        const BrokerResult result = loraSendDataReliable(item.peerAddr, protoData, ackStatus);
-
-        if (result == BrokerResult::BUSY) {
-          // Broker currently held by another task (e.g. PingTask or REST call)
-          if (attempt + 1 < PUSH_MAX_BUSY_RETRIES) {
-            vTaskDelay(pdMS_TO_TICKS(PUSH_BUSY_RETRY_MS));
-          } else {
-            Log_warn("PushTask: broker busy, abandoned push for 0x%02X device=%u", item.peerAddr, deviceIdx);
-          }
-        } else if (result == BrokerResult::TIMEOUT) {
-          // Frame was transmitted but no ACK received after full retransmit cycle
-          Log_warn("PushTask: no ACK from 0x%02X device=%u", item.peerAddr, deviceIdx);
-          break;
-        } else if (result == BrokerResult::OK) {
-          if (ackStatus == loraiot_Status_STATUS_BAD_REQUEST) {
-            Log_info("PushTask: BAD_REQUEST for device=%u from 0x%02X, peer needs crawl", deviceIdx, item.peerAddr);
-          } else {
-            Log_info("PushTask: pushed device=%u to 0x%02X OK", deviceIdx, item.peerAddr);
-          }
-          break;
-        } else {
-          Log_error("PushTask: encode error for device=%u to 0x%02X", deviceIdx, item.peerAddr);
-          break;
-        }
-      }
+      pushDevice(item.peerAddr, deviceIdx);
     }
   }
 }

@@ -79,7 +79,8 @@ StatusLed ledTask (priority 1, tskNO_AFFINITY)
 - **Browser UI:** serve from PROGMEM via `request->send_P(200, "text/html", INDEX_HTML)` - never load HTML into DRAM.
 - **PUT handler with body:** signature is `(AsyncWebServerRequest*, uint8_t* data, size_t len, size_t, size_t)`.
 - **JSON:** `JsonDocument doc; serializeJson(doc, json); request->send(200, "application/json", json)`.
-- **Route registration:** add all `/api/*` endpoints in `RestService::registerRoutes()`, not scattered in `setupServer()`.
+- **Route registration:** add all `/api/*` endpoints in `RestService::registerRoutes()` (or the helpers it calls), not scattered in `setupServer()`.
+- **Tier-specific endpoints** are registered only on the tier that supports them: LOCAL-only routes in `registerLocalRoutes()` (called under `Gateway.isLocal()`), REMOTE-only routes in `registerRemoteRoutes()` (called under `Gateway.isRemote()`). On the other tier the path does not exist (default 404), so handlers must contain no 400/404 wrong-tier guard code. Set `x-tier` on the operation in `openapi_json.h` and state the tier in `doc/RestApi.md`. Shared endpoints whose parameters differ per tier keep in-handler parameter validation (e.g. `/api/lora/nodes/sensor`). The bare `GET /api/lora/nodes` must stay registered last among the `/api/lora/nodes/*` routes (first-match-wins).
 - **API documentation:** every endpoint must be added to both `src/LoRaIoT/src/openapi_json.h` (source of truth, served at `GET /openapi`) and `doc/RestApi.md` (human-readable companion) in the same change that registers it.
 - **Manual-use endpoints must be `GET`** so they work from a browser address bar or a link on the index page. Add a link for each one to `index_html.h`.
 - **WiFi failure:** `statusLed.setState(LedState::FAULT)` then `vTaskSuspend(NULL)` - ledTask drives SOS forever.

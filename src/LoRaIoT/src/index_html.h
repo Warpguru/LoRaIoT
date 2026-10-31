@@ -46,8 +46,16 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     .badge.ok   { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; }
     .badge.bad  { background: #fdecea; border-color: #f5b5b0; color: #8a1c14; }
     .badge.tier { background: #eaf2fc; border-color: #b7d3f3; color: #1f5fa8; }
+    .icons { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    /* MQTT connection (LOCAL only). Emoji ignore color, so the state is shown with opacity and
+       grayscale: connected = full colour, disconnected/error = grey, idle (disabled) = faint. */
+    #mqttStatus {
+      font-size: 1.1rem; opacity: .15; filter: grayscale(1); transition: opacity .15s;
+    }
+    #mqttStatus.connected { opacity: 1; filter: none; }
+    #mqttStatus.disconnected, #mqttStatus.error { opacity: .6; }
     #crawlerStatus {
-      margin-left: auto; font-size: 1.1rem; color: #e07b00;
+      font-size: 1.1rem; color: #e07b00;
       opacity: .15; transition: opacity .15s;
     }
     #crawlerStatus.active { opacity: 1; }
@@ -82,8 +90,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <span class="badge tier" id="tier">-</span>
     <span class="badge bad" id="wsStatus">Disconnected</span>
     <span class="muted">Uptime <span id="uptime">-</span></span>
-    <span id="crawlerStatus" title="Schema crawl pending">&#x1F577;</span>
-    <span id="wsActivity" title="WebSocket activity">&#9889;</span>
+    <span class="icons">
+      <span id="mqttStatus" title="MQTT" style="display:none">&#x1F310;</span>
+      <span id="crawlerStatus" title="Schema crawl" style="display:none">&#x1F577;</span>
+      <span id="wsActivity" title="WebSocket activity">&#9889;</span>
+    </span>
   </div>
   <h2>Nodes</h2>
   <div id="nodes"><div class="muted">No nodes discovered yet</div></div>
@@ -106,6 +117,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <a href="/openapi/ui">API Explorer</a>
     <a href="/status">Status</a>
     <a href="/api/log">Log</a>
+    <a id="mqttConfigLink" href="/api/mqtt/config" style="display:none">MQTT Config</a>
+    <a id="mqttStatusLink" href="/api/mqtt/status" style="display:none">MQTT Status</a>
   </div>
 
   <script>
@@ -135,11 +148,26 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     var echoEl       = document.getElementById('echo');
     var wsActivityEl    = document.getElementById('wsActivity');
     var crawlerStatusEl = document.getElementById('crawlerStatus');
+    var mqttStatusEl    = document.getElementById('mqttStatus');
     var wsActivityTimer = null;
     var lastData = null;  /* last received payload, re-rendered as stale when the link drops */
 
-    /* Show/hide the crawler icon based on whether any peer has a pending Describe crawl. */
-    function setCrawlerActive(anyPending) {
+    /* MQTT icon: only LOCAL reports d.mqtt (idle | disconnected | connected | error). */
+    function setMqttState(state) {
+      if (!state) {
+        mqttStatusEl.style.display = 'none';
+        return;
+      }
+      mqttStatusEl.style.display = '';
+      mqttStatusEl.className = state;
+      mqttStatusEl.title = 'MQTT ' + state;
+    }
+
+    /* Crawler icon: LOCAL always shows it (dim = idle, full = a Describe crawl is pending).
+       Other tiers show it only while a crawl is pending. */
+    function setCrawlerActive(anyPending, alwaysShow) {
+      crawlerStatusEl.style.display = (anyPending || alwaysShow) ? '' : 'none';
+      crawlerStatusEl.title = anyPending ? 'Schema crawl pending' : 'Schema crawl idle';
       if (anyPending) {
         crawlerStatusEl.classList.add('active');
       } else {
@@ -268,6 +296,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     function render(d) {
       lastData = d;
       tierEl.textContent = d.tier;
+      /* MQTT endpoints are registered on LOCAL only. */
+      var mqttDisplay = (d.tier === 'LOCAL') ? '' : 'none';
+      document.getElementById('mqttConfigLink').style.display = mqttDisplay;
+      document.getElementById('mqttStatusLink').style.display = mqttDisplay;
+      setMqttState(d.mqtt);
       uptimeEl.textContent = formatDuration(d.uptime_s);
       if (d.lora) {
         txEl.textContent  = d.lora.tx_frames;
@@ -283,7 +316,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
           break;
         }
       }
-      setCrawlerActive(anyPending);
+      setCrawlerActive(anyPending, d.tier === 'LOCAL');
       renderNodes(d.nodes);
       renderEcho(d.echo);
     }
