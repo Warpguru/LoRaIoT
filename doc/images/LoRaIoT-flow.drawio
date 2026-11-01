@@ -1,0 +1,116 @@
+<mxfile host="Electron">
+  <diagram name="LoRaIoT Flow" id="loraiot-flow">
+    <mxGraphModel dx="466" dy="363" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;arcSize=8;" value="Controller / MQTT" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="3" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;" value="WLAN" vertex="1">
+          <mxGeometry height="90" width="210" x="295" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=15;fontStyle=1;arcSize=8;" value="LoRaIoT (Local)" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="LoRa Radio" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="350" as="geometry" />
+        </mxCell>
+        <mxCell id="6" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;" value="LoRa" vertex="1">
+          <mxGeometry height="90" width="210" x="295" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="7" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="LoRa Radio" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="590" as="geometry" />
+        </mxCell>
+        <mxCell id="8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=15;fontStyle=1;arcSize=8;" value="LoRaIoT (Remote Node n)" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="9" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;" value="WLAN" vertex="1">
+          <mxGeometry height="90" width="210" x="295" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;arcSize=8;" value="IoT Device" vertex="1">
+          <mxGeometry height="50" width="200" x="300" y="930" as="geometry" />
+        </mxCell>
+        <mxCell id="11" edge="1" parent="1" source="2" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0078D4;fontColor=#0078D4;fontSize=10;align=center;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="3" value="POST&lt;br&gt;http://&amp;lt;Local&amp;gt;/api/lora/sensor/data {&quot;device&quot;:...,&quot;metrics&quot;:{...}}">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="12" edge="1" parent="1" source="3" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#D83B01;fontColor=#D83B01;fontSize=10;align=center;labelBackgroundColor=#ffffff;dashed=1;endArrow=block;endFill=1;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="2" value="MQTT publish&lt;br&gt;LoRaIoT/Remote_Node_n/dev/metric&lt;div&gt;key:value&lt;/div&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="170" y="155" />
+              <mxPoint x="170" y="45" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="13" edge="1" parent="1" source="2" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#107C10;fontColor=#107C10;fontSize=10;align=center;labelBackgroundColor=#ffffff;dashed=1;endArrow=block;endFill=1;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="3" value="MQTT subscribe&#xa;LoRaIoT/Local/+/+/+/set&#xa;{&quot;value&quot;:...}">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="630" y="45" />
+              <mxPoint x="630" y="155" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="14" edge="1" parent="1" source="3" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#555555;fontSize=10;labelBackgroundColor=#ffffff;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="4" value="HTTP / WiFi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="15" edge="1" parent="1" source="4" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#555555;fontSize=10;labelBackgroundColor=#ffffff;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="5" value="UART 115200 baud">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="16" edge="1" parent="1" source="5" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;align=right;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="6" value="DATA">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="230" y="375" />
+              <mxPoint x="230" y="495" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="17" edge="1" parent="1" source="6" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;align=left;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="5" value="DATA_ACK">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="495" />
+              <mxPoint x="570" y="375" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="18" edge="1" parent="1" source="6" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;align=right;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="7" value="DATA">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="230" y="495" />
+              <mxPoint x="230" y="615" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="19" edge="1" parent="1" source="7" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;align=left;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="6" value="DATA_ACK">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="615" />
+              <mxPoint x="570" y="495" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="20" edge="1" parent="1" source="7" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#555555;fontSize=10;labelBackgroundColor=#ffffff;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="8" value="UART 115200 baud">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="21" edge="1" parent="1" source="8" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#555555;fontSize=10;labelBackgroundColor=#ffffff;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="9" value="HTTP / WiFi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="22" edge="1" parent="1" source="9" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#0078D4;fontColor=#0078D4;fontSize=10;align=center;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="10" value="GET http://&amp;lt;Remote&amp;gt;/api/lora/nodes/control">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="230" y="835" />
+              <mxPoint x="230" y="955" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="23" edge="1" parent="1" source="10" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#107C10;fontColor=#107C10;fontSize=10;align=center;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="9" value="POST http://&amp;lt;Remote&amp;gt;/api/lora/sensor/data&lt;br&gt;{&quot;device&quot;:...,&quot;metrics&quot;:{...}}">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="955" />
+              <mxPoint x="570" y="835" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
