@@ -1,8 +1,8 @@
 # LoRaIoT - Firmware Architecture
 
 This document is the developer reference for the LoRaIoT firmware internals.
-For hardware wiring, quick-start examples, and operational guides see
-[`README.md`](../README.md).
+For hardware wiring and operational guides see [`ReadMe.md`](../ReadMe.md); for worked
+REST examples see [`RestApi.md`](RestApi.md#worked-examples).
 
 ---
 
@@ -307,7 +307,7 @@ Design points:
 | Safe rendering | Node, device and metric names come from the radio link, so the DOM is built with `textContent` only, never `innerHTML` |
 
 The online / offline badge of a node is the registry's liveness flag (`PingTask`: three unanswered
-keep-alive PINGs after 90 s of silence, see [`README.md`](../README.md)). It is not derived from the
+keep-alive PINGs after 90 s of silence, see [9.4](#94-ping-and-ack-both-nodes)). It is not derived from the
 WebSocket. The WebSocket state ("Connected") and the node state ("online") are independent: the first
 describes the link between browser and this node, the second the LoRa link between the two nodes.
 
@@ -472,7 +472,7 @@ Every write to the E220 in `sendRawInternal()` follows this exact five-step sequ
 Why this matters: the E220 has a 400-byte internal FIFO. If a second frame is written before the
 first RF burst completes, the FIFO overflows and data is lost silently. The guard delay accounts
 for the maximum air time of a maximum-length frame (200 B at 62.5 kbps takes roughly 30-50 ms
-over the air according to `doc/Feasibility.md` §4.1).
+over the air).
 
 ### 6.4 DATA_ACK Retry Loop
 
@@ -535,7 +535,7 @@ POST lambda):
 The numbered steps below correspond one-to-one with the `autonumber` labels in the sequence
 diagram that follows. Each arrow in the diagram is one step.
 
-1. REST client POSTs JSON `{"device":"vctrl","metrics":{"vset":{"value":1200,"unit":"mV","scale":1000}}}`.
+1. REST client POSTs JSON `{"device":"Power-Supply","metrics":{"Voltage":{"value":1200,"unit":"V","scale":100}}}`.
 2. `RestService` lambda (Core 0) parses the JSON, calls `ControlRegistry.registerMetric()` and
    `ControlRegistry.storeValue()` to persist the setpoint locally, and calls `ControlRegistry.toProtoData()`
    to serialise the device slot into a `loraiot_Data` protobuf struct.
@@ -714,12 +714,12 @@ LoRa frames are kept as small as possible to minimise air time and collision ris
 `DATA_ACK` payload carries only compact integer values:
 
 ```
-Data { device=1, values=[{metric_id=1, value=3350}, {metric_id=2, value=120}] }
+Data { device=1, values=[{metric_id=1, value=215}, {metric_id=2, value=483}] }
 ```
 
 There are no strings, no units, and no human-readable names in the payload. The meaning of
-`device=1`, `metric_id=1`, and the scale that turns `3350` into `3.35 V` lives in a separate
-**Device definition** (`Device { name="Sensor A", metrics=[{id=1, name="Voltage", unit="V", scale=1000}, ...] }`),
+`device=1`, `metric_id=1`, and the scale that turns `215` into `21.5 C` lives in a separate
+**Device definition** (`Device { name="Env-Sensor", metrics=[{id=1, name="Temperature", unit="C", scale=10}, ...] }`),
 which is owned by the node that produces the data and cached by the node that receives it.
 
 Until that definition has been transferred, the receiving node cannot render the values
@@ -852,7 +852,7 @@ same cached state and will update automatically once the `PushTask` push arrives
 
 ---
 
-## 8. MQTT Telemetry Service - Threading Constraints
+## 8. MQTT Telemetry Service
 
 ### 8.1 Overview
 
@@ -871,7 +871,8 @@ opposite direction without ever blocking `MqttTask`: the 256dpi callback (invoke
 `client.loop()` returns, `MqttTask` parses it, updates `ControlRegistry` (the registry takes its
 own mutex) and calls `pushTaskNotifySetpoint()`, a non-blocking queue send. `PushTask`
 (priority 1) performs the blocking `loraSendDataReliable()`. `MqttTask` must never call
-`loraSendDataReliable()` itself. See `doc/MqttFeasibility.md` section 4.3.
+`loraSendDataReliable()` itself. The topic and payload format of the `/set` messages is
+described in [8.6](#86-control-via-the-set-topic).
 
 ### 8.2 Why MqttTask Must Run at Priority 0
 
@@ -898,8 +899,7 @@ REMOTE was transmitting BEACONs every 5.5 s. With priority 0 the same code recei
 normally.
 
 The exact mechanism (a lock held across the blocking socket call versus plain scheduling)
-is not proven; priority 0 is a verified workaround. See `doc/Learnings.md` chapter 1 for
-the evidence, what is still open, and how to settle it.
+is not proven; priority 0 is a verified workaround.
 
 At priority 0, `MqttTask` is preempted by any priority-1 task the moment one becomes
 runnable. The Arduino loop task always gets to complete `applicationLoop()` before `MqttTask`
@@ -945,3 +945,399 @@ mosquitto_sub -t "LoRaIot/#"
 ```
 
 The current prefix can always be verified with `GET /api/mqtt/config` (`mqttPrefix` field).
+
+### 8.5 Topic scheme and payloads
+
+Topic names are produced by `mqttSanitizeTopicLevel` in `MqttService.cpp`, which passes
+`A-Z a-z 0-9 _ -` unchanged and replaces every other character (space, `%`, `/`, etc.)
+with `_`. All values travel as scaled integers; the real value is `value / scale`. The rule
+for registry names is also described in
+[Sanitization Rule for Topic Levels](RestApi.md#sanitization-rule-for-topic-levels).
+
+The node level of a REMOTE is `Remote_Node_<n>` with `n = addr - 1`. A REMOTE at LoRa address
+`0x02` is therefore `Remote_Node_1` (the address is shown by `GET /api/lora/address` on the
+node). The topic prefix is the `mqttPrefix` setting
+([`GET /api/mqtt/config`](RestApi.md#get-apimqttconfig)); topics are case-sensitive, see
+[8.4](#84-topic-case-sensitivity). The live connection state is reported by
+[`GET /api/mqtt/status`](RestApi.md#get-apimqttstatus).
+
+#### Topics published by LOCAL
+
+LOCAL publishes each metric as a separate retained scalar topic. The payload is the real value
+formatted by `mqttFormatScaledDecimal`: `215 / 10 = 21.5`, `483 / 10 = 48.3`.
+
+| Topic | Payload | Retained | Direction | Notes |
+|---|---|---|---|---|
+| `LoRaIoT/Local/status` | `online` / `offline` | Yes (`online` follows `mqttRetain`; the broker publishes the `offline` last will retained) | LOCAL -> broker | Availability of LOCAL itself |
+| `LoRaIoT/Remote_Node_1/status` | `online` / `offline` | Yes (`mqttRetain=1`) | LOCAL -> broker | `online` is published when REMOTE is first seen or returns from offline; `offline` when it is marked offline |
+| `LoRaIoT/Remote_Node_1/Env-Sensor/Temperature` | `21.5` | Yes (`mqttRetain=1`) | LOCAL -> broker | scale 10: one decimal place |
+| `LoRaIoT/Remote_Node_1/Env-Sensor/Humidity` | `48.3` | Yes (`mqttRetain=1`) | LOCAL -> broker | scale 10: one decimal place |
+| `LoRaIoT/Remote_Node_1/Env-Sensor/AirPressure` | `incr.` | Yes (`mqttRetain=1`) | LOCAL -> broker | text metric: published verbatim |
+| `LoRaIoT/Remote_Node_1/Env-Sensor/Firmware` | `1.10` | Yes (`mqttRetain=1`) | LOCAL -> broker | scale 100: two decimal places |
+| `LoRaIoT/Remote_Node_1/Env-Sensor/Daylight` | `true` | Yes (`mqttRetain=1`) | LOCAL -> broker | boolean: stored and published as the text `true` / `false` |
+
+All telemetry is published with `qos = 0` and `retain = true` (when `mqttRetain = 1`). All
+names in this example (`Env-Sensor`, `Temperature`, `Humidity`, `AirPressure`, `Firmware`,
+`Daylight`) pass the sanitizer unchanged - they contain only allowed characters. Note: the `%`
+and `vers.` units are metadata only and never appear in a topic level, so they are not sanitized.
+
+Scales 10, 100, 1000, 10000 and 100000 give 1 to 5 decimal places and scales of 1000000 and
+above give 6; for any other scale (including 1 and 0) the stored integer is published
+unchanged, without a decimal point. The payload of a text metric is the text verbatim.
+
+The topic levels are built from the device and metric names of the cached definition, which
+LOCAL fetches with the Describe crawl
+([section 7](#7-describe-crawl---schema-discovery-before-data-is-visible)). Values of a device
+or metric whose definition is not cached yet are not stored and therefore not published until
+the crawl completes ([7.6](#76-visibility-delay-for-new-data)); after that the topics carry the
+real names. Only a device or metric with an empty cached name is published under the fallback
+levels `dev<idx>` / `m<id>`.
+
+### 8.6 Control via the `/set` topic
+
+LOCAL subscribes to a single wildcard filter right after connecting to the broker:
+
+```
+LoRaIoT/Local/+/+/+/set
+```
+
+This filter has five levels after the prefix (`Local`, node, device, metric, `set`); it follows
+the configured `mqttPrefix`. It matches only command topics and never matches telemetry topics
+(`LoRaIoT/Remote_Node_<n>/...`) or the availability topic (`LoRaIoT/Local/status`). LOCAL
+subscribes to exactly one filter per broker session.
+
+An external client publishes **one message per metric** (non-retained) to the corresponding
+`/set` topic. How `MqttTask` hands the message over to `ControlRegistry` and `PushTask` is
+described in [8.1](#81-overview). The JSON payload is parsed with `controlApplyMetric`, the
+same function the REST handler uses. It is one metric object, identical to an entry
+of the `metrics` map of [`POST /api/lora/nodes/control`](RestApi.md#post-apiloranodescontrol)
+(field limits: [Request body schema and field limits](RestApi.md#request-body-schema-and-field-limits)).
+
+#### /set Topic Pattern
+
+```
+<prefix>/Local/<node>/<device>/<metric>/set
+```
+
+For the Power Supply device on REMOTE (Node 1, address `0x02`):
+
+| Topic | Example Payload | Direction | Notes |
+|---|---|---|---|
+| `LoRaIoT/Local/Remote_Node_1/Power-Supply/Voltage/set` | `{"value":1200,"unit":"V","scale":100}` | client -> LOCAL broker | numeric: scaled integer |
+| `LoRaIoT/Local/Remote_Node_1/Power-Supply/Current/set` | `{"value":50,"unit":"A","scale":10}` | client -> LOCAL broker | numeric: scaled integer |
+| `LoRaIoT/Local/Remote_Node_1/Power-Supply/Pwr/set` | `{"value":"on"}` | client -> LOCAL broker | text: no unit/scale needed |
+
+`unit` and `scale` are optional in the payload (defaults: `""` and `1`). Numeric payloads must
+include them if the metric is not yet registered in LOCAL's `ControlRegistry`, otherwise the
+value is stored with scale 1. For an already registered metric the stored unit and scale are
+kept and the ones in the payload are ignored.
+
+The `/set` parser resolves topic names back to registry names by comparing their sanitized
+forms. A device `"Power-Supply"` is stored in `ControlRegistry` as `"Power-Supply"`; the
+hyphen is already valid in MQTT topic levels, so the sanitized topic level is identical to the
+stored name: `Power-Supply`.
+
+**Do not set the retain flag** (`-r`) on `/set` messages. The firmware discards any `/set`
+message that arrives within `MQTT_SET_RETAINED_DRAIN_MS` (1 s) of a SUBSCRIBE, which is when
+the broker replays retained messages. A retained `/set` would therefore be silently dropped on
+every reconnect.
+
+#### /set processing and limits
+
+`MqttTask` handles each `/set` message in these steps (`messageReceived`, `processSetMessage`):
+
+- **Dropped in the callback:** a topic of 96 characters or more (`MQTT_TOPIC_MAX_LEN`), a payload of 96 bytes or more (`MQTT_SET_PAYLOAD_MAX_LEN`), or a message that arrives while the queue already holds `MQTT_SET_QUEUE_LEN` (2) entries (logged as a warning).
+- **First second after SUBSCRIBE:** every message in the window `MQTT_SET_RETAINED_DRAIN_MS` (1 s) is dropped, because the retained flag is not visible to the callback. This also drops a genuinely new, non-retained `/set` published in that first second after a (re)connect.
+- **Failed SUBSCRIBE:** telemetry keeps working and the SUBSCRIBE is retried every `MQTT_SET_RESUBSCRIBE_MS` (30 s).
+- **Topic:** the prefix is stripped and the rest is split into node, device, metric and `set`. A malformed topic is logged as an error and ignored; no error reply is published.
+- **Node level:** `Remote_Node_<n>` with decimal digits only, no leading zero, `n` = 1..253 (LoRa address 2..254). The peer must be known in `SensorRegistry`, otherwise a warning is logged and the message is ignored.
+- **Names:** resolved against `ControlRegistry` by sanitized comparison. An unknown device or metric is registered under the topic spelling. A topic name that sanitizing would change is rejected with an error log.
+- **Payload:** must be a JSON object. It is passed to `controlApplyMetric`; if the schema changed, `pingTaskNotifyControlChange()` is called, then `pushTaskNotifySetpoint()`.
+- **Numbers:** `value` is truncated to `int32`. Floats are not scaled; send the pre-scaled integer.
+- **Not persisted:** `ControlRegistry` is held in RAM only (no NVS use in the registry or in `controlApplyMetric`). After a LOCAL reboot a `/set` registers the metric again, so `unit` and `scale` in that payload matter.
+
+
+#### REMOTE-Side Result
+
+LOCAL pushes the whole device (all metrics in `ControlRegistry` for that device) to REMOTE as
+a DATA_ACK frame. REMOTE stores the values in its `ControlRegistry` cache. The IoT device on
+REMOTE reads them with `GET /api/lora/nodes/control`. **Nothing is echoed back** on the `/set`
+topic or on any state topic. When REMOTE's IoT device applies the setpoint and reports back via
+`POST /api/lora/sensor/data`, LOCAL publishes the measured value on the normal telemetry topic
+(`LoRaIoT/Remote_Node_1/...`), not on `/set`.
+
+Each `/set` message triggers one independent LoRa push for the whole device. If the PushTask
+queue (8 entries) is full, the push is dropped without retry; the next `/set` for that device
+re-sends it, and a peer that comes back online or finishes a Describe crawl gets all its
+devices pushed again (see [7.6](#76-visibility-delay-for-new-data) and
+[9.7](#97-self-healing-after-an-outage)).
+
+### 8.7 Worked MQTT examples
+
+These examples continue the REST
+[Worked Examples](RestApi.md#worked-examples), which also define the address placeholders
+(`<broker>`, `<Local>`, `<Remote-Node-x>`, see
+[Address placeholders](RestApi.md#address-placeholders)).
+
+**Assumptions (both examples):**
+- MQTT broker: `<broker>`, user and password as configured.
+- MQTT prefix: `LoRaIoT` (default).
+- Target REMOTE LoRa address: `0x02` (assumption - `Remote_Node_1`; confirm with
+  `GET /api/lora/address` on the node). `n = addr - 1 = 1` (see [8.5](#85-topic-scheme-and-payloads)).
+  Adjust `Remote_Node_<n>` in the topics below if the address differs (for example
+  `Remote_Node_2` for a REMOTE at address `0x03`).
+- `mqttRetain`: `1` (default) - all telemetry topics are published with `retain = true`.
+
+#### Example 1 - Environmental Sensor: subscribe and see the topics
+
+Scenario: the sensor board of
+[REST Example 1](RestApi.md#example-1---environmental-sensor-remote-sensor-data-post) POSTs
+its five readings to the REMOTE node. LOCAL receives the DATA_ACK frame over
+LoRa and forwards each metric to the MQTT broker as a separate retained topic (see
+[8.5](#85-topic-scheme-and-payloads)).
+
+```bash
+mosquitto_sub -h <broker> -u <user> -P <password> \
+  -t 'LoRaIoT/Remote_Node_1/#' -v
+```
+
+Expected output lines (order depends on which messages arrive first):
+
+```
+LoRaIoT/Remote_Node_1/status online
+LoRaIoT/Remote_Node_1/Env-Sensor/Temperature 21.5
+LoRaIoT/Remote_Node_1/Env-Sensor/Humidity 48.3
+LoRaIoT/Remote_Node_1/Env-Sensor/AirPressure incr.
+LoRaIoT/Remote_Node_1/Env-Sensor/Firmware 1.10
+LoRaIoT/Remote_Node_1/Env-Sensor/Daylight true
+```
+
+Because retain is enabled, re-running `mosquitto_sub` after the node has sent data will
+immediately replay the last retained value for each topic.
+
+#### Example 2 - Power Supply Control: set values with `mosquitto_pub`
+
+Scenario: an MQTT client pushes the same setpoints as
+[REST Example 2](RestApi.md#example-2---power-supply-control-local-control-setpoint-post)
+via the `/set` topic (see [8.6](#86-control-via-the-set-topic)), without calling the REST API.
+
+Set voltage to 12.00 V (non-retained):
+
+```bash
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t 'LoRaIoT/Local/Remote_Node_1/Power-Supply/Voltage/set' \
+  -m '{"value":1200,"unit":"V","scale":100}'
+```
+
+Set current limit to 5.0 A (non-retained):
+
+```bash
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t 'LoRaIoT/Local/Remote_Node_1/Power-Supply/Current/set' \
+  -m '{"value":50,"unit":"A","scale":10}'
+```
+
+Turn power on (text metric, non-retained):
+
+```bash
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t 'LoRaIoT/Local/Remote_Node_1/Power-Supply/Pwr/set' \
+  -m '{"value":"on"}'
+```
+
+Turn power off:
+
+```bash
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t 'LoRaIoT/Local/Remote_Node_1/Power-Supply/Pwr/set' \
+  -m '{"value":"off"}'
+```
+
+Do not add `-r` (retain); see the retain rule in [8.6](#86-control-via-the-set-topic).
+
+### 8.8 Session, availability and hand-off details
+
+- **Session:** the MQTT client ID is `LoRaIoT-<6 hex digits>` (low 24 bits of the efuse MAC), with `cleanSession=true` and `keepAlive=15`.
+- **Last will:** only LOCAL's own `<prefix>/Local/status` has a Last Will (`offline`, retained, qos 0). There is no Last Will per REMOTE. After a LOCAL crash the retained per-peer values are corrected on the next connect (all peers are republished). A graceful disconnect, or a configuration change, publishes a retained `offline` for `<prefix>/Local/status` first.
+- **Telemetry hand-off:** `notifyPublish()` keeps at most `MQTT_PENDING_MAX` (12) `(addr, deviceIdx)` entries, de-duplicated under the spinlock. When the array is full the entry is dropped and `publishDropCount` is incremented. Entries pending while the broker is not connected are discarded.
+- **Per-peer status hand-off:** `mqttServiceNotifyPeerStatus()` is called by `Application.cpp` (a REMOTE comes back online, or a BEACON creates a new peer) and by `PingTask.cpp` (a REMOTE is marked offline). It is a no-op on REMOTE. There are `MQTT_PEER_STATUS_MAX` (3, equal to `LORA_MAX_PEERS`) slots. The latest state wins and notifications coalesce. The published payload is derived from `SensorRegistry.getLiveness()` at publish time. A failed publish stays pending and is retried.
+- **Stack and buffer:** `MQTT_TASK_STACK_SIZE` is 5120 bytes and `MQTT_CLIENT_BUFFER_SIZE` is 256 bytes. Both are first estimates, not measured; `GET /status` reports the real stack high-water mark of `MqttTask`.
+
+
+
+---
+
+## 9. Runtime Behaviour
+
+This section describes the communication lifecycle that starts after provisioning. It covers
+E220 initialisation, boot diagnostics, the beacon-based discovery protocol, liveness checking,
+sensor and control data flows, and the self-healing behaviour after an outage.
+
+### 9.1 E220 Initialisation
+
+On boot, the ESP32 configures the E220 in Mode 3 (9600 baud) writing the persistent register
+block (`REG0=0xE7`, `REG1=0x00`, `REG3=0x40`), then returns to Mode 0 (115200 baud). The
+`loraTransportTask` starts and owns UART2 exclusively from this point. For the register
+meanings see [LoRaProtocol.md §2](LoRaProtocol.md#2-radio-configuration-normative).
+
+### 9.2 Boot Diagnostics
+
+On the first `applicationLoop()` tick, the 6-step E220 wiring check runs automatically
+(Mode 3 register read/write/verify + nanopb + frame codec self-tests). The `loraIsReady()`
+gate opens only after this completes, allowing `BeaconTask` and other radio tasks to start
+transmitting.
+
+### 9.3 BEACON and Discovery (REMOTE)
+
+The REMOTE beacon state machine (UNDISCOVERED and DISCOVERED states, beacon intervals, revert
+rule) and the LOCAL rules are specified in
+[LoRaProtocol.md §8](LoRaProtocol.md#8-beacon-and-discovery).
+
+On the first received BEACON, LOCAL registers the REMOTE node in `SensorRegistry` (via
+`cachedRegistry()`) and schedules a definition crawl
+([`REQUEST(Describe)`](LoRaProtocol.md#12-device-identity-and-definitions)) to learn the
+REMOTE's sensor device definitions.
+
+### 9.4 PING and ACK (both nodes)
+
+The PING rules (keep-alive, `boot_id`, `registry_rev`) are specified in
+[LoRaProtocol.md §8](LoRaProtocol.md#8-beacon-and-discovery) and
+[LoRaProtocol.md §6.1](LoRaProtocol.md#61-reboot-detection-boot_id).
+
+Both tiers run `PingTask`. LOCAL sends a liveness check
+([`PING`](LoRaProtocol.md#5-message-types)) to REMOTE on BEACON reception or on demand via
+REST, REMOTE sends keep-alive PINGs to LOCAL, and the sender logs the RTT of the framed `ACK`
+reply.
+
+### 9.5 Sensor Data Push (REMOTE)
+
+- An IoT sensor on REMOTE (via its SoftAP in `AP` / `AP_STA` mode, or its LAN address in
+  `STA` mode) POSTs readings to `POST /api/lora/sensor/data`. REMOTE stores them in
+  `SensorRegistry` and increments `registry_rev` when the schema changes.
+- When `registry_rev` changes, REMOTE immediately sends a PING to LOCAL carrying the new
+  revision. LOCAL fetches the updated definitions from REMOTE over LoRa (definition crawl,
+  [`REQUEST(Describe)`](LoRaProtocol.md#12-device-identity-and-definitions)), then REMOTE's
+  `PushTask` pushes the current values as confirmed data frames
+  ([`DATA_ACK`](LoRaProtocol.md#5-message-types)).
+- A LAN client reads the values from LOCAL via `GET /api/lora/nodes/sensor?addr=2`.
+
+See [LoRaProtocol.md §15, End-to-end scenario A](LoRaProtocol.md#end-to-end-scenario-a---iot-sensor-on-remote-softap-pushes-data-to-local)
+for the full sequence diagram.
+
+### 9.6 Control Setpoint Push (LOCAL) and Retrieval (REMOTE)
+
+- A LAN controller POSTs a setpoint to LOCAL via `POST /api/lora/nodes/control?addr=2`. LOCAL
+  stores it in `ControlRegistry` and immediately pushes it to REMOTE as a confirmed data frame
+  ([`DATA_ACK`](LoRaProtocol.md#5-message-types)). If REMOTE acknowledges, LOCAL returns
+  `200 {"delivery":"ok"}`.
+- If REMOTE is unreachable at the time of the POST, LOCAL returns `504 {"delivery":"timeout"}`
+  but **keeps the setpoint in `ControlRegistry`**. The value is re-delivered automatically
+  once REMOTE comes back online (see §9.7 below).
+- If REMOTE does not yet recognise the control device (e.g. after its own reboot), it tells
+  LOCAL it needs the definitions first
+  ([`ACK{status=BAD_REQUEST}`](LoRaProtocol.md#5-message-types)) and fetches them from LOCAL
+  via a definition crawl
+  ([`REQUEST(Describe)`](LoRaProtocol.md#12-device-identity-and-definitions)). LOCAL returns
+  `202 {"delivery":"after_describe"}`. Once the crawl completes, LOCAL's `PushTask` re-pushes
+  the stored value as a confirmed data frame
+  ([`DATA_ACK`](LoRaProtocol.md#5-message-types)) without any further action from the caller.
+- REMOTE caches the setpoint in its `ControlRegistry`. An IoT device on REMOTE (SoftAP or LAN
+  address) reads the current setpoint via `GET /api/lora/nodes/control`.
+
+See [LoRaProtocol.md §15, End-to-end scenario B](LoRaProtocol.md#end-to-end-scenario-b---controller-on-local-lan-pushes-a-setpoint-to-remote-iot-sensor-retrieves-it)
+for the full sequence diagrams for both scenarios.
+
+### 9.7 Self-Healing After an Outage
+
+- **REMOTE reboots or is temporarily out of range:** REMOTE resets its `boot_id` and reverts
+  to fast BEACON every 5 s. LOCAL detects the new `boot_id` on the first received BEACON,
+  clears its cached sensor registry for that node, sends a liveness check
+  ([`PING`](LoRaProtocol.md#5-message-types)) carrying `registry_rev` if LOCAL has control
+  devices, and starts a fresh definition crawl
+  ([`REQUEST(Describe)`](LoRaProtocol.md#12-device-identity-and-definitions)). Once the crawl
+  completes, both `PushTask` instances re-deliver the latest values in each direction - REMOTE
+  pushes its current sensor readings and LOCAL pushes its stored control setpoints. No manual
+  intervention is needed.
+- **LOCAL reboots:** LOCAL sends a broadcast liveness check
+  ([`PING`](LoRaProtocol.md#5-message-types)) at boot carrying its new `boot_id`. REMOTE
+  detects the new `boot_id`, clears its cached control registry, and fetches the definitions
+  from LOCAL via a definition crawl
+  ([`REQUEST(Describe)`](LoRaProtocol.md#12-device-identity-and-definitions)). After the
+  crawl, LOCAL's `PushTask` re-delivers the control setpoints.
+- **Temporary RF loss (no reboot):** Both nodes run `PingTask`. After 90 s of silence, each
+  node sends keep-alive PINGs to the peer. After three unanswered PINGs the peer is marked
+  `online: false` in the REST views. As soon as any frame is received, the peer is immediately
+  revived (`online: true`) and normal operation continues with no re-crawl needed (the
+  `boot_id` has not changed, so cached definitions remain valid).
+- **Entry purge and re-entry:** If no frame is received for 180 s (three missed slow
+  beacons), LOCAL purges the registry entry entirely. REMOTE re-enters through its fast-beacon
+  cycle, which triggers a full rediscovery as described above.
+
+### 9.8 Fixed-Mode Routing
+
+The E220 fixed-mode routing header, broadcast address, and Mode 3 register writes are
+specified in [LoRaProtocol.md §2](LoRaProtocol.md#2-radio-configuration-normative).
+
+### 9.9 REST and WebSocket API
+
+The REST API and the WebSocket push endpoint are documented in
+[doc/RestApi.md](RestApi.md) and [Architecture.md §5](#5-browser-dashboard-and-websocket).
+
+---
+
+## 10. E220 Interface and Diagnostics
+
+The pin mapping between the ESP32 and the E220 is in [ReadMe.md](../ReadMe.md#canonical-pin-mapping).
+
+### 10.1 E220 Hardware Operating Modes
+
+By driving the M0 and M1 pins, the ESP32 dynamically commands the E220 through different operating states:
+
+| M1 Pin | M0 Pin | Mode | Purpose | UART Baud Rate | Description |
+|:---:|:---:|:---:|---|:---:|---|
+| **LOW** | **LOW** | **Mode 0** | Normal / Transceive | **115200** (Configured) | Active RF transceiving. E220 handles RF-to-UART conversion. |
+| **LOW** | **HIGH** | **Mode 1** | WOR (Wake on Radio) | 115200 | Power-saving mode. Receives and transmits WOR preambles. |
+| **HIGH** | **LOW** | **Mode 2** | WOR Power Save | 115200 | Puts E220 RX to sleep, waking up periodically to sense preambles. |
+| **HIGH** | **HIGH** | **Mode 3** | Config / Deep Sleep | **9600** (Fixed) | Accept registers read/write commands over UART. |
+
+### 10.2 On-Demand Diagnostics and Multi-Node Debugging
+
+Since serial monitors can typically only focus on a single COM port at a time, LoRaIoT integrates tools to trace and isolate physical wiring faults or airframe issues over the local network.
+
+#### The 6-Step Hardware Diagnostics Check
+
+The diagnostics run automatically at boot and can be re-triggered at any time via REST
+([`GET /api/diag/e220`](RestApi.md#get-apidiage220)):
+
+**Trigger the check on demand** (run on each node you want to test - replace with `<LOCAL-IP>` or `<REMOTE-IP>`):
+```bash
+curl -s http://<LOCAL-IP>/api/diag/e220
+curl -s http://<REMOTE-IP>/api/diag/e220
+```
+*This safely calls `LoRaTransport.pause()` to suspend the background transceiver task before touching UART2, and `LoRaTransport.resume()` when done.*
+
+**Fetch the results from each node:**
+```bash
+curl -s http://<LOCAL-IP>/api/log
+curl -s http://<REMOTE-IP>/api/log
+```
+
+Look for `E220 diag:` lines in the log. The six steps and their failure interpretations:
+
+| Step | What is tested | Fail diagnosis |
+|---|---|---|
+| 1 | AUX reads HIGH in Mode 0 (idle) | No power to E220 (check VCC/GND) or AUX wire loose/stuck |
+| 2 | AUX returns HIGH after entering Mode 3 (M1=1, M0=1) | M0 or M1 control line disconnected |
+| 3 | Read all 8 registers (`C1 00 08`) - response is not `FF FF FF` | RXD/TXD lines loose, swapped, or another task is holding UART2 |
+| 4 | Temp-write a different channel (`C2`), read back, compare | Register write path broken - E220 flash worn or SPI conflict |
+| 5 | Temp-write original values back (`C2`), read back, compare | Values did not round-trip - likely a UART noise or timing issue |
+| 6 | Return to Mode 0 - AUX rises HIGH again | M0/M1 lines intermittent or AUX stuck LOW after mode switch |
+
+Steps 4 and 5 use the **temporary write command `0xC2`** - nothing is stored in the E220's flash, so a power cycle always restores the previous configuration.
+
+#### Multi-Node Log Comparison
+
+```bash
+curl -s http://<local_ip>/api/log
+curl -s http://<remote_ip>/api/log
+```

@@ -459,8 +459,7 @@ The wire format supports both deployments:
 
 The owner of a device table defines devices, assigns indices, and pushes values. The other node (cache
 side) learns the definitions via `Describe` and receives values via pushes. For sensor data the REMOTE is
-the owner and LOCAL is the cache; for control data LOCAL is the owner and the REMOTE is the cache. The
-full design is in `TechDebt.md`.
+the owner and LOCAL is the cache; for control data LOCAL is the owner and the REMOTE is the cache.
 
 The owner assigns each new device name the next free index (indices are contiguous, starting at 1). A new
 JSON key from a known device is assigned the next free metric id (starting at 1) with the unit and scale
@@ -490,15 +489,16 @@ An AP device pushes its data, so a live read of such a device returns the last p
 
 ## 13. JSON and protobuf mapping
 
-With the definition `Device{device=1, name="Sensor A", metrics=[{1,"Voltage","V",100}, {2,"Current","A",1000},
-{3,"Temperature","degC",10}]}` cached on LOCAL, this JSON:
+With the definition `Device{device=1, name="Env-Sensor", metrics=[{1,"Temperature","C",10}, {2,"Humidity","%",10},
+{3,"AirPressure","",1}]}` cached on LOCAL, this JSON:
 
 ```json
-{"device":"Sensor A","data":{"Voltage":3.35,"Current":0.12,"Temperature":22.5}}
+{"device":"Env-Sensor","data":{"Temperature":21.5,"Humidity":48.3,"AirPressure":"incr."}}
 ```
 
-corresponds to `Data{device=1, values=[{1,335},{2,120},{3,225}]}` inside a frame with SRC = the REMOTE
-and DST = `0x01`. The REST layer computes `value / scale` and takes the key from `Metric.name`.
+corresponds to `Data{device=1, values=[{1,215},{2,483},{3,"incr."}]}` inside a frame with SRC = the REMOTE
+and DST = `0x01`. The REST layer computes `value / scale` for numeric values, passes text values
+through unchanged, and takes the key from `Metric.name`.
 
 Address and version are not part of the JSON data object. The REST layer adds the node address
 (and `age`) around it when answering a client.
@@ -550,7 +550,7 @@ sequenceDiagram
     R-->>L: ACK(acked_type=1, acked_seq)
     Note over R: PING received - switch to 60s beacon interval
     L->>R: REQUEST(Describe 1)
-    R-->>L: RESPONSE(Device 1 "Sensor A", metrics)
+    R-->>L: RESPONSE(Device 1 "Env-Sensor", metrics)
     L->>R: REQUEST(Describe 2)
     R-->>L: RESPONSE(BAD_REQUEST)
     Note over R: BAD_REQUEST triggers PushTask
@@ -568,7 +568,7 @@ sequenceDiagram
     participant cache as Cache node
     Note over cache: new boot_id or registry_rev from owner
     cache->>owner: REQUEST(Describe 1)
-    owner-->>cache: RESPONSE(Device 1 "Sensor A", metrics)
+    owner-->>cache: RESPONSE(Device 1 "Env-Sensor", metrics)
     cache->>owner: REQUEST(Describe 2)
     owner-->>cache: RESPONSE(BAD_REQUEST)
     Note over owner: BAD_REQUEST triggers PushTask - push all current values
@@ -602,7 +602,7 @@ sequenceDiagram
     R-->>L: ACK(acked_type=1, acked_seq)
     Note over R: registry_rev=5 is new - crawl LOCAL
     R->>L: REQUEST(Describe 1)
-    L-->>R: RESPONSE(Device 1 "Output V", metrics)
+    L-->>R: RESPONSE(Device 1 "Power-Supply", metrics)
     R->>L: REQUEST(Describe 2)
     L-->>R: RESPONSE(BAD_REQUEST)
     Note over L: crawl complete - push control values
@@ -626,7 +626,7 @@ sequenceDiagram
 
 ### End-to-end scenario A - IoT sensor on REMOTE SoftAP pushes data to LOCAL
 
-An IoT sensor (e.g. a voltage meter) connects to REMOTE's SoftAP WiFi and POSTs its readings. LOCAL learns the definitions over LoRa and makes them available through its own REST API.
+An IoT sensor (e.g. an environment sensor) connects to REMOTE's SoftAP WiFi and POSTs its readings. LOCAL learns the definitions over LoRa and makes them available through its own REST API.
 
 ```mermaid
 sequenceDiagram
@@ -635,29 +635,29 @@ sequenceDiagram
     participant L as LOCAL (LAN)
     participant Client as LAN client / Home Automation
 
-    Sensor->>R: POST /api/lora/sensor/data {"device":"SensorA","metrics":{...}}
+    Sensor->>R: POST /api/lora/sensor/data {"device":"Env-Sensor","metrics":{...}}
     Note over R: SensorRegistry auto-assigns device_idx and metric_ids
     Note over R: registry_rev increments (new schema)
-    R-->>Sensor: 200 {"accepted":[...],"registry_rev":2}
+    R-->>Sensor: 200 {"accepted":[...],"registry_rev":6}
 
     Note over R: registry_rev changed - PingTask sends PING immediately
-    R->>L: PING(boot_id, registry_rev=2)
+    R->>L: PING(boot_id, registry_rev=6)
     L-->>R: ACK(acked_type=1, acked_seq)
-    Note over L: registry_rev=2 is new - crawlPending set, crawl starts
+    Note over L: registry_rev=6 is new - crawlPending set, crawl starts
 
     R->>L: DATA(device=1, values) [fire-and-forget, arrives ~same time as crawl starts]
 
     L->>R: REQUEST(Describe 1)
-    R-->>L: RESPONSE(Device 1 "SensorA", metrics)
+    R-->>L: RESPONSE(Device 1 "Env-Sensor", metrics)
     L->>R: REQUEST(Describe 2)
     R-->>L: RESPONSE(BAD_REQUEST)
     Note over R: BAD_REQUEST triggers PushTask
-    R->>L: DATA_ACK(device=1, Voltage=3.35 V, Temp=21.5 C)
+    R->>L: DATA_ACK(device=1, Temperature=21.5 C, Humidity=48.3 %, ...)
     L-->>R: ACK(acked_type=5, acked_seq)
     Note over L: SensorRegistry updated with definitions and values
 
     Client->>L: GET /api/lora/nodes/sensor?addr=2&device=1
-    L-->>Client: 200 {"nodes":[{"addr":2,"devices":[{"name":"SensorA","metrics":[...]}]}]}
+    L-->>Client: 200 {"nodes":[{"addr":2,"devices":[{"name":"Env-Sensor","metrics":[...]}]}]}
 ```
 
 Subsequent pushes by the sensor (same schema, same `registry_rev`) skip the crawl: REMOTE stores the new value and PushTask sends a `DATA_ACK` to LOCAL directly.
@@ -666,7 +666,7 @@ Subsequent pushes by the sensor (same schema, same `registry_rev`) skip the craw
 
 ### End-to-end scenario B - Controller on LOCAL LAN pushes a setpoint to REMOTE; IoT sensor retrieves it
 
-A controller (e.g. a home automation system) on the local LAN sets a target voltage on REMOTE. An IoT device on REMOTE's SoftAP polls the cached setpoint and applies it.
+A controller (e.g. a home automation system) on the local LAN sets the output voltage of a power supply on REMOTE. An IoT device on REMOTE's SoftAP polls the cached setpoint and applies it.
 
 ```mermaid
 sequenceDiagram
@@ -675,16 +675,16 @@ sequenceDiagram
     participant R as REMOTE (SoftAP 192.168.4.1)
     participant Device as IoT device (SoftAP client)
 
-    HA->>L: POST /api/lora/nodes/control?addr=2 {"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
+    HA->>L: POST /api/lora/nodes/control?addr=2 {"device":"Power-Supply","metrics":{"Voltage":{"value":1200,"unit":"V","scale":100}}}
     Note over L: ControlRegistry updated, registry_rev increments
-    L->>R: DATA_ACK(device=1, VoltageSet=3.33 V)
+    L->>R: DATA_ACK(device=1, Voltage=12.00 V)
     R-->>L: ACK(acked_type=5, acked_seq, status=OK)
     Note over R: ControlRegistry cache updated
-    L-->>HA: 200 {"accepted":[...],"registry_rev":1,"delivery":"ok"}
+    L-->>HA: 200 {"accepted":[...],"registry_rev":2,"delivery":"ok"}
 
     Device->>R: GET /api/lora/nodes/control
-    R-->>Device: 200 {"nodes":[{"addr":1,"devices":[{"name":"Charger","metrics":[{"name":"VoltageSet","value":333,"unit":"V","scale":100,"age_ms":120}]}]}]}
-    Note over Device: Device applies VoltageSet = 333 / 100 = 3.33 V
+    R-->>Device: 200 {"nodes":[{"addr":1,"devices":[{"name":"Power-Supply","metrics":[{"name":"Voltage","value":1200,"unit":"V","scale":100,"age_ms":120}]}]}]}
+    Note over Device: Device applies Voltage = 1200 / 100 = 12.00 V
 ```
 
 If REMOTE does not yet have the definitions when the `DATA_ACK` arrives (e.g. after a reboot), it answers `ACK{status=BAD_REQUEST}` and schedules a Describe crawl of LOCAL. LOCAL returns `202 {"delivery":"after_describe"}` and the values are pushed again once the crawl completes.
@@ -777,3 +777,17 @@ unnecessary retry and the associated half-duplex channel occupancy.
 
 All other parameters (retry count, beacon intervals, ping idle threshold) work correctly at 2.4k
 without change.
+
+### Link budget and air rate selection
+
+Receiver sensitivity is mathematically coupled to Spreading Factor and bandwidth. Lowering the air
+data rate makes the radio receiver orders of magnitude more sensitive:
+
+- By changing the configuration register `REG0` from **62.5 kbps** (`REG0_AIR_DATA_RATE_62K5`) to
+  **2.4 kbps** (`REG0_AIR_DATA_RATE_2K4`), the link budget increases by **approximately 14 db**.
+- In RF physics, **every 6 dB** increase in link budget doubles the penetrative capacity through
+  concrete/steel walls or **doubles the open-space range.**
+- Set the data rate to `2.4 kbps` or `9.6 kbps` via `PUT /api/lora/airrate` (applies live, no reboot)
+  to punch through dense concrete building cores.
+- For measured round-trip times, test results, and the `LORA_REQUEST_TIMEOUT_MS` adjustment required
+  at 2.4 kbps, see [Tested rates](#tested-rates) and [Timeout constraint at 2.4k](#timeout-constraint-at-24k) above.

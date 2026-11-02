@@ -38,8 +38,8 @@ Typical examples:
 
 | REMOTE role | What it does |
 | :--- | :--- |
-| **IoT sensor node** | Reads a temperature, humidity, or voltage sensor and pushes the measurements to LOCAL over LoRa. |
-| **DC/DC converter controller** | Receives a target voltage or current setpoint from LOCAL and adjusts its output accordingly. |
+| **IoT sensor node** | Reads a temperature, humidity, or air pressure sensor and pushes the measurements to LOCAL over LoRa. |
+| **Power supply controller** | Receives a target voltage or current setpoint from LOCAL and adjusts its output accordingly. |
 | **Relay / actuator node** | Receives an on/off or PWM command from LOCAL and drives a load (pump, fan, heater, etc.). |
 
 ### How do the pieces fit together?
@@ -49,7 +49,7 @@ Home Assistant                   LOCAL node                        REMOTE nodes 
 (or any REST client)             (WiFi + LoRa)                     (WiFi + LoRa)           (local to REMOTE)
 ─────────────────────            ───────────────────────           ─────────────           ─────────────────
 Reads sensor data     <──REST──  Caches sensor readings  <──LoRa── Node 1        <──REST── Sensor hardware
-Writes control data   ──REST──>  Holds control setpoints ──LoRa──> Node 2        ──REST──> DC/DC converter
+Writes control data   ──REST──>  Holds control setpoints ──LoRa──> Node 2        ──REST──> Power supply
                                                          ──LoRa──> Node 3                  Relay / actuator
 ```
 
@@ -95,7 +95,7 @@ Details are in [`doc/RestApi.md`](doc/RestApi.md).
 ### What is sensor data?
 
 Sensor data is the physical measurements collected by a REMOTE node - things like temperature,
-voltage, or humidity read from hardware sensors attached to that node.
+humidity, or air pressure read from hardware sensors attached to that node.
 
 REMOTE **owns** its sensor readings: it creates them locally and pushes them over the LoRa
 radio to LOCAL, which keeps a cached copy.

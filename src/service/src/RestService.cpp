@@ -805,7 +805,7 @@ void RestService::registerRoutes() {
 // -------------------------------------------------------------------------
 void RestService::registerLocalRoutes() {
   // POST /api/lora/nodes/control?addr=2 - Control device registration, value storage, and push
-  // Body: {"device":"Charger","metrics":{"VoltageSet":{"value":333,"unit":"V","scale":100}}}
+  // Body: {"device":"Power-Supply","metrics":{"Voltage":{"value":1200,"unit":"V","scale":100}}}
   // Returns 200 (ok), 202 (after_describe - schema changed or peer BAD_REQUEST), 503 (busy), 504 (timeout).
   server->on("/api/lora/nodes/control", HTTP_POST,
     [](AsyncWebServerRequest* request) {},
@@ -1182,7 +1182,7 @@ void RestService::registerRemoteRoutes() {
       });
 
   // POST /api/lora/sensor/data - SoftAP sensor ingestion
-  // Body: {"device":"SensorA","metrics":{"Voltage":{"value":335,"unit":"V","scale":100}}}
+  // Body: {"device":"Env-Sensor","metrics":{"Temperature":{"value":215,"unit":"C","scale":10}}}
   server->on("/api/lora/sensor/data", HTTP_POST,
     [](AsyncWebServerRequest* request) {},
     nullptr,

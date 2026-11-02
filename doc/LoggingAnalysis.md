@@ -168,4 +168,4 @@ The motivation for PROGMEM on AVR - keeping string literals out of the severely 
 - Introduce a **silent correctness hazard**: if the codebase ever needed to build on AVR, `vsnprintf` would silently produce garbage output when reading PROGMEM pointers - the opposite of the safe outcome.
 - Pollute call sites with syntactic noise (`F("...")`) that conveys false intent on this platform.
 
-If DRAM pressure becomes a concern in the future, the higher-value target is the ring buffer itself - documented in `doc/TechDebt.md §1` - which holds 20 KB of fixed-width rows in BSS. Switching to a variable-length or compressed ring buffer would recover real DRAM. Format strings are not the bottleneck.
+If DRAM pressure becomes a concern in the future, the higher-value target is the ring buffer itself, which holds 20 KB of fixed-width rows in BSS. Switching to a variable-length or compressed ring buffer would recover real DRAM. Format strings are not the bottleneck.

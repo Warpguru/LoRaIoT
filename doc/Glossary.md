@@ -1,6 +1,6 @@
 # Glossary of Abbreviations
 
-Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are included because they appear throughout the code and documentation. For the over-the-air protocol terms (frame fields, message types) see also [`doc/LoRaProtocol.md`](doc/LoRaProtocol.md).
+Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are included because they appear throughout the code and documentation. For the over-the-air protocol terms (frame fields, message types) see also [`LoRaProtocol.md`](LoRaProtocol.md).
 
 ## Hardware and Radio
 

@@ -12,7 +12,7 @@ This is an ESP32 embedded firmware project (Arduino C++, FreeRTOS). The Maven/Ec
 
 - **`ESP/`** is a **symlink to a read-only reference project** - never write to anything under `ESP/`. Use it only to copy proven patterns (FreeRTOS task wiring, logging, NVS persistence).
 - All firmware for this project lives at the repository root (`LoRaIoT.ino`, `LoRaIoT.cpp`, `platformio.ini`, `src/`).
-- Project overview, source layout, libraries, and wiring are documented in `README.md`, `platformio.ini`, and `doc/Feasibility.md` - do not duplicate them here.
+- Project overview, source layout, libraries, and wiring are documented in `ReadMe.md`, `platformio.ini`, and `doc/Feasibility.md` - do not duplicate them here.
 - Dependency direction (one-way only): `service` and `LoRaIoT` → `registry` → `lora` → `util`; `service` and `LoRaIoT` → `diagnostics` → `util`. The `lora` library must never include upward into `LoRaIoT` or `registry`.
 - `LogBuffer`, `StatusLed`, and `ESPInfo.h` originate from `ESP/SerialController/` - update both if the shared components need changes.
 
@@ -118,7 +118,7 @@ Remote retrieval: `GET /api/log` (last 128 lines as JSON).
 
 ## LoRa / E220 Constraints
 
-Architecture and rationale: `doc/Feasibility.md`. Pin mapping: `doc/Feasibility.md` §3.1 and `README.md` §3. Register values and configuration: named constants in `src/lora/src/LoRaTransport.h` and `doc/Feasibility.md` §3.3.
+Architecture and rationale: `doc/Feasibility.md`. Pin mapping: `doc/Feasibility.md` §3.1 and `ReadMe.md` §3. Register values and configuration: named constants in `src/lora/src/LoRaTransport.h` and `doc/Feasibility.md` §3.3.
 
 - Lightweight TCP/IP (DNS, NTP, MQTT, small REST with MTU=190) is viable over the LoRa link. General-purpose IP routing is not. See `doc/Feasibility.md` Appendix A.
 - **AUX=HIGH does not mean RF transmission is complete** - the last sub-packet may still be in the air. Correct pattern: poll AUX HIGH -> write frame atomically -> wait AUX LOW -> wait AUX HIGH -> add 50ms guard delay.

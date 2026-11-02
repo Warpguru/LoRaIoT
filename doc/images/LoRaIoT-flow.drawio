@@ -1,6 +1,6 @@
 <mxfile host="Electron">
   <diagram name="LoRaIoT Flow" id="loraiot-flow">
-    <mxGraphModel dx="466" dy="363" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="970" dy="756" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -8,30 +8,30 @@
           <mxGeometry height="50" width="200" x="300" y="20" as="geometry" />
         </mxCell>
         <mxCell id="3" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;" value="WLAN" vertex="1">
-          <mxGeometry height="90" width="210" x="295" y="110" as="geometry" />
+          <mxGeometry height="90" width="210" x="295" y="140" as="geometry" />
         </mxCell>
         <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=15;fontStyle=1;arcSize=8;" value="LoRaIoT (Local)" vertex="1">
-          <mxGeometry height="50" width="200" x="300" y="250" as="geometry" />
+          <mxGeometry height="50" width="200" x="300" y="270" as="geometry" />
         </mxCell>
         <mxCell id="5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="LoRa Radio" vertex="1">
-          <mxGeometry height="50" width="200" x="300" y="350" as="geometry" />
+          <mxGeometry height="50" width="200" x="300" y="360" as="geometry" />
         </mxCell>
         <mxCell id="6" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;" value="LoRa" vertex="1">
-          <mxGeometry height="90" width="210" x="295" y="450" as="geometry" />
+          <mxGeometry height="90" width="210" x="295" y="420" as="geometry" />
         </mxCell>
         <mxCell id="7" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="LoRa Radio" vertex="1">
-          <mxGeometry height="50" width="200" x="300" y="590" as="geometry" />
+          <mxGeometry height="50" width="200" x="300" y="520" as="geometry" />
         </mxCell>
         <mxCell id="8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=15;fontStyle=1;arcSize=8;" value="LoRaIoT (Remote Node n)" vertex="1">
-          <mxGeometry height="50" width="200" x="300" y="690" as="geometry" />
+          <mxGeometry height="50" width="200" x="300" y="610" as="geometry" />
         </mxCell>
         <mxCell id="9" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;" value="WLAN" vertex="1">
-          <mxGeometry height="90" width="210" x="295" y="790" as="geometry" />
+          <mxGeometry height="90" width="210" x="295" y="700" as="geometry" />
         </mxCell>
         <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;arcSize=8;" value="IoT Device" vertex="1">
-          <mxGeometry height="50" width="200" x="300" y="930" as="geometry" />
+          <mxGeometry height="50" width="200" x="300" y="820" as="geometry" />
         </mxCell>
-        <mxCell id="11" edge="1" parent="1" source="2" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0078D4;fontColor=#0078D4;fontSize=10;align=center;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="3" value="POST&lt;br&gt;http://&amp;lt;Local&amp;gt;/api/lora/sensor/data {&quot;device&quot;:...,&quot;metrics&quot;:{...}}">
+        <mxCell id="11" edge="1" parent="1" source="2" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0078D4;fontColor=#0078D4;fontSize=10;align=center;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=none;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="3" value="GET&amp;nbsp;http://&amp;lt;Local&amp;gt;/api/lora/nodes/sensor&lt;br&gt;POST&amp;nbsp;http://&amp;lt;Local&amp;gt;/api/lora/nodes/control&lt;br&gt;{&quot;device&quot;:...,&quot;metrics&quot;:{...}}">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="12" edge="1" parent="1" source="3" style="edgeStyle=elbowEdgeStyle;elbow=orthogonal;curved=1;html=1;strokeColor=#D83B01;fontColor=#D83B01;fontSize=10;align=center;labelBackgroundColor=#ffffff;dashed=1;endArrow=block;endFill=1;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="2" value="MQTT publish&lt;br&gt;LoRaIoT/Remote_Node_n/dev/metric&lt;div&gt;key:value&lt;/div&gt;">

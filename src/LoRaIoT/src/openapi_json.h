@@ -890,7 +890,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
         "type": "object",
         "required": ["device", "metrics"],
         "properties": {
-          "device": { "type": "string", "maxLength": 12, "description": "Device name, e.g. SensorA" },
+          "device": { "type": "string", "maxLength": 12, "description": "Device name, e.g. Env-Sensor" },
           "metrics": {
             "type": "object",
             "description": "Map of metric name to measurement. Each value is an object with value (required, number or string up to 12 bytes UTF-8), unit (optional, max 5 chars), scale (optional, default 1, ignored for strings).",
@@ -905,7 +905,7 @@ static const char OPENAPI_JSON[] PROGMEM = R"rawjson(
             }
           }
         },
-        "example": { "device": "SensorA", "metrics": { "Voltage": { "value": 335, "unit": "V", "scale": 100 }, "Date": { "value": "30.10.2026" }, "Enabled": { "value": true } } }
+        "example": { "device": "Env-Sensor", "metrics": { "Temperature": { "value": 215, "unit": "C", "scale": 10 } } }
       },
       "SensorDataResponse": {
         "type": "object",
