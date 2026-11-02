@@ -319,6 +319,7 @@ For the link budget theory, register constants, and measured timing at 2.4 kbps,
 - [`doc/WiringLoRaIot.md`](doc/WiringLoRaIot.md) - wiring diagram (ESP32, E220, status LED) with the reproducible draw.io specification and an assembly checklist.
 - [`doc/RestApi.md`](doc/RestApi.md) - all REST endpoints with parameters, status codes and worked curl examples.
 - [`doc/Glossary.md`](doc/Glossary.md) - abbreviations and technical terms.
+- [`examples/windows-pc-monitor`](examples/windows-pc-monitor/README.md) - PowerShell example that reports the CPU load, CPU temperature and RAM usage of a Windows PC through a REMOTE node.
 
 **For developers** (clone the project and change it):
 
