@@ -260,7 +260,7 @@ Both nodes run from a single shared codebase. Role selection (`LOCAL` or `REMOTE
   - `WiFiManager` (>= 2.0.17)
   - `ArduinoJson` (>= 7.4.3)
   - `ESPAsyncWebServer` (>= 3.12.1)
-  - `AsyncTCP` (>= 3.5.0)
+  - `AsyncTCP` (>= 3.6.1)
 - **Compilation:**
   - **PlatformIO:** Run `pio run -e esp32dev` from the root directory.
   - **Arduino IDE:** Load the `LoRaIoT.ino` sketch stub, open Library Manager, install the four required dependencies, and click Compile.
