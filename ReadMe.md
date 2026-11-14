@@ -205,7 +205,7 @@ To construct and successfully run the LoRaIoT gateway bridge, the following hard
 2. **LoRa Radio Module (2 Units):** Ebyte E220-400T22D (incorporating the Semtech LLCC68 RF chip operating in the 433 MHz UHF ISM band, delivering up to 22 dBm transmission power).
 3. **Antennas (2 Units):** High-quality 433 MHz SMA whip antennas (such as $18\text{ cm}$ dipole whips) tuned to the 433 MHz frequency range.
 4. **Decoupling Capacitor (2 Units):** A $100\mu\text{F}$ (or larger) low-ESR electrolytic capacitor connected in parallel directly across each E220's `VCC` and `GND` lines. This buffers high-current RF transmission bursts ($\approx 110\text{mA}$ peak) and prevents voltage sags that can cause ESP32 kernel brownout reboots.
-5. **On-Demand Status LED (2 Units):** A standard LED connected in series with a $330\,\Omega$ current-limiting resistor, wired between ESP32 GPIO 21 and GND.
+5. **Feedback LEDs (2 Sets of 3):** Three standard LEDs per node (Status LED on GPIO 21, LoRa RX Activity LED on GPIO 13, LoRa TX Activity LED on GPIO 18), each connected in series with a $330\,\Omega$ current-limiting resistor to GND.
 
 ---
 
@@ -213,22 +213,25 @@ To construct and successfully run the LoRaIoT gateway bridge, the following hard
 
 The physical interface between the ESP32 (38-pin DevKitC) and the Ebyte E220-400T22D transceiver relies on five dedicated GPIO lines. It is critical to enforce the exact pin mappings below to maintain compatibility with both the production firmware and the hardware diagnostics engine.
 
-![LoRaIoT wiring: ESP32, E220 and status LED](doc/images/LoRaIoT.png)
+![LoRaIoT wiring: ESP32, E220 and feedback LEDs](doc/images/LoRaIoT.png)
 
 ### Canonical Pin Mapping
 
 <details>
-<summary>Pin mapping table: E220 to ESP32 (click to expand)</summary>
+<summary>Pin mapping table: E220 and LEDs to ESP32 (click to expand)</summary>
 
-| E220 Pin | Pin Name | ESP32 GPIO | Direction (ESP32) | Functional Description |
+| Component | Pin Name | ESP32 GPIO | Direction (ESP32) | Functional Description |
 |:---:|:---:|:---:|:---:|---|
-| **1** | M0 | **GPIO 4** | Output | Mode control (Bit 0) |
-| **2** | M1 | **GPIO 2** | Output | Mode control (Bit 1) |
-| **3** | RXD | **GPIO 17** | Output (TX2) | UART2 transmit line to E220 RXD |
-| **4** | TXD | **GPIO 16** | Input (RX2) | UART2 receive line from E220 TXD |
-| **5** | AUX | **GPIO 15** | Input | Hardware status indicator (HIGH = Idle / Ready) |
-| **6** | VCC | **3.3V or 5V** | Output Power | Primary module power supply (decoupled with 100uF capacitor) |
-| **7** | GND | **GND** | Ground | Common reference ground |
+| **E220 Pin 1** | M0 | **GPIO 4** | Output | Mode control (Bit 0) |
+| **E220 Pin 2** | M1 | **GPIO 2** | Output | Mode control (Bit 1) |
+| **E220 Pin 3** | RXD | **GPIO 17** | Output (TX2) | UART2 transmit line to E220 RXD |
+| **E220 Pin 4** | TXD | **GPIO 16** | Input (RX2) | UART2 receive line from E220 TXD |
+| **E220 Pin 5** | AUX | **GPIO 15** | Input | Hardware status indicator (HIGH = Idle / Ready) |
+| **E220 Pin 6** | VCC | **3.3V or 5V** | Output Power | Primary module power supply (decoupled with 100uF capacitor) |
+| **E220 Pin 7** | GND | **GND** | Ground | Common reference ground |
+| **Status LED** | STATUS | **GPIO 21** | Output | Node state: Booting (ON), Ready (OFF), Warning (250ms blink), Fault (SOS), Decode Error Flash (~100ms) |
+| **RX LED** | RX_ACT | **GPIO 13** | Output | Frame received pulse (~100ms) / Warning (250ms blink when no peers/gateway connected) |
+| **TX LED** | TX_ACT | **GPIO 18** | Output | LoRa frame transmitting active indicator (on during transmit + guard delay) |
 
 </details>
 
@@ -316,7 +319,7 @@ For the link budget theory, register constants, and measured timing at 2.4 kbps,
 **For users** (set up and use the system):
 
 - [`FAQ.md`](FAQ.md) - plain-language questions and answers about nodes, data types, WiFi modes and operation.
-- [`doc/WiringLoRaIot.md`](doc/WiringLoRaIot.md) - wiring diagram (ESP32, E220, status LED) with the reproducible draw.io specification and an assembly checklist.
+- [`doc/WiringLoRaIot.md`](doc/WiringLoRaIot.md) - wiring diagram (ESP32, E220, feedback LEDs) with the reproducible draw.io specification and an assembly checklist.
 - [`doc/RestApi.md`](doc/RestApi.md) - all REST endpoints with parameters, status codes and worked curl examples.
 - [`doc/Glossary.md`](doc/Glossary.md) - abbreviations and technical terms.
 - [`examples/windows-pc-monitor`](examples/windows-pc-monitor/README.md) - PowerShell example that reports the CPU load, CPU temperature and RAM usage of a Windows PC through a REMOTE node.

@@ -341,7 +341,7 @@ It needs no radio, so it runs even when the E220 check fails, and it does not ch
 
 **Side effects:**
 - Uses only the temporary write command (`0xC2`), so nothing is stored in the module's flash.
-- If the check fails, the status LED switches to `NO_DEVICE`.
+- If the check fails, the status LED switches to `WARNING` (fast 250 ms blink).
 - Takes UART2 for the duration of the check via `LoRaTransport.pause()` / `resume()` and releases it afterwards.
 
 ---
@@ -2093,7 +2093,7 @@ It needs no radio, so it runs even when the E220 check fails, and it does not ch
 
 **Side effects:**
 - Uses only the temporary write command (`0xC2`), so nothing is stored in the module's flash.
-- If the check fails, the status LED switches to `NO_DEVICE`.
+- If the check fails, the status LED switches to `WARNING` (fast 250 ms blink).
 - Takes UART2 for the duration of the check via `LoRaTransport.pause()` / `resume()` and releases it afterwards.
 
 ---

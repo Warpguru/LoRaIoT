@@ -410,6 +410,9 @@ static void onLoRaReceive(const LoRaFrame& frame) {
       pushTaskNotifyNodeBack(frame.src);
     }
   }
+  if (isLocal) {
+    statusLed.setState(Led::RX_LED, LedState::OFF);
+  }
 
   // Duplicate detection and reboot detection (doc/LoRaProtocol.md §6, §6.1).
   // Drop duplicate frames silently; LoRaState handles the state update.
@@ -736,11 +739,16 @@ void applicationSetup() {
     Log_info("LoRa started: tier=%s loraChannel=0x%02X loraAddr=0x%02X airRate=%s",
              Gateway.getTierName(), LoRaConfig.getChannel(), LoRaConfig.getAddress(),
              LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
-    // LoRa module is configured and online; transition the status LED to READY
-    statusLed.setState(LedState::READY);
+    // LoRa module is configured and online; transition status LED to READY, TX to OFF,
+    // and RX to WARNING (starts searching for peers / gateway until first frame is exchanged).
+    statusLed.setState(Led::STATUS_LED, LedState::READY);
+    statusLed.setState(Led::RX_LED, LedState::WARNING);
+    statusLed.setState(Led::TX_LED, LedState::OFF);
   } else {
     Log_error("Gateway tier is not configured - LoRa transport not started. Call GET /reset and select a tier in the captive portal.");
-    statusLed.setState(LedState::NO_DEVICE);
+    statusLed.setState(Led::STATUS_LED, LedState::WARNING);
+    statusLed.setState(Led::RX_LED, LedState::OFF);
+    statusLed.setState(Led::TX_LED, LedState::OFF);
   }
 }
 

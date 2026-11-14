@@ -8,7 +8,7 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 |---|---|---|
 | **MCU** | Microcontroller Unit | A small computer on a single chip that runs the firmware. Here: the ESP32. |
 | **ESP32** | (product name, Espressif) | The MCU used on both nodes. Has WiFi, two CPU cores (Core 0 and Core 1) and several UARTs. |
-| **GPIO** | General Purpose Input/Output | A configurable pin of the MCU, used as digital input or output (for example M0, M1, AUX, the status LED). |
+| **GPIO** | General Purpose Input/Output | A configurable pin of the MCU, used as digital input or output (for example M0, M1, AUX, the status and activity LEDs). |
 | **UART** | Universal Asynchronous Receiver/Transmitter | Serial interface with a TX and an RX line. UART2 (`Serial2`, pins 16/17) connects the ESP32 to the E220. |
 | **TX / RX** | Transmit / Receive | Data direction. The ESP32 TX line is connected to the E220 RXD pin, and vice versa. |
 | **TTL** | Transistor-Transistor Logic | The voltage level of the serial lines (3.3 V here, not RS-232). |
@@ -24,7 +24,7 @@ Terms are grouped by topic. Project-specific terms (`LOCAL`, `REMOTE`, ...) are 
 | **SMA** | SubMiniature version A | The RF connector type of the antenna. |
 | **ESR** | Equivalent Series Resistance | Internal resistance of a capacitor. A low-ESR capacitor can deliver the short current peaks of an RF transmission. |
 | **VCC / GND** | Supply voltage / Ground | Power pins of the module. |
-| **LED** | Light Emitting Diode | The status LED (GPIO 21). |
+| **LED** | Light Emitting Diode | The feedback LEDs: Status LED (GPIO 21), LoRa RX activity LED (GPIO 13), and LoRa TX activity LED (GPIO 18). |
 | **dB** | decibel | Relative power ratio. +6 dB roughly doubles the range in free space. |
 | **dBm** | decibel milliwatt | Absolute power level. 22 dBm is about 160 mW. |
 | **kbps** | kilobits per second | Data rate, for example the air data rate of 62.5 kbps. |

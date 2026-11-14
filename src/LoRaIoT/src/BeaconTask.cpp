@@ -6,6 +6,7 @@
 
 #include "../../diagnostics/src/TaskRegistry.h"
 #include "../../util/src/LogBuffer.h"
+#include "../../util/src/StatusLed.h"
 #include "../../util/src/TaskUtils.h"
 #include "Application.h"
 #include "LoRaConfig.h"
@@ -44,6 +45,7 @@ static volatile uint32_t lastLocalContactMs = 0;
 
 void beaconTaskNotifyDiscovered() {
     lastLocalContactMs = millis();
+    statusLed.setState(Led::RX_LED, LedState::OFF);
 }
 
 // ---- Static helpers ---------------------------------------------------------
@@ -103,10 +105,16 @@ static void beaconTask(void* /*param*/) {
     Log_info("BeaconTask: LoRa gate open - starting beacon loop");
 
     for (;;) {
-        // 1. Determine current state.
+        // 1. Determine current state and update RX_LED link status.
         const uint32_t lastContact = lastLocalContactMs;
         const bool discovered = (lastContact != 0) &&
                                 ((millis() - lastContact) < BEACON_REVERT_TIMEOUT_MS);
+
+        if (discovered) {
+            statusLed.setState(Led::RX_LED, LedState::OFF);
+        } else {
+            statusLed.setState(Led::RX_LED, LedState::WARNING);
+        }
 
         // 2. Send one BEACON frame.
         sendBeacon();

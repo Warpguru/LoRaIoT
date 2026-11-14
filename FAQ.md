@@ -298,10 +298,10 @@ stack bottom (the lower the number, the tighter the margin).
 | Ping | 4096 B | ~2352-2360 B | OK |
 | Push | 4096 B | ~1636-2200 B | OK |
 | Beacon (REMOTE only) | 4096 B | ~1836 B | OK |
-| StatusLed | 1024 B | ~496 B | WARNING - close to 400 B lower bound |
+| StatusLed | 1536 B | ~1008 B | OK (raised from 1024 B for multi-LED deadline engine) |
 
-The **StatusLed** task has the tightest margin (~496 B free out of 1024 B allocated). All
-others are comfortable. New code added inside an existing task reduces its free minimum.
+All task stacks have comfortable margins (StatusLed was raised to 1536 B with the multi-LED
+deadline engine to ensure ample headroom). New code added inside an existing task reduces its free minimum.
 
 ### Is there room to add hardware peripheral support?
 
@@ -311,7 +311,7 @@ Yes, but with care. The practical limits are:
   image size after every library addition.
 - **Heap:** ~130 KB free at runtime. Keep above 50 KB at all times. Prefer `static` buffers
   over heap allocations in task loops.
-- **Task stacks:** all tasks have comfortable margins except StatusLed. Adding a new task
+- **Task stacks:** all tasks have comfortable margins. Adding a new task
   needs a new stack allocation (typically 2-6 KB).
 - **CPU:** dual-core at 240 MHz. The LoRa radio task owns Core 0; new tasks run on Core 1
   alongside the Arduino main task. CPU is not a bottleneck for typical sensor/control work.

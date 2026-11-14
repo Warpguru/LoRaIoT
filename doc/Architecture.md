@@ -139,7 +139,7 @@ sequenceDiagram
     HW->>App: Power-on / reset
 
     Note over App,Cfg: Phase 1 - Singletons and NVS
-    App->>App: statusLed.begin() - LED enters BOOTING state
+    App->>App: statusLed.begin() - All 3 LEDs enter BOOTING state (visual self-test)
     App->>Cfg: SensorRegistry.begin() / ControlRegistry.begin()
     App->>Cfg: LogBuffer.begin() - load persisted log level from NVS
     App->>Cfg: Gateway.begin() - load tier LOCAL / REMOTE from NVS
@@ -163,7 +163,7 @@ sequenceDiagram
         else Credentials already in NVS
             WM-->>App: Connects immediately, portal skipped
         end
-        Note over App: A failed STA connection halts with the SOS LED
+        Note over App: A failed STA connection halts with the Status LED SOS pattern
     end
     App->>App: RestService.registerRoutes - all /api/* routes wired
     App->>App: WebSocketService.begin - /ws/data handler active
@@ -183,9 +183,9 @@ sequenceDiagram
         alt Tier is REMOTE
             App->>Radio: beaconTaskBegin - task created, polls loraIsReady before first TX
         end
-        App->>App: statusLed setState READY
+        App->>App: statusLed setState STATUS_LED READY
     else Tier not configured
-        App->>App: statusLed setState NO_DEVICE - REST API still reachable
+        App->>App: statusLed setState STATUS_LED WARNING - REST API still reachable
     end
 
     Note over App,Diag: Phase 4 - Boot Diagnostics and LoRa Gate
@@ -217,7 +217,7 @@ exports a single global instance with a clean name:
 - **`GatewayClass` -> `Gateway`**: Manages the persistent gateway role (`LOCAL` or `REMOTE`).
 - **`LogBufferClass` -> `LogBuffer`**: Manages the multi-level (`INFO`/`DEBUG`/etc.) log ring
   buffer in RAM and provides JSON serialization.
-- **`StatusLed` -> `statusLed`**: Manages the asynchronous status LED state machine.
+- **`StatusLed` -> `statusLed`**: Manages the deadline-driven LED state machine for Status, RX activity, and TX activity LEDs.
 - **`LoRaStateClass` -> `LoRaState`**: Mutex-protected per-SRC link state (duplicate
   detection, reboot detection via `boot_id`, LRU registry with 180s stale purge). Used on
   both LOCAL and REMOTE.

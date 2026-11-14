@@ -74,6 +74,8 @@ The E220 module provides 7 functional pins that connect directly to standard ESP
 | **6** | **VCC** | Power | 3.3V or 5.0V | Power supply (≥3.3V for maximum RF output power) |
 | **7** | **GND** | Power | GND | Common Ground |
 
+*Note: In addition to the E220 transceiver, each ESP32 node connects three feedback LEDs with 330 Ω series resistors: Status LED on GPIO 21, LoRa RX activity LED on GPIO 13, and LoRa TX activity LED on GPIO 18.*
+
 ---
 
 ### 3.2 E220 Operating Modes & State Control

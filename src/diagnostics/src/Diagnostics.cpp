@@ -567,8 +567,8 @@ void diagnosticsLoop() {
     return;
   }
   if (!runE220Check()) {
-    // NO_DEVICE = slow blink: server is up but the LoRa module is not responding.
-    statusLed.setState(LedState::NO_DEVICE);
+    // WARNING = fast blink (250 ms / 250 ms): server is up but the LoRa module is not responding.
+    statusLed.setState(Led::STATUS_LED, LedState::WARNING);
   }
   // Software-only checks: independent of the radio, run even if the E220 check failed.
   if (!runPingEncodeCheck()) {

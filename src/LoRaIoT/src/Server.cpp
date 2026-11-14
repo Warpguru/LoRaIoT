@@ -431,7 +431,7 @@ void setupServer() {
     WiFi.mode(WIFI_STA);
     if (!wm.autoConnect("LoRaIoT")) {
       Log_error("WiFi Connection Failed! Halting with SOS signal.");
-      statusLed.setState(LedState::FAULT);
+      statusLed.setState(Led::STATUS_LED, LedState::FAULT);
       vTaskSuspend(NULL);
     }
     Log_info("WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());

@@ -161,7 +161,7 @@ void LoRaTransportClass::begin() {
   // (same pattern as WiFi failure in AGENTS.md).
   if (!configureE220()) {
     Log_error("LoRaTransport::begin - E220 config failed after %u attempts. Halting.", (uint8_t)LORA_MAX_RETRIES);
-    statusLed.setState(LedState::FAULT);
+    statusLed.setState(Led::STATUS_LED, LedState::FAULT);
     vTaskSuspend(NULL);
   }
 
@@ -253,6 +253,7 @@ void LoRaTransportClass::pause() {
   if (transportTaskHandle != nullptr) {
     vTaskSuspend(transportTaskHandle);
   }
+  statusLed.setState(Led::TX_LED, LedState::OFF);
   LoRaSerial.end();
 }
 
@@ -280,6 +281,9 @@ void LoRaTransportClass::sendRawInternal(uint8_t destAddr, const uint8_t* data, 
   const uint8_t targetAddh = (destAddr == LORA_ADDR_BROADCAST) ? LORA_ADDR_BROADCAST : ADDH;
   const uint8_t targetAddl = destAddr;
   const uint8_t targetChan = LoRaConfig.getChannel();
+
+  // Turn on TX activity LED for the full send duration (including AUX handshake and guard delay)
+  statusLed.setState(Led::TX_LED, LedState::ON);
 
   // Print diagnostics for transmission routing
   if (len > 0) {
@@ -315,6 +319,7 @@ void LoRaTransportClass::sendRawInternal(uint8_t destAddr, const uint8_t* data, 
 
   // 5. Add 50ms guard delay (required E220 air-transmission finish time)
   vTaskDelay(pdMS_TO_TICKS(GUARD_DELAY_MS));
+  statusLed.setState(Led::TX_LED, LedState::OFF);
 }
 
 void LoRaTransportClass::setMode(uint8_t m0, uint8_t m1) {
@@ -402,6 +407,7 @@ void LoRaTransportClass::loraTransportTask(void* param) {
       const LoRaDecodeResult result = decodeFrame(rxBuffer, expectedTotal, rxFrame,
                                                   LoRaConfig.getAddress());
       if (result == LoRaDecodeResult::OK) {
+        statusLed.pulse(Led::RX_LED);
         if (self->receiveCallback != nullptr) {
           self->receiveCallback(rxFrame);
         }
@@ -409,10 +415,17 @@ void LoRaTransportClass::loraTransportTask(void* param) {
         self->statsRxFrames++;
         xSemaphoreGive(self->statsMutex);
         logHex("LoRa RX frame:", rxBuffer, (expectedTotal < 17 ? expectedTotal : 17));
-      } else if (result == LoRaDecodeResult::BAD_CRC) {
-        xSemaphoreTake(self->statsMutex, portMAX_DELAY);
-        self->statsCrcErrors++;
-        xSemaphoreGive(self->statsMutex);
+      } else if (result == LoRaDecodeResult::FOREIGN_DST) {
+        // Valid frame addressed to another node: not a decode error, do not flash status LED.
+      } else {
+        // Decode failure (BAD_CRC, BAD_VER, BAD_TYPE, BAD_LEN, BAD_SYNC): pulse RX LED and flash STATUS LED
+        statusLed.pulse(Led::RX_LED);
+        statusLed.pulse(Led::STATUS_LED);
+        if (result == LoRaDecodeResult::BAD_CRC) {
+          xSemaphoreTake(self->statsMutex, portMAX_DELAY);
+          self->statsCrcErrors++;
+          xSemaphoreGive(self->statsMutex);
+        }
       }
       // All other failure codes (BAD_VER, BAD_TYPE, FOREIGN_DST) are logged inside
       // decodeFrame() at DEBUG and silently discarded here (no reply, per protocol §4.3).

@@ -6,8 +6,10 @@
 
 #include "../../diagnostics/src/TaskRegistry.h"
 #include "../../util/src/LogBuffer.h"
+#include "../../util/src/StatusLed.h"
 #include "../../util/src/TaskUtils.h"
 #include "Application.h"
+#include "Tier.h"
 #include "../../registry/src/PeerRegistry.h"
 #include "LoRaBroker.h"
 #include "LoRaConfig.h"
@@ -174,6 +176,7 @@ static void checkIdleNode(uint8_t addr) {
 static void sweepIdleNodes() {
     uint8_t addrs[LORA_MAX_PEERS];
     const uint8_t count = cachedRegistry().listPeers(addrs, LORA_MAX_PEERS);
+    uint8_t onlineCount = 0;
 
     for (uint8_t i = 0; i < count; i++) {
         uint32_t lastSeenMs = 0;
@@ -185,6 +188,18 @@ static void sweepIdleNodes() {
         // from a returning node revives it via markSeen().
         if (online && (millis() - lastSeenMs) > PING_IDLE_THRESHOLD_MS) {
             checkIdleNode(addrs[i]);
+            cachedRegistry().getLiveness(addrs[i], lastSeenMs, online);
+        }
+        if (online) {
+            onlineCount++;
+        }
+    }
+
+    if (Gateway.isLocal()) {
+        if (count == 0 || onlineCount == 0) {
+            statusLed.setState(Led::RX_LED, LedState::WARNING);
+        } else {
+            statusLed.setState(Led::RX_LED, LedState::OFF);
         }
     }
 }
