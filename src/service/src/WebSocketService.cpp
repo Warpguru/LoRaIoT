@@ -136,7 +136,7 @@ void WebSocketService::begin() {
   TaskHandle_t handle = nullptr;
   TASK_CREATE(broadcastTask, "WSBroadcast", BROADCAST_TASK_STACK_SIZE, this, BROADCAST_TASK_PRIORITY, &handle);
   TaskRegistry.add("WSBroadcast", handle, BROADCAST_TASK_STACK_SIZE);
-  Log_info("WebSocketService: broadcast task started.");
+  Log_debug("WebSocketService: broadcast task started.");
 }
 
 void WebSocketService::broadcastTask(void* param) {

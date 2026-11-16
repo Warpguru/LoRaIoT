@@ -130,7 +130,7 @@ static void replyToControlChange(uint8_t addr) {
  * Only when every attempt got a real timeout is the node marked offline.
  */
 static void checkIdleNode(uint8_t addr) {
-    Log_info("PingTask: node 0x%02X idle, checking link", addr);
+    Log_debug("PingTask: node 0x%02X idle, checking link", addr);
 
     uint8_t timeouts    = 0;
     uint8_t busyRetries = 0;
@@ -139,7 +139,7 @@ static void checkIdleNode(uint8_t addr) {
         BrokerResult result = pingOnce(addr);
 
         if (result == BrokerResult::OK) {
-            Log_info("PingTask: node 0x%02X answered, still online", addr);
+            Log_debug("PingTask: node 0x%02X answered, still online", addr);
             return;
         }
 
@@ -212,8 +212,8 @@ static void pingTask(void* /*param*/) {
     while (!loraIsReady()) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    Log_info("PingTask: LoRa gate open - starting keep-alive loop airRate=%s",
-             LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+    Log_debug("PingTask: LoRa gate open - starting keep-alive loop airRate=%s",
+              LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
 
     for (;;) {
         uint8_t addr = 0;
@@ -248,7 +248,7 @@ void pingTaskBegin() {
     TaskHandle_t handle = nullptr;
     TASK_CREATE(pingTask, "Ping", PING_TASK_STACK_SIZE, nullptr, PING_TASK_PRIORITY, &handle);
     TaskRegistry.add("Ping", handle, PING_TASK_STACK_SIZE);
-    Log_info("PingTask: started (idle=%ums attempts=%u)", PING_IDLE_THRESHOLD_MS, PING_OFFLINE_ATTEMPTS);
+    Log_debug("PingTask: started (idle=%ums attempts=%u)", PING_IDLE_THRESHOLD_MS, PING_OFFLINE_ATTEMPTS);
 }
 
 void pingTaskNotifyBeacon(uint8_t addr) {

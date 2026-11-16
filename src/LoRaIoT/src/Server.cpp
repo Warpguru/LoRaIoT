@@ -56,7 +56,7 @@ WiFiManager wm;
 // ---- Diagnostics endpoints (ESP32-specific) --------------------------------
 
 static void handleGetStatus(AsyncWebServerRequest* request) {
-  Log_info("GET /status");
+  Log_debug("GET /status");
   JsonDocument doc;
   JsonObject statusObject = doc.to<JsonObject>();
   fillESPInfo(statusObject);
@@ -73,9 +73,9 @@ static void clearNvsNamespace(const char* nvsNamespace) {
   if (prefs.begin(nvsNamespace, /*readOnly=*/false)) {
     prefs.clear();
     prefs.end();
-    Log_info("NVS namespace '%s' cleared", nvsNamespace);
+    Log_warn("NVS namespace '%s' cleared", nvsNamespace);
   } else {
-    Log_error("NVS namespace '%s' could not be opened for clearing", nvsNamespace);
+    Log_warn("NVS namespace '%s' could not be opened for clearing", nvsNamespace);
   }
 }
 
@@ -102,7 +102,7 @@ static void handleReset(AsyncWebServerRequest* request) {
 // ---- Log endpoints ---------------------------------------------------------
 
 static void handleGetLog(AsyncWebServerRequest* request) {
-  Log_info("GET /api/log");
+  Log_debug("GET /api/log");
   if (request->hasArg("clear") && request->arg("clear") == "1") {
     LogBuffer.clear();
   }
@@ -124,7 +124,7 @@ static void handlePutLogLevel(AsyncWebServerRequest* request, uint8_t* data, siz
     return;
   }
   LogBuffer.saveLevel();
-  Log_info("Log level changed to %s", LogBuffer.getLevelName());
+  Log_warn("Log level changed to %s", LogBuffer.getLevelName());
   String json = "{\"level\":\"";
   json += LogBuffer.getLevelName();
   json += "\"}";
@@ -134,14 +134,14 @@ static void handlePutLogLevel(AsyncWebServerRequest* request, uint8_t* data, siz
 // ---- Browser UI ------------------------------------------------------------
 
 static void handleRoot(AsyncWebServerRequest* request) {
-  Log_info("GET /");
+  Log_debug("GET /");
   request->send_P(HTTP_STATUS_OK, "text/html", INDEX_HTML);
 }
 
 // ---- OpenAPI ---------------------------------------------------------------
 
 static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
-  Log_info("GET /openapi");
+  Log_debug("GET /openapi");
   request->send_P(HTTP_STATUS_OK, "application/json", OPENAPI_JSON);
 }
 
@@ -154,7 +154,7 @@ static void handleGetOpenApiJson(AsyncWebServerRequest* request) {
  * does not need internet access.
  */
 static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
-  Log_info("GET /openapi/ui");
+  Log_debug("GET /openapi/ui");
   // Named local so .c_str() is safe. WiFi.SSID() only reports a joined STA network:
   //   STA    -> router SSID
   //   AP     -> SoftAP SSID (no STA interface)
@@ -177,15 +177,19 @@ static void handleGetOpenApiUi(AsyncWebServerRequest* request) {
            __DATE__ " " __TIME__,  // %s build timestamp in banner
            Gateway.isLocal() ? "LOCAL" : "REMOTE"); // %s TIER JS variable for x-tier filter
   // snprintf returns the length it wanted to write, so written >= buffer size means truncation.
-  Log_info("GET /openapi/ui: banner needs %d of %u buffer bytes%s",
-           written, (unsigned)sizeof(buf), (written >= (int)sizeof(buf)) ? " (TRUNCATED)" : "");
+  Log_debug("GET /openapi/ui: banner needs %d of %u buffer bytes%s",
+            written, (unsigned)sizeof(buf), (written >= (int)sizeof(buf)) ? " (TRUNCATED)" : "");
   request->send(HTTP_STATUS_OK, "text/html", buf);
 }
 
 // ---- setupServer -----------------------------------------------------------
 
 void setupServer() {
-  Log_info("Initializing WiFiManager...");
+  // WiFiManager prints its own "*wm:" lines straight to Serial, bypassing LogBuffer
+  // (no level, not in GET /api/log). Every output must carry a log level, so silence it.
+  wm.setDebugOutput(false);
+
+  Log_debug("Initializing WiFiManager...");
 
   // Each WiFiManagerParameter wraps one <select> element. WiFiManager posts
   // the submitted value back to getValue() on the corresponding object.
@@ -344,7 +348,7 @@ void setupServer() {
     if (chosenTier != nullptr && chosenTier[0] != '\0') {
       if (Gateway.setTierFromString(chosenTier)) {
         Gateway.saveTier();
-        Log_info("Gateway tier set from portal to %s", Gateway.getTierName());
+        Log_warn("Gateway tier set from portal to %s", Gateway.getTierName());
       } else {
         Log_warn("Portal returned unknown tier '%s' - ignored", chosenTier);
       }
@@ -352,7 +356,7 @@ void setupServer() {
     if (chosenLevel != nullptr && chosenLevel[0] != '\0') {
       if (LogBuffer.setLevelFromString(chosenLevel)) {
         LogBuffer.saveLevel();
-        Log_info("Log level set from portal to %s", LogBuffer.getLevelName());
+        Log_warn("Log level set from portal to %s", LogBuffer.getLevelName());
       } else {
         Log_warn("Portal returned unknown log level '%s' - ignored", chosenLevel);
       }
@@ -362,7 +366,7 @@ void setupServer() {
       if (chan >= LORA_MIN_CHANNEL && chan <= LORA_MAX_CHANNEL) {
         LoRaConfig.setChannel((uint8_t)chan);
         LoRaConfig.save();
-        Log_info("LoRa channel set from portal to %d", LoRaConfig.getChannel());
+        Log_warn("LoRa channel set from portal to %d", LoRaConfig.getChannel());
       } else {
         Log_warn("Portal returned invalid LoRa channel '%s' - ignored", chosenChannel);
       }
@@ -376,7 +380,7 @@ void setupServer() {
       if (LoRaTransportClass::airRateFromName(chosenAirRate, rate)) {
         LoRaConfig.setAirRate(rate);
         LoRaConfig.save();
-        Log_info("LoRa air rate set from portal to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+        Log_warn("LoRa air rate set from portal to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
       } else {
         Log_warn("Portal returned unknown LoRa air rate '%s' - ignored", chosenAirRate);
       }
@@ -389,7 +393,7 @@ void setupServer() {
       int k = (chosenKey[0] != '\0') ? atoi(chosenKey) : 0;
       if (k >= 0 && k <= (int)LORA_MAX_KEY) {
         LoRaConfig.setKey((uint16_t)k);
-        Log_info("LoRa key set from portal (%s); takes effect on next reboot",
+        Log_warn("LoRa key set from portal (%s); takes effect on next reboot",
                  k ? "encryption enabled" : "encryption disabled");
       } else {
         Log_warn("Portal returned invalid LoRa key '%s' - ignored", chosenKey);
@@ -400,7 +404,7 @@ void setupServer() {
     if (Gateway.isConfigured()) {
       LoRaConfig.setAddress(Gateway.defaultAddress());
       LoRaConfig.save();
-      Log_info("LoRa address set to 0x%02X (%s)", Gateway.defaultAddress(), Gateway.getTierName());
+      Log_warn("LoRa address set to 0x%02X (%s)", Gateway.defaultAddress(), Gateway.getTierName());
     }
   };
   wm.setSaveParamsCallback(saveCallback);
@@ -412,19 +416,19 @@ void setupServer() {
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(WiFiConfig.getApIp(), WiFiConfig.getApIp(), WiFiConfig.getApSubnet());
     WiFi.softAP(WiFiConfig.getApSsid(), WiFiConfig.getApPassword(), WiFiConfig.getApChannel());
-    Log_info("WiFi SoftAP started! SSID: '%s', IP: %s, Channel: %u",
+    Log_warn("WiFi SoftAP started! SSID: '%s', IP: %s, Channel: %u",
              WiFiConfig.getApSsid(), WiFi.softAPIP().toString().c_str(), WiFiConfig.getApChannel());
   } else if (WiFiConfig.getOpMode() == WifiOpMode::AP_STA) {
     // Concurrent SoftAP + Station mode: start SoftAP and connect to router
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(WiFiConfig.getApIp(), WiFiConfig.getApIp(), WiFiConfig.getApSubnet());
     WiFi.softAP(WiFiConfig.getApSsid(), WiFiConfig.getApPassword(), WiFiConfig.getApChannel());
-    Log_info("WiFi SoftAP started (concurrent)! SSID: '%s', IP: %s, Channel: %u",
+    Log_warn("WiFi SoftAP started (concurrent)! SSID: '%s', IP: %s, Channel: %u",
              WiFiConfig.getApSsid(), WiFi.softAPIP().toString().c_str(), WiFiConfig.getApChannel());
     if (!wm.autoConnect("LoRaIoT")) {
       Log_warn("WiFi STA connection failed in AP_STA mode, continuing in SoftAP mode");
     } else {
-      Log_info("WiFi STA Connected! IP: %s", WiFi.localIP().toString().c_str());
+      Log_warn("WiFi STA Connected! IP: %s", WiFi.localIP().toString().c_str());
     }
   } else {
     // Standard Station mode (STA): connect to configured router via WiFiManager
@@ -434,7 +438,7 @@ void setupServer() {
       statusLed.setState(Led::STATUS_LED, LedState::FAULT);
       vTaskSuspend(NULL);
     }
-    Log_info("WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
+    Log_warn("WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
   }
 
   // Construct and register REST routes.

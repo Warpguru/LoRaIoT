@@ -76,6 +76,8 @@ The E220 module provides 7 functional pins that connect directly to standard ESP
 
 *Note: In addition to the E220 transceiver, each ESP32 node connects three feedback LEDs with 330 Ω series resistors: Status LED on GPIO 21, LoRa RX activity LED on GPIO 13, and LoRa TX activity LED on GPIO 18.*
 
+> **Recommended pull resistors (3 x 10 kΩ):** M0 (GPIO 4) to GND, M1 (GPIO 2) to GND, and TX2 (GPIO 17, E220 RXD) to 3.3 V. AUX needs none. After an ESP32 reset these three GPIOs float until `LoRaTransport.begin()` runs, and the E220 has only weak internal pull-ups on M0/M1 (manual Table 3-1), so a floating line can be read as Mode 3 (configuration). A floating RXD can look like a half-sent config command. The resistors give defined idle levels. A boot-time failure (AUX stuck LOW, SOS blink) was seen on a breadboard prototype and later disappeared again with the resistors removed, so the contacts were probably the cause; the resistors are cheap insurance and are recommended for any build. The manual itself gives no pull-down recommendation (only 4-10 kΩ pull-ups on TXD and AUX for some 5 V MCUs).
+
 ---
 
 ### 3.2 E220 Operating Modes & State Control

@@ -71,6 +71,7 @@ static constexpr uint32_t POLL_INTERVAL_MS = 1;         // Delay between AUX pol
 static constexpr uint32_t MODE_REACT_DELAY_MS = 10;     // Let AUX react to a mode change before polling it
 static constexpr uint32_t AUX_STABLE_DELAY_MS = 2;      // AUX must stay HIGH >= 2 ms before UART data is accepted
 static constexpr uint32_t WRITE_SETTLE_DELAY_MS = 10;   // Module settle time after a register write (AUX does not signal it)
+static constexpr uint32_t COMMAND_GAP_DELAY_MS = 20;    // Idle time before every config command; AUX does not signal that the module is ready for the next one
 static constexpr uint32_t MODE0_IDLE_DELAY_MS = 100;    // Wait in Mode 0 before sampling the AUX idle level
 static constexpr uint32_t TASK_PAUSE_DELAY_MS = 50;     // Let the suspended transceiver task release UART2
 
@@ -155,6 +156,10 @@ static bool setMode(bool m1, bool m0) {
  * Returns the number of reply bytes received (0 means no reply at all).
  */
 static size_t transact(const uint8_t* cmd, size_t cmdLen, uint8_t* reply, size_t replyMax) {
+  // The module answers FF FF FF (wrong format) to a command that follows the previous one too
+  // closely. This gap must not depend on log output: the step-by-step lines are DEBUG, so
+  // at the default INFO level they do not provide an incidental pause between commands.
+  delay(COMMAND_GAP_DELAY_MS);
   while (loraSerial.available()) {
     loraSerial.read();  // discard stale bytes so they cannot be mistaken for the reply
   }
@@ -180,7 +185,7 @@ static bool readRegisters(uint8_t* regs) {
 
   const size_t n = transact(cmd, sizeof(cmd), reply, sizeof(reply));
   toHex(reply, n, hex, sizeof(hex));
-  Log_info("E220 diag:   read reply (%u bytes): %s", static_cast<unsigned>(n), hex);
+  Log_debug("E220 diag:   read reply (%u bytes): %s", static_cast<unsigned>(n), hex);
 
   if (n == 0) {
     Log_error("E220 diag:   FAIL no reply. Check ESP32 TX(GPIO17)->E220 RXD, E220 TXD->ESP32 RX(GPIO16), M0/M1.");
@@ -192,7 +197,8 @@ static bool readRegisters(uint8_t* regs) {
   }
   if (n != REPLY_LEN || reply[0] != LoRaTransportClass::CMD_READ || reply[1] != LoRaTransportClass::REG_START_ADDR ||
       reply[2] != LoRaTransportClass::REG_WRITE_COUNT) {
-    Log_error("E220 diag:   FAIL unexpected reply format (expected C1 00 08 + 8 bytes).");
+    Log_error("E220 diag:   FAIL unexpected reply format (expected C1 00 08 + 8 bytes), got %u bytes: %s",
+              static_cast<unsigned>(n), hex);
     return false;
   }
   memcpy(regs, reply + LoRaTransportClass::CONFIG_HEADER_LEN, LoRaTransportClass::REG_WRITE_COUNT);
@@ -212,8 +218,8 @@ static void waitForWriteToSettle() {
   const bool wasLow = (digitalRead(LoRaTransportClass::PIN_AUX) == LOW);
   const bool ok = waitAux(HIGH, LoRaTransportClass::AUX_TIMEOUT_MS);
   delay(AUX_STABLE_DELAY_MS);  // AUX must stay HIGH >= 2 ms before UART data is accepted
-  Log_info("E220 diag:   after write: AUX was %s, settled in %lu ms%s", wasLow ? "LOW" : "HIGH",
-           static_cast<unsigned long>(millis() - start), ok ? "" : " (TIMEOUT)");
+  Log_debug("E220 diag:   after write: AUX was %s, settled in %lu ms%s", wasLow ? "LOW" : "HIGH",
+            static_cast<unsigned long>(millis() - start), ok ? "" : " (TIMEOUT)");
 }
 
 /** Temporarily writes regs[], checks the module's echo, reads back and compares. */
@@ -226,11 +232,12 @@ static bool writeTempAndVerify(const uint8_t* regs) {
   char hex[HEX_BUFFER_SIZE];
   const size_t n = transact(cmd, sizeof(cmd), reply, sizeof(reply));
   toHex(reply, n, hex, sizeof(hex));
-  Log_info("E220 diag:   write echo (%u bytes): %s", static_cast<unsigned>(n), hex);
+  Log_debug("E220 diag:   write echo (%u bytes): %s", static_cast<unsigned>(n), hex);
 
   if (n != REPLY_LEN || reply[0] != LoRaTransportClass::CMD_READ ||
       memcmp(reply + LoRaTransportClass::CONFIG_HEADER_LEN, regs, LoRaTransportClass::REG_WRITE_COUNT) != 0) {
-    Log_error("E220 diag:   FAIL write echo does not match what was written.");
+    Log_error("E220 diag:   FAIL write echo does not match what was written, got %u bytes: %s",
+              static_cast<unsigned>(n), hex);
     return false;
   }
 
@@ -255,9 +262,9 @@ static bool runE220Check() {
   LoRaTransport.pause();
   delay(TASK_PAUSE_DELAY_MS);
 
-  Log_info("E220 diag: ===== start (M0=GPIO%u M1=GPIO%u AUX=GPIO%u RX=GPIO%u TX=GPIO%u) =====",
-           LoRaTransportClass::PIN_M0, LoRaTransportClass::PIN_M1, LoRaTransportClass::PIN_AUX,
-           LoRaTransportClass::PIN_RX, LoRaTransportClass::PIN_TX);
+  Log_debug("E220 diag: ===== start (M0=GPIO%u M1=GPIO%u AUX=GPIO%u RX=GPIO%u TX=GPIO%u) =====",
+            LoRaTransportClass::PIN_M0, LoRaTransportClass::PIN_M1, LoRaTransportClass::PIN_AUX,
+            LoRaTransportClass::PIN_RX, LoRaTransportClass::PIN_TX);
 
   pinMode(LoRaTransportClass::PIN_M0, OUTPUT);
   pinMode(LoRaTransportClass::PIN_M1, OUTPUT);
@@ -268,7 +275,7 @@ static bool runE220Check() {
 
   do {
     // Step 1: Mode 0 idle level of AUX.
-    Log_info("E220 diag: [1/6] Mode 0, checking AUX idle level");
+    Log_debug("E220 diag: [1/6] Mode 0, checking AUX idle level");
     digitalWrite(LoRaTransportClass::PIN_M0, LOW);
     digitalWrite(LoRaTransportClass::PIN_M1, LOW);
     delay(MODE0_IDLE_DELAY_MS);
@@ -276,30 +283,30 @@ static bool runE220Check() {
       Log_error("E220 diag:   FAIL AUX is LOW. AUX wire open, wrong pin, or module has no power.");
       break;
     }
-    Log_info("E220 diag:   PASS AUX is HIGH");
+    Log_debug("E220 diag:   PASS AUX is HIGH");
 
     // Step 2: enter config mode.
-    Log_info("E220 diag: [2/6] Entering Mode 3 (M1=1, M0=1) at %u baud", static_cast<unsigned>(LoRaTransportClass::CONFIG_BAUD));
+    Log_debug("E220 diag: [2/6] Entering Mode 3 (M1=1, M0=1) at %u baud", static_cast<unsigned>(LoRaTransportClass::CONFIG_BAUD));
     if (!setMode(HIGH, HIGH)) {
       Log_error("E220 diag:   FAIL AUX did not return HIGH after the mode change. Check M0/M1/AUX wiring.");
       break;
     }
-    Log_info("E220 diag:   PASS AUX went HIGH");
+    Log_debug("E220 diag:   PASS AUX went HIGH");
 
     // Step 3: read registers. This single reply validates UART TX, UART RX, M0 and M1.
-    Log_info("E220 diag: [3/6] Reading registers");
+    Log_debug("E220 diag: [3/6] Reading registers");
     uint8_t original[LoRaTransportClass::REG_WRITE_COUNT];
     if (!readRegisters(original)) {
       break;
     }
-    Log_info("E220 diag:   PASS ADDH=%02X ADDL=%02X REG0=%02X REG1=%02X REG2(ch)=%02X REG3=%02X",
-             original[IDX_ADDH], original[IDX_ADDL], original[IDX_REG0], original[IDX_REG1], original[IDX_CHANNEL],
-             original[IDX_REG3]);
-    Log_info("E220 diag:   factory default (manual) is 00 00 62 00 17; REG3 is not specified there");
+    Log_debug("E220 diag:   PASS ADDH=%02X ADDL=%02X REG0=%02X REG1=%02X REG2(ch)=%02X REG3=%02X",
+              original[IDX_ADDH], original[IDX_ADDL], original[IDX_REG0], original[IDX_REG1], original[IDX_CHANNEL],
+              original[IDX_REG3]);
+    Log_debug("E220 diag:   factory default (manual) is 00 00 62 00 17; REG3 is not specified there");
 
     // Step 4: temporary write of a different channel.
     const uint8_t testChannel = (original[IDX_CHANNEL] == TEST_CHANNEL_A) ? TEST_CHANNEL_B : TEST_CHANNEL_A;
-    Log_info("E220 diag: [4/6] Temporary write: channel %02X -> %02X", original[IDX_CHANNEL], testChannel);
+    Log_debug("E220 diag: [4/6] Temporary write: channel %02X -> %02X", original[IDX_CHANNEL], testChannel);
     uint8_t changed[LoRaTransportClass::REG_WRITE_COUNT];
     memcpy(changed, original, LoRaTransportClass::REG_WRITE_COUNT);
     changed[IDX_CHANNEL] = testChannel;
@@ -308,27 +315,27 @@ static bool runE220Check() {
     if (!writeTempAndVerify(changed)) {
       break;
     }
-    Log_info("E220 diag:   PASS write and read-back match");
+    Log_debug("E220 diag:   PASS write and read-back match");
 
     // Step 5: put the original values back.
-    Log_info("E220 diag: [5/6] Temporary write: restoring original values");
+    Log_debug("E220 diag: [5/6] Temporary write: restoring original values");
     original[IDX_CRYPT_H] = VAL_CRYPT_DEFAULT;
     original[IDX_CRYPT_L] = VAL_CRYPT_DEFAULT;
     if (!writeTempAndVerify(original)) {
       break;
     }
-    Log_info("E220 diag:   PASS original values restored");
+    Log_debug("E220 diag:   PASS original values restored");
 
     ok = true;
   } while (false);
 
   // Step 6: always leave the module in normal mode and release UART2.
-  Log_info("E220 diag: [6/6] Returning to Mode 0 and releasing UART2");
+  Log_debug("E220 diag: [6/6] Returning to Mode 0 and releasing UART2");
   setMode(LOW, LOW);
   loraSerial.end();
 
   if (ok) {
-    Log_info("E220 diag: ===== RESULT: PASS. UART, M0, M1 and AUX wiring verified =====");
+    Log_debug("E220 diag: ===== RESULT: PASS. UART, M0, M1 and AUX wiring verified =====");
   } else {
     Log_error("E220 diag: ===== RESULT: FAIL. See the FAIL line above for the likely cause =====");
   }
@@ -347,7 +354,7 @@ static bool runE220Check() {
  * Pure software: needs no UART and no radio. Returns true only if every check passed.
  */
 static bool runPingEncodeCheck() {
-  Log_info("Protobuf diag: ===== PING encode/decode check =====");
+  Log_debug("Protobuf diag: ===== PING encode/decode check =====");
 
   loraiot_Beacon ping = loraiot_Beacon_init_zero;
   ping.boot_id = PING_TEST_BOOT_ID;  // fw_version, uptime_s and registry_rev stay absent in a PING
@@ -361,7 +368,7 @@ static bool runPingEncodeCheck() {
 
   char hex[LoRaTransportClass::HEX_ENTRY_SIZE * sizeof(payload)];
   toHex(payload, out.bytes_written, hex, sizeof(hex));
-  Log_info("Protobuf diag:   encoded PING payload (%uB): %s", static_cast<unsigned>(out.bytes_written), hex);
+  Log_debug("Protobuf diag:   encoded PING payload (%uB): %s", static_cast<unsigned>(out.bytes_written), hex);
 
   if (out.bytes_written != sizeof(PING_EXPECTED_PAYLOAD) ||
       memcmp(payload, PING_EXPECTED_PAYLOAD, sizeof(PING_EXPECTED_PAYLOAD)) != 0) {
@@ -369,7 +376,7 @@ static bool runPingEncodeCheck() {
     Log_error("Protobuf diag:   FAIL payload differs from the documented bytes: %s", hex);
     return false;
   }
-  Log_info("Protobuf diag:   PASS payload equals the documented bytes");
+  Log_debug("Protobuf diag:   PASS payload equals the documented bytes");
 
   loraiot_Beacon decoded = loraiot_Beacon_init_zero;
   pb_istream_t in = pb_istream_from_buffer(payload, out.bytes_written);
@@ -387,9 +394,9 @@ static bool runPingEncodeCheck() {
               decoded.has_fw_version, decoded.has_uptime_s, decoded.has_registry_rev);
     return false;
   }
-  Log_info("Protobuf diag:   PASS decode returns boot_id %08X, optional fields absent",
-           static_cast<unsigned>(decoded.boot_id));
-  Log_info("Protobuf diag: ===== RESULT: PASS. nanopb encode and decode verified =====");
+  Log_debug("Protobuf diag:   PASS decode returns boot_id %08X, optional fields absent",
+            static_cast<unsigned>(decoded.boot_id));
+  Log_debug("Protobuf diag: ===== RESULT: PASS. nanopb encode and decode verified =====");
   return true;
 }
 
@@ -401,7 +408,7 @@ static bool runPingEncodeCheck() {
  * Returns true only if every check passed.
  */
 static bool runFrameCodecCheck() {
-  Log_info("Frame diag: ===== frame codec check =====");
+  Log_debug("Frame diag: ===== frame codec check =====");
 
   // Check 1: CRC check value for the ASCII string "123456789".
   {
@@ -411,7 +418,7 @@ static bool runFrameCodecCheck() {
       Log_error("Frame diag:   FAIL CRC check value: got 0x%04X, expected 0x%04X", crc, LORA_CRC_CHECK_VALUE);
       return false;
     }
-    Log_info("Frame diag:   PASS CRC of \"123456789\" = 0x%04X", crc);
+    Log_debug("Frame diag:   PASS CRC of \"123456789\" = 0x%04X", crc);
   }
 
   // Check 2: encodeFrame produces the 17-byte worked example exactly.
@@ -441,7 +448,7 @@ static bool runFrameCodecCheck() {
       Log_error("Frame diag:     exp: %s", exp);
       return false;
     }
-    Log_info("Frame diag:   PASS worked example encodes to %u documented bytes", (unsigned)encodedLen);
+    Log_debug("Frame diag:   PASS worked example encodes to %u documented bytes", (unsigned)encodedLen);
 
     // Check 3: decodeFrame round-trip (ownAddr = FRAME_TEST_DST so the DST filter passes).
     LoRaFrame decoded;
@@ -459,8 +466,8 @@ static bool runFrameCodecCheck() {
       Log_error("Frame diag:   FAIL decoded fields do not match the original frame");
       return false;
     }
-    Log_info("Frame diag:   PASS decode round-trip: type=%u src=0x%02X dst=0x%02X seq=%u len=%u",
-             (unsigned)decoded.type, decoded.src, decoded.dst, decoded.seq, decoded.len);
+    Log_debug("Frame diag:   PASS decode round-trip: type=%u src=0x%02X dst=0x%02X seq=%u len=%u",
+              (unsigned)decoded.type, decoded.src, decoded.dst, decoded.seq, decoded.len);
 
     // Check 4: a single flipped payload bit must be caught and reported as BAD_CRC.
     uint8_t corrupted[FRAME_EXPECTED_LEN];
@@ -473,10 +480,10 @@ static bool runFrameCodecCheck() {
                 (unsigned)badResult, (unsigned)LoRaDecodeResult::BAD_CRC);
       return false;
     }
-    Log_info("Frame diag:   PASS corrupted frame correctly rejected as BAD_CRC");
+    Log_debug("Frame diag:   PASS corrupted frame correctly rejected as BAD_CRC");
   }
 
-  Log_info("Frame diag: ===== RESULT: PASS. CRC, encode, decode and error detection verified =====");
+  Log_debug("Frame diag: ===== RESULT: PASS. CRC, encode, decode and error detection verified =====");
   return true;
 }
 
@@ -495,7 +502,7 @@ static bool runFrameCodecCheck() {
  * budget with zero runtime cost.
  */
 static bool runDeviceTableCheck() {
-  Log_info("DeviceTable diag: ===== DeviceTable smoke test =====");
+  Log_debug("DeviceTable diag: ===== DeviceTable smoke test =====");
 
   // Full behavioural checks (13 checks: registration, capacity limits,
   // text storage, round-trip encode/decode, UTF-8 boundary, type flip,
@@ -545,8 +552,8 @@ static bool runDeviceTableCheck() {
     return false;
   }
 
-  Log_info("DeviceTable diag:   PASS smoke test (register, storeValue, storeTextValue, copyDevice)");
-  Log_info("DeviceTable diag: ===== RESULT: PASS =====");
+  Log_debug("DeviceTable diag:   PASS smoke test (register, storeValue, storeTextValue, copyDevice)");
+  Log_debug("DeviceTable diag: ===== RESULT: PASS =====");
   return true;
 }
 
@@ -566,18 +573,28 @@ void diagnosticsLoop() {
   if (!runRequested.exchange(false)) {
     return;
   }
+  bool allPassed = true;
   if (!runE220Check()) {
     // WARNING = fast blink (250 ms / 250 ms): server is up but the LoRa module is not responding.
     statusLed.setState(Led::STATUS_LED, LedState::WARNING);
+    allPassed = false;
   }
   // Software-only checks: independent of the radio, run even if the E220 check failed.
   if (!runPingEncodeCheck()) {
     Log_error("Protobuf diag: ===== RESULT: FAIL. See the FAIL line above =====");
+    allPassed = false;
   }
   if (!runFrameCodecCheck()) {
     Log_error("Frame diag: ===== RESULT: FAIL. See the FAIL line above =====");
+    allPassed = false;
   }
   if (!runDeviceTableCheck()) {
     Log_error("DeviceTable diag: ===== RESULT: FAIL. See the FAIL line above =====");
+    allPassed = false;
+  }
+  // The step-by-step PASS lines are DEBUG; this single line is the INFO-level outcome
+  // (also for GET /api/diag/e220, whose reply points at the log).
+  if (allPassed) {
+    Log_info("Diagnostics: E220, Protobuf, Frame and DeviceTable checks all PASS");
   }
 }

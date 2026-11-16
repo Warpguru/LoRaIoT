@@ -63,8 +63,8 @@ static uint16_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
   static uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Request_fields, &req)) {
-    Log_error("DescribeCrawler: REQUEST(Describe{device=%u}) encode failed: %s",
-              deviceIdx, PB_GET_ERROR(&pbOut));
+    Log_warn("DescribeCrawler: REQUEST(Describe{device=%u}) encode failed: %s",
+             deviceIdx, PB_GET_ERROR(&pbOut));
     return 0;
   }
 
@@ -79,7 +79,7 @@ static uint16_t sendDescribeRequest(uint8_t targetAddr, uint8_t deviceIdx) {
   memcpy(frame.payload, payloadBuf, frame.len);
 
   if (!LoRaTransport.sendFrame(frame)) {
-    Log_error("DescribeCrawler: REQUEST(Describe{device=%u}) sendFrame failed", deviceIdx);
+    Log_warn("DescribeCrawler: REQUEST(Describe{device=%u}) sendFrame failed", deviceIdx);
     return 0;
   }
 
@@ -115,7 +115,7 @@ void describeCrawlerLoop() {
         ctx.retryCount  = 0;
         ctx.sentAtMs    = millis();
         ctx.inFlightSeq = (uint32_t)sendDescribeRequest(ctx.targetAddr, ctx.deviceIdx);
-        Log_info("DescribeCrawler: starting crawl for node 0x%02X", ctx.targetAddr);
+        Log_debug("DescribeCrawler: starting crawl for node 0x%02X", ctx.targetAddr);
         break;
       }
     }

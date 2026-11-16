@@ -235,6 +235,22 @@ The physical interface between the ESP32 (38-pin DevKitC) and the Ebyte E220-400
 
 </details>
 
+### Recommended Pull Resistors (M0, M1, RXD) and Supply Capacitor
+
+Add these three resistors and the supply capacitor below. They are not needed on every build (a clean PCB may run without them), but they cost almost nothing and remove a boot-time hazard:
+
+| Resistor | Between | Value | Purpose |
+|:---:|---|:---:|---|
+| 1 | M0 (GPIO 4 / E220 pin 1) and GND | 10 kOhm | Keeps the E220 out of Mode 3 while GPIO 4 is high-Z |
+| 2 | M1 (GPIO 2 / E220 pin 2) and GND | 10 kOhm | Same for M1; GPIO 2 is also an ESP32 strapping pin that wants LOW at reset |
+| 3 | TX2 (GPIO 17 / E220 pin 3 RXD) and 3.3 V | 10 kOhm | Keeps the E220 RXD idle HIGH, so it cannot see noise as a partial command |
+
+AUX (GPIO 15) needs no resistor, because the E220 drives it actively.
+
+**Supply capacitor (potential workaround):** put a 100 to 470 uF low-ESR electrolytic capacitor directly across the E220 `VCC` and `GND` pins, with a 100 nF ceramic capacitor in parallel, and keep the leads as short as possible. The E220 draws current peaks (about 110 mA while transmitting) and the ESP32 draws WiFi bursts from the same USB supply. A dip can leave the module in a latched state with AUX LOW that only a power cycle clears (manual section 9 asks for a stable supply with at least 30% margin). The capacitor is also listed in the bill of materials above; make sure it really sits at the module pins and not at the far end of a long wire.
+
+Why: after an ESP32 reset, and until `LoRaTransport.begin()` runs (after WiFi is up, several seconds), GPIO 4, 2 and 17 are floating inputs. The E220 has only weak internal pull-ups on M0 and M1 (manual Table 3-1), so a floating line may be read as HIGH, which is Mode 3 (configuration). On the REMOTE prototype, boots with AUX stuck LOW (SOS blink) happened intermittently; the pull resistors did not help at first, and later the failure disappeared, also with the resistors removed again. The cause was therefore probably a marginal breadboard contact (wires of up to 20 cm, crosstalk between neighbouring signal wires, supply noise) and is not proven, but the resistors and the capacitor make the idle levels and the supply defined whatever the contact quality. See [`doc/TechDebt.md`](doc/TechDebt.md) section 9.
+
 ### E220 Hardware Operating Modes
 
 The M0/M1 operating-mode table (Mode 0 to Mode 3) is in [`doc/Architecture.md` §10.1](doc/Architecture.md#101-e220-hardware-operating-modes).
@@ -294,7 +310,7 @@ self-healing scenarios - see
 ## 5. Troubleshooting
 
 If the link does not come up, call `GET /api/diag/e220` on each node to run the 6-step E220 wiring and register check.
-Then read `GET /api/log` on both nodes and look for the `E220 diag:` lines.
+Then read `GET /api/log` on both nodes: a passing run logs one `Diagnostics: ... all PASS` line, a failure logs `E220 diag:` lines at ERROR. Set the log level to DEBUG (`PUT /api/log/level`) first to see every step.
 The six steps, their failure interpretations and the multi-node log comparison are described in [`doc/Architecture.md` §10.2](doc/Architecture.md#102-on-demand-diagnostics-and-multi-node-debugging).
 
 ---

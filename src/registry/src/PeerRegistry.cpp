@@ -103,7 +103,7 @@ bool PeerRegistry::updatePeerMeta(uint8_t addr, uint32_t bootId,
   // Detect reboot: boot_id changed means the peer has restarted;
   // all cached definitions are stale and must be discarded.
   if (peer.bootId != PEER_BOOT_ID_NONE && peer.bootId != bootId) {
-    Log_info("PeerRegistry: peer 0x%02X rebooted (boot_id 0x%08X -> 0x%08X), clearing cache",
+    Log_warn("PeerRegistry: peer 0x%02X rebooted (boot_id 0x%08X -> 0x%08X), clearing cache",
              addr, peer.bootId, bootId);
     peer.table.clear();
     peer.registryRev  = PEER_REV_NONE;
@@ -119,7 +119,7 @@ bool PeerRegistry::updatePeerMeta(uint8_t addr, uint32_t bootId,
   // Its cached definitions were kept while offline: if boot_id and registry_rev are
   // unchanged (checked above and below) no new Describe crawl is needed.
   if (!peer.online) {
-    Log_info("PeerRegistry: peer 0x%02X is online again (BEACON)", addr);
+    Log_debug("PeerRegistry: peer 0x%02X is online again (BEACON)", addr);
     peer.online = true;
   }
 
@@ -128,8 +128,8 @@ bool PeerRegistry::updatePeerMeta(uint8_t addr, uint32_t bootId,
     // Schedule a crawl if we have never crawled, or the rev has advanced.
     if (!crawlNeeded &&
         (peer.registryRev == PEER_REV_NONE || peer.registryRev != registryRev)) {
-      Log_info("PeerRegistry: peer 0x%02X registry_rev changed (%u -> %u), scheduling Describe crawl",
-               addr, peer.registryRev, registryRev);
+      Log_debug("PeerRegistry: peer 0x%02X registry_rev changed (%u -> %u), scheduling Describe crawl",
+                addr, peer.registryRev, registryRev);
       crawlNeeded = true;
     }
   }
@@ -158,8 +158,8 @@ void PeerRegistry::storeDevice(uint8_t addr, const loraiot_Device& dev) {
   PeerEntry& peer = peers[idx];
   DeviceTableResult res = peer.table.applyDevice(dev);
   if (res == DeviceTableResult::OK) {
-    Log_info("PeerRegistry: stored/updated device[%u] '%s' for peer 0x%02X (%u metrics)",
-             dev.device, dev.name, addr, dev.metrics_count);
+    Log_debug("PeerRegistry: stored/updated device[%u] '%s' for peer 0x%02X (%u metrics)",
+              dev.device, dev.name, addr, dev.metrics_count);
   } else {
     Log_warn("PeerRegistry: failed to store device[%u] for peer 0x%02X (err=%u)",
              dev.device, addr, static_cast<uint8_t>(res));
@@ -178,8 +178,8 @@ void PeerRegistry::markCrawlComplete(uint8_t addr, uint32_t finalRev) {
   if (idx >= 0) {
     peers[idx].registryRev  = finalRev;
     peers[idx].crawlPending = false;
-    Log_info("PeerRegistry: Describe crawl complete for peer 0x%02X, rev=%u, devices=%u",
-             addr, finalRev, peers[idx].table.getDeviceCount());
+    Log_debug("PeerRegistry: Describe crawl complete for peer 0x%02X, rev=%u, devices=%u",
+              addr, finalRev, peers[idx].table.getDeviceCount());
   }
 
   xSemaphoreGive(mutex);
@@ -226,7 +226,7 @@ bool PeerRegistry::markSeen(uint8_t addr) {
 
   // Log after releasing the mutex: logging can be slow and must not block other tasks.
   if (wasOffline) {
-    Log_info("PeerRegistry: peer 0x%02X is online again", addr);
+    Log_warn("PeerRegistry: peer 0x%02X is online again", addr);
   }
   return wasOffline;
 }
@@ -250,7 +250,7 @@ void PeerRegistry::markOffline(uint8_t addr) {
   xSemaphoreGive(mutex);
 
   if (changed) {
-    Log_warn("PeerRegistry: peer 0x%02X marked offline", addr);
+    Log_debug("PeerRegistry: peer 0x%02X marked offline", addr);
   }
 }
 
@@ -475,7 +475,7 @@ int8_t PeerRegistry::findOrCreatePeer(uint8_t addr) {
     if (victim < 0) {
       return -1;   // every peer is online: the new peer is rejected
     }
-    Log_info("PeerRegistry: table full, reusing slot of offline peer 0x%02X for 0x%02X",
+    Log_warn("PeerRegistry: table full, reusing slot of offline peer 0x%02X for 0x%02X",
              peers[victim].addr, addr);
     idx = victim;
   } else {

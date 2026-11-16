@@ -334,7 +334,7 @@ void MqttServiceClass::begin() {
   TASK_CREATE(mqttTask, "MqttTask", MQTT_TASK_STACK_SIZE, this, MQTT_TASK_PRIORITY, &taskHandle);
   if (taskHandle != nullptr) {
     TaskRegistry.add("MqttTask", taskHandle, MQTT_TASK_STACK_SIZE);
-    Log_info("MqttService: Task created (stack=%u, priority=%u)", MQTT_TASK_STACK_SIZE, MQTT_TASK_PRIORITY);
+    Log_debug("MqttService: Task created (stack=%u, priority=%u)", MQTT_TASK_STACK_SIZE, MQTT_TASK_PRIORITY);
   } else {
     Log_error("MqttService: Failed to create mqttTask");
   }
@@ -424,7 +424,7 @@ void MqttServiceClass::loadConfig() {
     Log_info("MqttService: config loaded - broker='%s' port=%u user='%s' prefix='%s' enabled=%u",
              config.broker, config.port, config.user, config.prefix, config.enabled);
   } else {
-    Log_info("MqttService: using default config (no NVS entry)");
+    Log_warn("MqttService: using default config (no NVS entry)");
   }
 }
 
@@ -441,10 +441,10 @@ void MqttServiceClass::saveConfig(const MqttConfig& cfg) {
     prefs.putUChar (MQTT_NVS_KEY_ENABLED,   cfg.enabled);
     prefs.end();
     // Note: password is never logged.
-    Log_info("MqttService: config saved - broker='%s' port=%u prefix='%s' enabled=%u",
-             cfg.broker, cfg.port, cfg.prefix, cfg.enabled);
+    Log_debug("MqttService: config saved - broker='%s' port=%u prefix='%s' enabled=%u",
+              cfg.broker, cfg.port, cfg.prefix, cfg.enabled);
   } else {
-    Log_error("MqttService: save failed - could not open NVS namespace '%s'", MQTT_NVS_NAMESPACE);
+    Log_warn("MqttService: save failed - could not open NVS namespace '%s'", MQTT_NVS_NAMESPACE);
   }
 }
 
@@ -479,8 +479,8 @@ bool MqttServiceClass::connectBroker(const MqttConfig& cfg) {
   const char* user = (cfg.user[0] != '\0') ? cfg.user  : nullptr;
   const char* pass = (cfg.pass[0] != '\0') ? cfg.pass  : nullptr;
 
-  Log_info("MqttService: connecting to broker '%s:%u' (user='%s')...",
-           cfg.broker, cfg.port, cfg.user[0] ? cfg.user : "(none)");
+  Log_debug("MqttService: connecting to broker '%s:%u' (user='%s')...",
+            cfg.broker, cfg.port, cfg.user[0] ? cfg.user : "(none)");
 
   // client.connect() is blocking up to the timeout set in begin().
   // Use a static client ID derived from the chip MAC to survive broker restarts.
@@ -512,7 +512,7 @@ bool MqttServiceClass::connectBroker(const MqttConfig& cfg) {
   // through this same path, so the filter always follows the active prefix.
   subscribeSet(cfg);
 
-  Log_info("MqttService: connected, LWT topic='%s'", statusTopic);
+  Log_warn("MqttService: connected, LWT topic='%s'", statusTopic);
   return true;
 }
 
@@ -601,7 +601,7 @@ void MqttServiceClass::drainPeerStatus(const MqttConfig& cfg) {
         }
         continue;
       }
-      Log_info("MqttService: %s = %s", topic, payload);
+      Log_debug("MqttService: %s = %s", topic, payload);
     }
 
     // Record the outcome. A newer target set meanwhile by notifyPeerStatus() is kept.
@@ -734,7 +734,7 @@ bool MqttServiceClass::subscribeSet(const MqttConfig& cfg) {
 
   setAcceptAtMs = millis() + MQTT_SET_RETAINED_DRAIN_MS;
   setSubscribed = true;
-  Log_info("MqttService: subscribed to '%s'", filter);
+  Log_debug("MqttService: subscribed to '%s'", filter);
   return true;
 }
 
@@ -796,8 +796,8 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
       !mqttNextLevel(cursor, deviceLevel, sizeof(deviceLevel), last) || last ||
       !mqttNextLevel(cursor, metricLevel, sizeof(metricLevel), last) || last ||
       strcmp(cursor, MQTT_SET_SUFFIX) != 0) {
-    Log_error("MqttService: /set topic '%s' malformed (expected %sRemote_Node_<n>/<device>/<metric>/%s, names max %u chars)",
-              entry.topic, head, MQTT_SET_SUFFIX, (unsigned)(DEVICE_TABLE_NAME_LEN - 1));
+    Log_warn("MqttService: /set topic '%s' malformed (expected %sRemote_Node_<n>/<device>/<metric>/%s, names max %u chars)",
+             entry.topic, head, MQTT_SET_SUFFIX, (unsigned)(DEVICE_TABLE_NAME_LEN - 1));
     return;
   }
 
@@ -805,8 +805,8 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
   //    (same precondition as the REST handler).
   uint8_t addr = 0;
   if (!mqttParseNodeLevel(nodeLevel, addr)) {
-    Log_error("MqttService: /set node level '%s' invalid (expected %s<1..%u>)",
-              nodeLevel, MQTT_NODE_TOPIC_PREFIX, (unsigned)(LORA_MAX_ADDR_REMOTE - MQTT_NODE_ADDR_OFFSET));
+    Log_warn("MqttService: /set node level '%s' invalid (expected %s<1..%u>)",
+             nodeLevel, MQTT_NODE_TOPIC_PREFIX, (unsigned)(LORA_MAX_ADDR_REMOTE - MQTT_NODE_ADDR_OFFSET));
     return;
   }
   uint32_t bootId, registryRev, lastSeenMs;
@@ -819,8 +819,8 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
   // 4. A name that is changed by sanitizing cannot be represented in a topic, so it can
   //    neither be matched nor registered from here.
   if (!mqttLevelMatches(deviceLevel, deviceLevel) || !mqttLevelMatches(metricLevel, metricLevel)) {
-    Log_error("MqttService: /set '%s/%s' rejected - names may only contain A-Z a-z 0-9 _ -",
-              deviceLevel, metricLevel);
+    Log_warn("MqttService: /set '%s/%s' rejected - names may only contain A-Z a-z 0-9 _ -",
+             deviceLevel, metricLevel);
     return;
   }
 
@@ -849,7 +849,7 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
   // 6. Payload: one metric object, identical to an entry of the REST "metrics" map.
   JsonDocument doc;
   if (deserializeJson(doc, entry.payload) || !doc.is<JsonObject>()) {
-    Log_error("MqttService: /set %s/%s payload is not a JSON object", deviceName, metricName);
+    Log_warn("MqttService: /set %s/%s payload is not a JSON object", deviceName, metricName);
     return;
   }
 
@@ -858,8 +858,8 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
   uint32_t deviceIdx = 0;
   uint32_t metricId  = 0;
   if (!controlApplyMetric(addr, deviceName, metricName, doc.as<JsonVariant>(), deviceIdx, metricId)) {
-    Log_error("MqttService: /set 0x%02X %s/%s rejected (invalid value, table full or payload too large)",
-              addr, deviceName, metricName);
+    Log_warn("MqttService: /set 0x%02X %s/%s rejected (invalid value, table full or payload too large)",
+             addr, deviceName, metricName);
     return;
   }
 
@@ -870,8 +870,8 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
 
   // Hand the transmission to PushTask: it blocks on the LoRa ACK, mqttTask must not.
   pushTaskNotifySetpoint(addr, static_cast<uint8_t>(deviceIdx));
-  Log_info("MqttService: setpoint 0x%02X %s/%s stored (dev=%u metric=%u), push queued",
-           addr, deviceName, metricName, deviceIdx, metricId);
+  Log_debug("MqttService: setpoint 0x%02X %s/%s stored (dev=%u metric=%u), push queued",
+            addr, deviceName, metricName, deviceIdx, metricId);
 }
 
 // ---------------------------------------------------------------------------
@@ -879,7 +879,7 @@ void MqttServiceClass::processSetMessage(const MqttSetEntry& entry, const MqttCo
 // ---------------------------------------------------------------------------
 void MqttServiceClass::mqttTask(void* param) {
   MqttServiceClass* self = static_cast<MqttServiceClass*>(param);
-  Log_info("MqttTask started on Core %d", xPortGetCoreID());
+  Log_debug("MqttTask started on Core %d", xPortGetCoreID());
 
   uint32_t backoffMs = MQTT_BACKOFF_MIN_MS;
 
@@ -910,7 +910,7 @@ void MqttServiceClass::mqttTask(void* param) {
         buildStatusTopic(cfg.prefix, statusTopic, sizeof(statusTopic));
         self->client.publish(statusTopic, "offline", /*retained=*/true, /*qos=*/0);
         self->client.disconnect();
-        Log_info("MqttService: disabled or broker cleared - disconnected");
+        Log_warn("MqttService: disabled or broker cleared - disconnected");
       }
       if (self->configMutex != nullptr &&
           xSemaphoreTake(self->configMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -1022,7 +1022,7 @@ void MqttServiceClass::mqttTask(void* param) {
       buildStatusTopic(cfg.prefix, statusTopic, sizeof(statusTopic));
       self->client.publish(statusTopic, "offline", /*retained=*/true, /*qos=*/0);
       self->client.disconnect();
-      Log_info("MqttService: config change detected - reconnecting");
+      Log_debug("MqttService: config change detected - reconnecting");
       if (self->configMutex != nullptr &&
           xSemaphoreTake(self->configMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         self->setState(MqttState::Disconnected);

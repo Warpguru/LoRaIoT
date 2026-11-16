@@ -109,7 +109,7 @@ void WiFiConfigClass::begin() {
     apSubnet = IPAddress(255, 255, 255, 0);
     apChannel = WIFI_DEFAULT_AP_CHANNEL;
 
-    Log_info("WiFi config using defaults: mode=%s apSsid='%s' apIp=%s apChan=%u",
+    Log_warn("WiFi config using defaults: mode=%s apSsid='%s' apIp=%s apChan=%u",
              getOpModeName(), apSsid, apIp.toString().c_str(), apChannel);
   }
 }
@@ -124,10 +124,10 @@ void WiFiConfigClass::save() const {
     prefs.putUChar(WIFI_AP_CHAN_KEY, apChannel);
     prefs.end();
 
-    Log_info("WiFi config saved to NVS: mode=%s apSsid='%s' apIp=%s apChan=%u",
-             getOpModeName(), apSsid, apIp.toString().c_str(), apChannel);
+    Log_debug("WiFi config saved to NVS: mode=%s apSsid='%s' apIp=%s apChan=%u",
+              getOpModeName(), apSsid, apIp.toString().c_str(), apChannel);
   } else {
-    Log_error("WiFi config save failed - could not open NVS namespace '%s'", WIFI_NVS_NAMESPACE);
+    Log_warn("WiFi config save failed - could not open NVS namespace '%s'", WIFI_NVS_NAMESPACE);
   }
 }
 

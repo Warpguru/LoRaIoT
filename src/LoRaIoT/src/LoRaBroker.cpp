@@ -57,7 +57,7 @@ static BrokerResult encodeAndSend(const loraiot_Request& req, uint8_t dstAddr, u
   uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
   pb_ostream_t stream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&stream, loraiot_Request_fields, &req)) {
-    Log_error("LoRaBroker: REQUEST nanopb encode failed: %s", PB_GET_ERROR(&stream));
+    Log_warn("LoRaBroker: REQUEST nanopb encode failed: %s", PB_GET_ERROR(&stream));
     return BrokerResult::ENCODE_ERR;
   }
 
@@ -71,7 +71,7 @@ static BrokerResult encodeAndSend(const loraiot_Request& req, uint8_t dstAddr, u
   memcpy(frame.payload, payloadBuf, frame.len);
 
   if (!LoRaTransport.sendFrame(frame)) {
-    Log_error("LoRaBroker: REQUEST sendFrame failed seq=%u dst=0x%02X", seq, dstAddr);
+    Log_warn("LoRaBroker: REQUEST sendFrame failed seq=%u dst=0x%02X", seq, dstAddr);
     return BrokerResult::ENCODE_ERR;
   }
   Log_info("LoRaBroker: sent REQUEST seq=%u cmd=%u dst=0x%02X payload=%u bytes",
@@ -92,7 +92,7 @@ void loraBrokerBegin() {
   do {
     bootId = esp_random();
   } while (bootId == 0);
-  Log_info("LoRaBroker::begin - boot_id=0x%08X", bootId);
+  Log_debug("LoRaBroker::begin - boot_id=0x%08X", bootId);
 }
 
 uint32_t loraBrokerBootId() {
@@ -170,7 +170,7 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
     uint8_t payloadBuf[loraiot_Beacon_size];
     pb_ostream_t pbStream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
     if (!pb_encode(&pbStream, loraiot_Beacon_fields, &beacon)) {
-      Log_error("LoRaBroker: PING nanopb encode failed: %s", PB_GET_ERROR(&pbStream));
+      Log_warn("LoRaBroker: PING nanopb encode failed: %s", PB_GET_ERROR(&pbStream));
       encResult = BrokerResult::ENCODE_ERR;
     } else {
       LoRaFrame frame;
@@ -183,7 +183,7 @@ BrokerResult loraBrokerSend(BrokerRequestType type, uint8_t dstAddr,
       memcpy(frame.payload, payloadBuf, frame.len);
 
       if (!LoRaTransport.sendFrame(frame)) {
-        Log_error("LoRaBroker: PING sendFrame failed");
+        Log_warn("LoRaBroker: PING sendFrame failed");
         encResult = BrokerResult::ENCODE_ERR;
       } else {
         // Record enqueue time for RTT measurement in the ACK handler
@@ -234,7 +234,7 @@ BrokerResult loraBrokerWait(uint32_t timeoutMs) {
     pendingActive = false;
     xSemaphoreGive(brokerMutex);
   }
-  Log_warn("LoRaBroker::wait - timeout after %ums (seq=%u)", timeoutMs, (unsigned)pendingSeq);
+  Log_debug("LoRaBroker::wait - timeout after %ums (seq=%u)", timeoutMs, (unsigned)pendingSeq);
   return BrokerResult::TIMEOUT;
 }
 
@@ -333,7 +333,7 @@ BrokerResult loraSendDataReliable(uint8_t dstAddr, const loraiot_Data& data,
   pb_ostream_t stream = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&stream, loraiot_Data_fields, &data)) {
     xSemaphoreGive(brokerMutex);
-    Log_error("loraSendDataReliable: Data nanopb encode failed: %s", PB_GET_ERROR(&stream));
+    Log_warn("loraSendDataReliable: Data nanopb encode failed: %s", PB_GET_ERROR(&stream));
     return BrokerResult::ENCODE_ERR;
   }
 
@@ -374,20 +374,20 @@ BrokerResult loraSendDataReliable(uint8_t dstAddr, const loraiot_Data& data,
       pendingSeq    = seq;
       xSemaphoreGive(brokerMutex);
 
-      Log_info("loraSendDataReliable: retry %u/%u seq=%u dst=0x%02X",
+      Log_warn("loraSendDataReliable: retry %u/%u seq=%u dst=0x%02X",
                attempt, LoRaTransportClass::LORA_MAX_RETRIES, seq, dstAddr);
     }
 
     if (!LoRaTransport.sendFrame(frame)) {
-      Log_error("loraSendDataReliable: sendFrame failed seq=%u dst=0x%02X", seq, dstAddr);
+      Log_warn("loraSendDataReliable: sendFrame failed seq=%u dst=0x%02X", seq, dstAddr);
     }
 
     // Wait for ACK
     BrokerResult waitRes = loraBrokerWait(LoRaTransportClass::LORA_ACK_TIMEOUT_MS);
     if (waitRes == BrokerResult::OK) {
       outStatus = lastAckResult.status;
-      Log_info("loraSendDataReliable: ACK received seq=%u status=%u (attempt %u)",
-               seq, static_cast<uint8_t>(outStatus), attempt + 1);
+      Log_debug("loraSendDataReliable: ACK received seq=%u status=%u (attempt %u)",
+                seq, static_cast<uint8_t>(outStatus), attempt + 1);
       return BrokerResult::OK;
     }
   }

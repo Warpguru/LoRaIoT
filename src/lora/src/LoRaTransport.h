@@ -72,6 +72,7 @@ class LoRaTransportClass {
   static constexpr uint8_t ERROR_REPLY_BYTE                  = 0xFF;   // First byte of the E220 "FF FF FF" wrong-format reply
   static constexpr size_t  ERROR_REPLY_LEN                   = 3;      // Length of the E220 "FF FF FF" wrong-format reply
   static constexpr size_t  CONFIG_HEADER_LEN                 = 3;      // C0/C1/C2 + StartAddr + Length prefix of a config command or reply
+  static constexpr size_t  READABLE_REG_LEN                  = 6;      // ADDH, ADDL, REG0..REG3: the registers that read back (CRYPT_H/L are write-only)
   static constexpr size_t  HEX_CHARS_PER_BYTE                = 3;      // "%02X " per byte in hex log output
   static constexpr size_t  HEX_ENTRY_SIZE                    = HEX_CHARS_PER_BYTE + 1; // One hex entry plus string terminator
   // --- E220 Register 0 (REG0) Bitfield Definitions ---
@@ -169,7 +170,9 @@ class LoRaTransportClass {
   
   // Settle, Sizing and Poll Timing Constants
   static constexpr uint32_t GUARD_SETTLE_DELAY_MS            = 5;      // Settle delay after mode changes / AUX rising edge
+  static constexpr uint32_t MODE_REACT_DELAY_MS              = 10;     // After M0/M1 change: AUX still reads HIGH until the module reacts, so wait before polling it
   static constexpr uint32_t TRANSMIT_SETTLE_DELAY_MS        = 10;     // Delay to let UART transmission finish before reading response
+  static constexpr uint32_t CONFIG_SAVE_SETTLE_MS           = 100;    // After a persistent C0 write: let the module finish saving before leaving Mode 3
   static constexpr uint32_t POLL_INTERVAL_MS                 = 1;      // Polling delay when blocking waiting for pin changes
   static constexpr size_t   CONFIG_CMD_LEN                   = 11;     // Size of the E220 C0 config command
   static constexpr size_t   CONFIG_RESPONSE_LEN              = 11;     // Size of the E220 config write response
@@ -269,6 +272,16 @@ class LoRaTransportClass {
    * Returns false if no valid reply was received. UART2 must not be open when called at runtime.
    */
   bool configureE220();
+
+  /**
+   * One E220 config-mode exchange: waits for AUX HIGH, flushes the RX buffer, writes cmd
+   * atomically and reads CONFIG_RESPONSE_LEN reply bytes into response (bytesRead = count read).
+   * Returns true for a full reply that is not the FF FF FF wrong-format reply.
+   */
+  bool configTransaction(const uint8_t* cmd, size_t cmdLen, uint8_t* response, size_t& bytesRead);
+
+  /** Polls AUX until HIGH. Returns false if it is still LOW after timeoutMs. */
+  bool waitAuxHigh(uint32_t timeoutMs);
 
   /**
    * Physically writes a raw frame over the UART2 interface, executing all mandatory E220

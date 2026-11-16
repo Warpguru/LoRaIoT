@@ -45,13 +45,13 @@ void GatewayClass::begin() {
     prefs.end();
     if (stored.length() > 0) {
       if (setTierFromString(stored.c_str())) {
-        Log_info("Gateway tier loaded from NVS: %s", getTierName());
+        Log_debug("Gateway tier loaded from NVS: %s", getTierName());
         return;
       }
       Log_warn("Gateway tier NVS value '%s' unrecognised - defaulting to unset", stored.c_str());
     }
   }
-  Log_info("Gateway tier not set (no NVS value). Select a tier in the captive portal.");
+  Log_warn("Gateway tier not set (no NVS value). Select a tier in the captive portal.");
 }
 
 void GatewayClass::saveTier() const {
@@ -59,9 +59,9 @@ void GatewayClass::saveTier() const {
   if (prefs.begin(TIER_NVS_NAMESPACE, /*readOnly=*/false)) {
     prefs.putString(TIER_NVS_KEY, getTierName());
     prefs.end();
-    Log_info("Gateway tier saved to NVS: %s", getTierName());
+    Log_debug("Gateway tier saved to NVS: %s", getTierName());
   } else {
-    Log_error("Gateway tier save failed - could not open NVS namespace '%s'", TIER_NVS_NAMESPACE);
+    Log_warn("Gateway tier save failed - could not open NVS namespace '%s'", TIER_NVS_NAMESPACE);
   }
 }
 

@@ -43,7 +43,7 @@ void LoRaConfigClass::begin() {
     key     = LORA_DEFAULT_KEY;
     airRate = LoRaTransportClass::AIR_RATE_DEFAULT;
     address = Gateway.defaultAddress();
-    Log_info("LoRa config using defaults: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
+    Log_warn("LoRa config using defaults: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
              LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off",
              LoRaTransportClass::airRateName(airRate), cpuFreq);
   }
@@ -58,11 +58,31 @@ void LoRaConfigClass::save() const {
     prefs.putUInt(LORA_CPU_FREQ_KEY, cpuFreq);
     prefs.putUChar(LORA_AIR_RATE_KEY, static_cast<uint8_t>(airRate));
     prefs.end();
-    Log_info("LoRa config saved to NVS: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
-             LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off",
-             LoRaTransportClass::airRateName(airRate), cpuFreq);
+    Log_debug("LoRa config saved to NVS: logLevel=%s loraChannel=0x%02X (%d), loraAddress=0x%02X (%d), key=0x%04X (%s), airRate=%s, cpuFreq=%d MHz",
+              LogBuffer.getLevelName(), channel, channel, address, address, key, key ? "on" : "off",
+              LoRaTransportClass::airRateName(airRate), cpuFreq);
   } else {
-    Log_error("LoRa config save failed - could not open NVS namespace '%s'", LORA_NVS_NAMESPACE);
+    Log_warn("LoRa config save failed - could not open NVS namespace '%s'", LORA_NVS_NAMESPACE);
+  }
+}
+
+bool LoRaConfigClass::isKeyApplied() const {
+  Preferences prefs;
+  if (!prefs.begin(LORA_NVS_NAMESPACE, /*readOnly=*/true)) {
+    return false;
+  }
+  const uint32_t applied = prefs.getUInt(LORA_KEY_APPLIED_KEY, LORA_KEY_APPLIED_UNKNOWN);
+  prefs.end();
+  return applied == key;
+}
+
+void LoRaConfigClass::markKeyApplied() const {
+  Preferences prefs;
+  if (prefs.begin(LORA_NVS_NAMESPACE, /*readOnly=*/false)) {
+    prefs.putUInt(LORA_KEY_APPLIED_KEY, key);
+    prefs.end();
+  } else {
+    Log_warn("LoRa key-applied marker not saved - could not open NVS namespace '%s'", LORA_NVS_NAMESPACE);
   }
 }
 

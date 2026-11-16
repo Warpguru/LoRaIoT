@@ -129,13 +129,13 @@ static void pushDevice(uint8_t peerAddr, uint8_t deviceIdx) {
       return;
     } else if (result == BrokerResult::OK) {
       if (ackStatus == loraiot_Status_STATUS_BAD_REQUEST) {
-        Log_info("PushTask: BAD_REQUEST for device=%u from 0x%02X, peer needs crawl", deviceIdx, peerAddr);
+        Log_warn("PushTask: BAD_REQUEST for device=%u from 0x%02X, peer needs crawl", deviceIdx, peerAddr);
       } else {
         Log_info("PushTask: pushed device=%u to 0x%02X OK", deviceIdx, peerAddr);
       }
       return;
     } else {
-      Log_error("PushTask: encode error for device=%u to 0x%02X", deviceIdx, peerAddr);
+      Log_warn("PushTask: encode error for device=%u to 0x%02X", deviceIdx, peerAddr);
       return;
     }
   }
@@ -152,7 +152,7 @@ static void pushTask(void* /*param*/) {
   while (!loraIsReady()) {
     vTaskDelay(pdMS_TO_TICKS(100));
   }
-  Log_info("PushTask: LoRa gate open - starting push loop");
+  Log_debug("PushTask: LoRa gate open - starting push loop");
 
   for (;;) {
     PushItem item = {0, 0, 0};
@@ -162,13 +162,13 @@ static void pushTask(void* /*param*/) {
     }
 
     if (item.reason == PUSH_REASON_SETPOINT) {
-      Log_info("PushTask: pushing setpoint device %u to 0x%02X", item.deviceIdx, item.peerAddr);
+      Log_debug("PushTask: pushing setpoint device %u to 0x%02X", item.deviceIdx, item.peerAddr);
       pushDevice(item.peerAddr, item.deviceIdx);
       continue;
     }
 
     const uint8_t devCount = ownedRegistry().getDeviceCount(item.peerAddr);
-    Log_info("PushTask: pushing %u devices to 0x%02X (reason=%u)", devCount, item.peerAddr, item.reason);
+    Log_debug("PushTask: pushing %u devices to 0x%02X (reason=%u)", devCount, item.peerAddr, item.reason);
 
     // Enumerate all possible device slots for this peer
     for (uint8_t deviceIdx = 1; deviceIdx <= DEVICE_TABLE_MAX_DEVICES; deviceIdx++) {

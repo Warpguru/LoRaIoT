@@ -68,7 +68,7 @@ static void sendBeacon() {
     uint8_t payloadBuf[loraiot_Beacon_size];
     pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
     if (!pb_encode(&pbOut, loraiot_Beacon_fields, &beacon)) {
-        Log_error("BeaconTask: pb_encode failed: %s", PB_GET_ERROR(&pbOut));
+        Log_warn("BeaconTask: pb_encode failed: %s", PB_GET_ERROR(&pbOut));
         return;
     }
 
@@ -88,7 +88,7 @@ static void sendBeacon() {
                  frame.seq, beacon.uptime_s, beacon.registry_rev,
                  LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
     } else {
-        Log_error("BeaconTask: sendFrame failed for seq=%u", frame.seq);
+        Log_warn("BeaconTask: sendFrame failed for seq=%u", frame.seq);
     }
 }
 
@@ -102,7 +102,7 @@ static void beaconTask(void* /*param*/) {
     while (!loraIsReady()) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    Log_info("BeaconTask: LoRa gate open - starting beacon loop");
+    Log_debug("BeaconTask: LoRa gate open - starting beacon loop");
 
     for (;;) {
         // 1. Determine current state and update RX_LED link status.
@@ -139,5 +139,5 @@ void beaconTaskBegin() {
     TaskHandle_t handle = nullptr;
     TASK_CREATE(beaconTask, "Beacon", BEACON_TASK_STACK_SIZE, nullptr, BEACON_TASK_PRIORITY, &handle);
     TaskRegistry.add("Beacon", handle, BEACON_TASK_STACK_SIZE);
-    Log_info("BeaconTask: started (UNDISCOVERED, interval=%ums)", BEACON_INTERVAL_UNDISCOVERED_MS);
+    Log_debug("BeaconTask: started (UNDISCOVERED, interval=%ums)", BEACON_INTERVAL_UNDISCOVERED_MS);
 }

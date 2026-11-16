@@ -303,7 +303,7 @@ Both builds compile the files in `src/lora/src/nanopb/` as part of the `lora` li
 shows that the files are found and compile for the ESP32.
 
 **Verified in the Arduino IDE on an ESP32:** `runPingEncodeCheck()` in `src/diagnostics/src/Diagnostics.cpp`
-calls the generated code at every boot and on `GET /api/diag/e220`. The device log (`GET /api/log`) shows:
+calls the generated code at every boot and on `GET /api/diag/e220`. At log level `DEBUG` the device log (`GET /api/log`) shows (at the default `INFO` only a single `Diagnostics: ... all PASS` line appears):
 
 ```
 Protobuf diag: ===== PING encode/decode check =====

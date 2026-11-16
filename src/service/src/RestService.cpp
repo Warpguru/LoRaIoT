@@ -130,7 +130,7 @@ void RestService::registerRoutes() {
   // GET /api/tier - return the active gateway tier.
   // Documented in doc/RestApi.md (section "GET /api/tier").
   server->on("/api/tier", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/tier");
+    Log_debug("GET /api/tier");
     JsonDocument doc;
     doc["tier"]         = Gateway.getTierName();
     doc["configured"]   = Gateway.isConfigured();
@@ -141,7 +141,7 @@ void RestService::registerRoutes() {
 
   // GET /api/wifi/mode - get active WiFi mode, active IP(s), AP settings, and client count.
   server->on("/api/wifi/mode", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/wifi/mode");
+    Log_debug("GET /api/wifi/mode");
     JsonDocument doc;
     doc["mode"]        = WiFiConfig.getOpModeName();
     doc["apSsid"]      = WiFiConfig.getApSsid();
@@ -246,7 +246,7 @@ void RestService::registerRoutes() {
 
   // GET /api/lora/channel - get active LoRa channel (available on all nodes).
   server->on("/api/lora/channel", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/channel");
+    Log_debug("GET /api/lora/channel");
     JsonDocument doc;
     doc["channel"] = LoRaConfig.getChannel();
     String json;
@@ -278,7 +278,7 @@ void RestService::registerRoutes() {
         LoRaConfig.setChannel((uint8_t)chan);
         LoRaConfig.save();
 
-        Log_info("LoRa channel changed via API to %d", LoRaConfig.getChannel());
+        Log_warn("LoRa channel changed via API to %d", LoRaConfig.getChannel());
 
         String json = "{\"channel\":";
         json += String(LoRaConfig.getChannel());
@@ -289,7 +289,7 @@ void RestService::registerRoutes() {
   // GET /api/lora/airrate - get active LoRa air data rate (available on all nodes).
   // Plain snprintf into a stack buffer: no JsonDocument or String heap use for a one-field reply.
   server->on("/api/lora/airrate", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/airrate");
+    Log_debug("GET /api/lora/airrate");
     char body[AIR_RATE_BODY_SIZE];
     snprintf(body, sizeof(body), "{\"airRate\":\"%s\"}", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
     request->send(HTTP_STATUS_OK, "application/json", body);
@@ -317,7 +317,7 @@ void RestService::registerRoutes() {
         LoRaConfig.save();
         LoRaTransport.requestReconfigure();
 
-        Log_info("LoRa air rate changed via API to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
+        Log_warn("LoRa air rate changed via API to %s", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
 
         char body[AIR_RATE_BODY_SIZE];
         snprintf(body, sizeof(body), "{\"airRate\":\"%s\"}", LoRaTransportClass::airRateName(LoRaConfig.getAirRate()));
@@ -326,7 +326,7 @@ void RestService::registerRoutes() {
 
   // GET /api/lora/address - get active LoRa address (available on all nodes).
   server->on("/api/lora/address", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/address");
+    Log_debug("GET /api/lora/address");
     JsonDocument doc;
     doc["address"] = LoRaConfig.getAddress();
     String json;
@@ -342,7 +342,7 @@ void RestService::registerRoutes() {
 
   // GET /api/system/cpu - get active CPU frequency (available on all nodes).
   server->on("/api/system/cpu", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/system/cpu");
+    Log_debug("GET /api/system/cpu");
     JsonDocument doc;
     doc["frequency"] = getCpuFrequencyMhz();
     String json;
@@ -379,7 +379,7 @@ void RestService::registerRoutes() {
         LoRaConfig.setCpuFreq((uint32_t)freq);
         LoRaConfig.save();
 
-        Log_info("CPU frequency changed via API to %d MHz", getCpuFrequencyMhz());
+        Log_warn("CPU frequency changed via API to %d MHz", getCpuFrequencyMhz());
 
         String json = "{\"frequency\":";
         json += String(getCpuFrequencyMhz());
@@ -411,7 +411,7 @@ void RestService::registerRoutes() {
       bool hasDevice    = request->hasArg("device");
       uint8_t deviceIdx = hasDevice ? (uint8_t)request->arg("device").toInt() : 0;
 
-      Log_info("GET /api/lora/nodes/sensor (REMOTE owner view)");
+      Log_debug("GET /api/lora/nodes/sensor (REMOTE owner view)");
 
       DeviceSlot slots[DEVICE_TABLE_MAX_DEVICES];
       uint8_t slotCount = 0;
@@ -516,8 +516,8 @@ void RestService::registerRoutes() {
       SensorRegistry.storeData(addr, resp.result.data);
     }
 
-    Log_info("GET /api/lora/nodes/sensor addr=%u device=%u live=%d",
-             (unsigned)addr, (unsigned)deviceIdx, (int)liveReq);
+    Log_debug("GET /api/lora/nodes/sensor addr=%u device=%u live=%d",
+              (unsigned)addr, (unsigned)deviceIdx, (int)liveReq);
 
     // Pre-load all device slots before building the document.
     // ArduinoJson stores const char* by pointer (not by copy), so every DeviceSlot
@@ -654,8 +654,8 @@ void RestService::registerRoutes() {
         ControlRegistry.storeData(LORA_DEFAULT_ADDR_LOCAL, resp.result.data);
       }
 
-      Log_info("GET /api/lora/nodes/control (REMOTE cache view) device=%u live=%d",
-               (unsigned)deviceIdx, (int)liveReq);
+      Log_debug("GET /api/lora/nodes/control (REMOTE cache view) device=%u live=%d",
+                (unsigned)deviceIdx, (int)liveReq);
 
       DeviceSlot slots[LORA_MAX_PEERS][DEVICE_TABLE_MAX_DEVICES];
       uint8_t    slotCount[LORA_MAX_PEERS] = {};
@@ -726,8 +726,8 @@ void RestService::registerRoutes() {
       deviceIdx = (uint8_t)request->arg("device").toInt();
     }
 
-    Log_info("GET /api/lora/nodes/control addr=%u device=%u (LOCAL owner view)",
-             (unsigned)addr, (unsigned)deviceIdx);
+    Log_debug("GET /api/lora/nodes/control addr=%u device=%u (LOCAL owner view)",
+              (unsigned)addr, (unsigned)deviceIdx);
 
     DeviceSlot slots[LORA_MAX_PEERS][DEVICE_TABLE_MAX_DEVICES];
     uint8_t    slotCount[LORA_MAX_PEERS] = {};
@@ -796,7 +796,7 @@ void RestService::registerRoutes() {
     registerRemoteRoutes();
   }
 
-  Log_info("RestService: routes registered.");
+  Log_debug("RestService: routes registered.");
 }
 
 // -------------------------------------------------------------------------
@@ -945,7 +945,7 @@ void RestService::registerLocalRoutes() {
 
   // GET /api/lora/stats - transport-layer packet counters.
   server->on("/api/lora/stats", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/stats");
+    Log_debug("GET /api/lora/stats");
     LoRaStats s = LoRaTransport.getStats();
     JsonDocument doc;
     doc["tx_frames"]  = s.txFrames;
@@ -1030,7 +1030,7 @@ void RestService::registerLocalRoutes() {
 
   // GET /api/lora/echo/result - return the result of the last POST /api/lora/nodes/echo.
   server->on("/api/lora/echo/result", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/echo/result");
+    Log_debug("GET /api/lora/echo/result");
     if (!lastEchoResult.valid) {
       request->send(HTTP_STATUS_NOT_FOUND, "application/json", "{\"error\":\"no echo result yet\"}");
       return;
@@ -1116,7 +1116,7 @@ void RestService::registerLocalRoutes() {
   // The shared sensor and control GET routes are registered earlier in registerRoutes(),
   // which runs before this method.
   server->on("/api/lora/nodes", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/lora/nodes");
+    Log_debug("GET /api/lora/nodes");
     uint8_t addrs[LORA_MAX_PEERS];
     uint8_t count = SensorRegistry.listPeers(addrs, LORA_MAX_PEERS);
     JsonDocument doc;
@@ -1173,7 +1173,7 @@ void RestService::registerRemoteRoutes() {
         LoRaConfig.setAddress((uint8_t)addr);
         LoRaConfig.save();
 
-        Log_info("LoRa address changed via API to %d", LoRaConfig.getAddress());
+        Log_warn("LoRa address changed via API to %d", LoRaConfig.getAddress());
 
         String json = "{\"address\":";
         json += String(LoRaConfig.getAddress());
@@ -1278,8 +1278,8 @@ void RestService::registerRemoteRoutes() {
       const uint32_t revAfter = SensorRegistry.getRegistryRev(LORA_DEFAULT_ADDR_LOCAL);
       if (revAfter != revBefore) {
         pingTaskNotifyControlChange(LORA_DEFAULT_ADDR_LOCAL);
-        Log_info("POST /api/lora/sensor/data: registry_rev %u -> %u, notifying LOCAL for crawl",
-                 revBefore, revAfter);
+        Log_debug("POST /api/lora/sensor/data: registry_rev %u -> %u, notifying LOCAL for crawl",
+                  revBefore, revAfter);
       }
 
       // Fire-and-forget LoRa push for each unique accepted device.
@@ -1307,7 +1307,7 @@ void RestService::registerMqttRoutes() {
   // Password is never returned; mqttPassSet indicates whether one is stored.
   // JSON keys match the NVS key constants (MQTT_NVS_KEY_*) exactly.
   server->on("/api/mqtt/config", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/mqtt/config");
+    Log_debug("GET /api/mqtt/config");
     MqttConfig cfg = MqttService.getConfig();
     JsonDocument doc;
     doc[MQTT_NVS_KEY_BROKER]    = cfg.broker;
@@ -1424,7 +1424,7 @@ void RestService::registerMqttRoutes() {
 
         MqttService.applyConfig(cfg);
 
-        Log_info("MQTT config updated via API - broker='%s' port=%u prefix='%s' enabled=%u",
+        Log_warn("MQTT config updated via API - broker='%s' port=%u prefix='%s' enabled=%u",
                  cfg.broker, cfg.port, cfg.prefix, cfg.enabled);
 
         // Return the new stored state (password never returned).
@@ -1445,7 +1445,7 @@ void RestService::registerMqttRoutes() {
   // GET /api/mqtt/status - live MQTT connection state.
   // Fields are conditional; see doc/RestApi.md for the full contract.
   server->on("/api/mqtt/status", HTTP_GET, [](AsyncWebServerRequest* request) {
-    Log_info("GET /api/mqtt/status");
+    Log_debug("GET /api/mqtt/status");
     MqttStatus st  = MqttService.getStatus();
     MqttConfig cfg = MqttService.getConfig();
     JsonDocument doc;

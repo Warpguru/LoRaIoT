@@ -54,26 +54,69 @@ bool LoRaTransportClass::airRateFromName(const char* name, AirRate& out) {
 }
 
 /**
- * Reusable helper to format and log a byte array in hexadecimal.
+ * Reusable helper to format and log a byte array in hexadecimal at the given level.
+ * Returns at once when that level is not active, so per-frame dumps cost nothing
+ * unless TRACE or DEBUG is enabled.
  */
-static void logHex(const char* prefix, const uint8_t* data, size_t len) {
+static void logHex(const LogLevel& level, const char* prefix, const uint8_t* data, size_t len) {
+  if (level.levelOrdinal() < LogBuffer.getLogLevel().levelOrdinal()) {
+    return;
+  }
   char hex[HEX_LOG_BUFFER_SIZE] = {0};
   size_t pos = 0;
   for (size_t i = 0; i < len && pos + LoRaTransportClass::HEX_ENTRY_SIZE < sizeof(hex); i++) {
     pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X ", data[i]);
   }
-  Log_info("%s %s", prefix, hex);
+  if (&level == &LogLevel::TRACE) {
+    Log_trace("%s %s", prefix, hex);
+  } else {
+    Log_debug("%s %s", prefix, hex);
+  }
+}
+
+bool LoRaTransportClass::waitAuxHigh(uint32_t timeoutMs) {
+  const unsigned long start = millis();
+  while (digitalRead(PIN_AUX) == LOW) {
+    if (millis() - start > timeoutMs) {
+      return false;
+    }
+    delay(POLL_INTERVAL_MS);
+  }
+  return true;
+}
+
+bool LoRaTransportClass::configTransaction(const uint8_t* cmd, size_t cmdLen, uint8_t* response, size_t& bytesRead) {
+  // AUX must be HIGH and stable before writing config data
+  if (!waitAuxHigh(AUX_TIMEOUT_MS)) {
+    Log_warn("LoRaTransport::configTransaction - Timeout waiting for AUX HIGH before config command 0x%02X", cmd[0]);
+    bytesRead = 0;
+    return false;
+  }
+  delay(GUARD_SETTLE_DELAY_MS);
+
+  // Drop stale bytes (module noise) so they cannot be mistaken for the reply
+  while (LoRaSerial.available() > 0) {
+    LoRaSerial.read();
+  }
+
+  // Write the command atomically, then read the reply
+  LoRaSerial.write(cmd, cmdLen);
+  delay(TRANSMIT_SETTLE_DELAY_MS);
+  bytesRead = LoRaSerial.readBytes(response, CONFIG_RESPONSE_LEN);
+  return bytesRead >= CONFIG_RESPONSE_LEN && response[0] != ERROR_REPLY_BYTE;
 }
 
 bool LoRaTransportClass::configureE220() {
   const AirRate airRate = LoRaConfig.getAirRate();
-  Log_info("Configuring E220 module registers permanently in Mode 3 (air rate %s)...", airRateName(airRate));
-  setMode(HIGH, HIGH); // M1=1, M0=1
+  Log_debug("Configuring E220 module registers in Mode 3 (air rate %s)...", airRateName(airRate));
 
-  // Start serial at 9600 baud (fixed for E220 config mode). end() first: at runtime the
-  // port is open at NORMAL_BAUD; at boot it is a harmless no-op.
+  // Open the UART at the fixed config baud BEFORE entering Mode 3 so the TX line is driven
+  // idle-high while the module switches mode (a floating TX pin looks like a partial command
+  // to a module in config mode and holds AUX LOW).
+  // end() first: at runtime the port is open at NORMAL_BAUD; at boot it is a harmless no-op.
   LoRaSerial.end();
   LoRaSerial.begin(CONFIG_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
+  setMode(HIGH, HIGH); // M1=1, M0=1
 
   // Construct the command payload to permanently configure the E220.
   // Using explicit bitwise-OR options makes the config list completely self-documenting.
@@ -94,44 +137,43 @@ bool LoRaTransportClass::configureE220() {
       static_cast<uint8_t>(loraKey & 0xFF)   // CRYPT_L
   };
 
-  logHex("LoRaTransport::begin - Sent config cmd:", configCmd, CONFIG_CMD_LEN);
+  logHex(LogLevel::DEBUG, "LoRaTransport::begin - Desired config:", configCmd, CONFIG_CMD_LEN);
 
-  // Write config and verify response; retry up to LORA_MAX_RETRIES times on
-  // FF FF FF error reply or short read.
+  // Read the registers first and write (flash save) only when they differ: the module keeps its
+  // settings across resets, so the write is normally redundant and it is the step that leaves
+  // AUX LOW while the module saves. Retry up to LORA_MAX_RETRIES times on FF FF FF or short reply.
+  const uint8_t readCmd[CONFIG_HEADER_LEN] = {CMD_READ, REG_START_ADDR, REG_WRITE_COUNT};
   bool configOk = false;
-  for (uint8_t attempt = 0; attempt < LORA_MAX_RETRIES; attempt++) {
-    // AUX must be HIGH and stable before writing config data
-    unsigned long settleStart = millis();
-    while (digitalRead(PIN_AUX) == LOW) {
-      if (millis() - settleStart > AUX_TIMEOUT_MS) {
-        Log_error("LoRaTransport::begin - Timeout waiting for AUX HIGH before config write (attempt %u/%u)",
-                  attempt + 1, (uint8_t)LORA_MAX_RETRIES);
-        break;
-      }
-      delay(POLL_INTERVAL_MS);
-    }
-    delay(GUARD_SETTLE_DELAY_MS);
-
-    // Write configuration command
-    LoRaSerial.write(configCmd, CONFIG_CMD_LEN);
-    delay(TRANSMIT_SETTLE_DELAY_MS);
-
-    // Read response (should echo C1 00 08 ...)
+  for (uint8_t attempt = 0; attempt < LORA_MAX_RETRIES && !configOk; attempt++) {
     uint8_t response[CONFIG_RESPONSE_LEN] = {0};
-    size_t bytesRead = LoRaSerial.readBytes(response, CONFIG_RESPONSE_LEN);
+    size_t  bytesRead = 0;
 
-    logHex("LoRaTransport::begin - Config response:", response, bytesRead);
+    if (configTransaction(readCmd, sizeof(readCmd), response, bytesRead)) {
+      logHex(LogLevel::DEBUG, "LoRaTransport::begin - Current registers:", response, bytesRead);
+      // The CRYPT key bytes read back as 0, so compare only the readable registers and track the key in NVS.
+      if (memcmp(response + CONFIG_HEADER_LEN, configCmd + CONFIG_HEADER_LEN, READABLE_REG_LEN) == 0 &&
+          LoRaConfig.isKeyApplied()) {
+        Log_debug("LoRaTransport::begin - E220 registers already match, no write needed (attempt %u/%u).",
+                  attempt + 1, (uint8_t)LORA_MAX_RETRIES);
+        configOk = true;
+        continue;
+      }
 
-    if (bytesRead >= CONFIG_RESPONSE_LEN && response[0] != ERROR_REPLY_BYTE) {
-      Log_info("LoRaTransport::begin - E220 configuration applied successfully (attempt %u/%u).",
-               attempt + 1, (uint8_t)LORA_MAX_RETRIES);
-      configOk = true;
-      break;
+      Log_warn("LoRaTransport::begin - E220 registers differ from the configuration, writing them");
+      if (configTransaction(configCmd, CONFIG_CMD_LEN, response, bytesRead)) {
+        logHex(LogLevel::DEBUG, "LoRaTransport::begin - Config response:", response, bytesRead);
+        LoRaConfig.markKeyApplied();
+        // The module saves to flash after the write: AUX stays LOW meanwhile. Let it finish
+        // before leaving Mode 3.
+        waitAuxHigh(AUX_TIMEOUT_MS);
+        delay(CONFIG_SAVE_SETTLE_MS);
+        configOk = true;
+        continue;
+      }
     }
 
-    Log_error("LoRaTransport::begin - Invalid config response (attempt %u/%u); retrying...",
-              attempt + 1, (uint8_t)LORA_MAX_RETRIES);
-    delay(GUARD_SETTLE_DELAY_MS);
+    Log_warn("LoRaTransport::begin - Invalid config response (attempt %u/%u); retrying...",
+             attempt + 1, (uint8_t)LORA_MAX_RETRIES);
   }
 
   // Return to Mode 0 (Normal operation: M1=0, M0=0) and configure normal baud rate,
@@ -149,7 +191,7 @@ void LoRaTransportClass::requestReconfigure() {
 }
 
 void LoRaTransportClass::begin() {
-  Log_info("Initializing LoRa transport layer infrastructure...");
+  Log_debug("Initializing LoRa transport layer infrastructure...");
 
   // 1. Configure E220 hardware control pins
   pinMode(PIN_M0, OUTPUT);
@@ -181,7 +223,7 @@ void LoRaTransportClass::begin() {
   TASK_CREATE(loraTransportTask, "LoRaTransTask", TASK_STACK_SIZE, this, TASK_PRIORITY, &transportTaskHandle);
   TaskRegistry.add("LoRaTransTask", transportTaskHandle, TASK_STACK_SIZE);
 
-  Log_info("LoRa transport layer task started.");
+  Log_debug("LoRa transport layer task started.");
 }
 
 void LoRaTransportClass::sendRaw(uint8_t destAddr, const uint8_t* data, size_t len) {
@@ -205,7 +247,7 @@ bool LoRaTransportClass::sendFrame(const LoRaFrame& frame) {
   uint8_t encoded[LORA_MAX_ENCODED_LEN];
   size_t  encodedLen = 0;
   if (!encodeFrame(frame, encoded, encodedLen)) {
-    Log_error("LoRaTransport::sendFrame - encodeFrame failed (payload len=%u)", frame.len);
+    Log_warn("LoRaTransport::sendFrame - encodeFrame failed (payload len=%u)", frame.len);
     return false;
   }
   sendRaw(frame.dst, encoded, encodedLen);
@@ -289,7 +331,7 @@ void LoRaTransportClass::sendRawInternal(uint8_t destAddr, const uint8_t* data, 
   if (len > 0) {
     char dbgPrefix[DEBUG_PREFIX_SIZE];
     snprintf(dbgPrefix, sizeof(dbgPrefix), "LoRa TX: target=[0x%02X, 0x%02X] ch=0x%02X payload:", targetAddh, targetAddl, targetChan);
-    logHex(dbgPrefix, data, len);
+    logHex(LogLevel::TRACE, dbgPrefix, data, len);
   }
 
   // Write routing header and payload atomically
@@ -326,6 +368,11 @@ void LoRaTransportClass::setMode(uint8_t m0, uint8_t m1) {
   digitalWrite(PIN_M0, m0);
   digitalWrite(PIN_M1, m1);
 
+  // AUX still reads HIGH until the module reacts to the new M0/M1 level. Polling it at once
+  // would pass immediately and let the caller write while the module is busy switching
+  // (the E220 diagnostics wait the same time in Diagnostics.cpp setMode()).
+  delay(MODE_REACT_DELAY_MS);
+
   // Wait for AUX to rise to HIGH, ensuring E220 completes transition
   unsigned long timeoutStart = millis();
   while (digitalRead(PIN_AUX) == LOW) {
@@ -339,7 +386,7 @@ void LoRaTransportClass::setMode(uint8_t m0, uint8_t m1) {
 
 void LoRaTransportClass::loraTransportTask(void* param) {
   LoRaTransportClass* self = static_cast<LoRaTransportClass*>(param);
-  Log_info("LoRa background transport task loop initialized.");
+  Log_debug("LoRa background transport task loop initialized.");
 
   // Binary sync-byte framer state (static = lives on the heap, not the 4 kB task stack).
   // The framer scans for 0xAA 0x55, accumulates exactly one frame worth of bytes, then
@@ -414,7 +461,7 @@ void LoRaTransportClass::loraTransportTask(void* param) {
         xSemaphoreTake(self->statsMutex, portMAX_DELAY);
         self->statsRxFrames++;
         xSemaphoreGive(self->statsMutex);
-        logHex("LoRa RX frame:", rxBuffer, (expectedTotal < 17 ? expectedTotal : 17));
+        logHex(LogLevel::TRACE, "LoRa RX frame:", rxBuffer, (expectedTotal < 17 ? expectedTotal : 17));
       } else if (result == LoRaDecodeResult::FOREIGN_DST) {
         // Valid frame addressed to another node: not a decode error, do not flash status LED.
       } else {
@@ -443,7 +490,7 @@ void LoRaTransportClass::loraTransportTask(void* param) {
     // Mode 3 are lost, which is expected while the link parameters change.
     if (self->reconfigRequested.exchange(false)) {
       if (self->configureE220()) {
-        Log_info("LoRa runtime reconfiguration applied (air rate %s)", airRateName(LoRaConfig.getAirRate()));
+        Log_warn("LoRa runtime reconfiguration applied (air rate %s)", airRateName(LoRaConfig.getAirRate()));
       } else {
         Log_error("LoRa runtime reconfiguration failed - module keeps its previous registers");
       }

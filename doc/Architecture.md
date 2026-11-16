@@ -1322,7 +1322,7 @@ curl -s http://<LOCAL-IP>/api/log
 curl -s http://<REMOTE-IP>/api/log
 ```
 
-Look for `E220 diag:` lines in the log. The six steps and their failure interpretations:
+At the default `INFO` level a passing run logs one line (`Diagnostics: ... all PASS`) and a failure logs `E220 diag:` lines at `ERROR`. To see every step, set the log level to `DEBUG` (`PUT /api/log/level`) before triggering the check and look for `E220 diag:` lines. The six steps and their failure interpretations:
 
 | Step | What is tested | Fail diagnosis |
 |---|---|---|

@@ -328,15 +328,17 @@ does not contain the result.
 }
 ```
 
-**Reading the result:** call `GET /api/log` a few seconds later and look for the lines starting
-with `E220 diag:`. The sequence ends with either
-`RESULT: PASS. UART, M0, M1 and AUX wiring verified` or `RESULT: FAIL`, and each `FAIL` line
-names the likely wiring cause.
+**Reading the result:** call `GET /api/log` a few seconds later. At the default `INFO` level a
+successful run logs a single line, `Diagnostics: E220, Protobuf, Frame and DeviceTable checks all PASS`.
+A failure is logged at `ERROR`: look for the lines starting with `E220 diag:`; the sequence ends with
+`RESULT: FAIL` and each `FAIL` line names the likely wiring cause. The step-by-step lines and
+`RESULT: PASS. UART, M0, M1 and AUX wiring verified` are logged at `DEBUG`: set the level with
+`PUT /api/log/level` before triggering the check to see them.
 
 After the E220 check, the same run also performs a software-only protobuf check: it encodes a
 PING payload (`Beacon{boot_id = 0x12345678}`) with nanopb, compares it with the documented bytes
 `08 F8 AC D1 91 01` (`doc/LoRaProtocol.md` section 4.2) and decodes it again. Its lines start with
-`Protobuf diag:` and end with `RESULT: PASS. nanopb encode and decode verified` or `RESULT: FAIL`.
+`Protobuf diag:` and end with `RESULT: PASS. nanopb encode and decode verified` (`DEBUG`) or `RESULT: FAIL` (`ERROR`).
 It needs no radio, so it runs even when the E220 check fails, and it does not change the status LED.
 
 **Side effects:**
@@ -2080,15 +2082,17 @@ does not contain the result.
 }
 ```
 
-**Reading the result:** call `GET /api/log` a few seconds later and look for the lines starting
-with `E220 diag:`. The sequence ends with either
-`RESULT: PASS. UART, M0, M1 and AUX wiring verified` or `RESULT: FAIL`, and each `FAIL` line
-names the likely wiring cause.
+**Reading the result:** call `GET /api/log` a few seconds later. At the default `INFO` level a
+successful run logs a single line, `Diagnostics: E220, Protobuf, Frame and DeviceTable checks all PASS`.
+A failure is logged at `ERROR`: look for the lines starting with `E220 diag:`; the sequence ends with
+`RESULT: FAIL` and each `FAIL` line names the likely wiring cause. The step-by-step lines and
+`RESULT: PASS. UART, M0, M1 and AUX wiring verified` are logged at `DEBUG`: set the level with
+`PUT /api/log/level` before triggering the check to see them.
 
 After the E220 check, the same run also performs a software-only protobuf check: it encodes a
 PING payload (`Beacon{boot_id = 0x12345678}`) with nanopb, compares it with the documented bytes
 `08 F8 AC D1 91 01` (`doc/LoRaProtocol.md` section 4.2) and decodes it again. Its lines start with
-`Protobuf diag:` and end with `RESULT: PASS. nanopb encode and decode verified` or `RESULT: FAIL`.
+`Protobuf diag:` and end with `RESULT: PASS. nanopb encode and decode verified` (`DEBUG`) or `RESULT: FAIL` (`ERROR`).
 It needs no radio, so it runs even when the E220 check fails, and it does not change the status LED.
 
 **Side effects:**

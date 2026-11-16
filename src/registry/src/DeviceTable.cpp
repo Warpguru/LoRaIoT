@@ -143,7 +143,7 @@ bool DeviceTable::registerMetric(const char* deviceName, const char* metricName,
     strncpy(devices[dIdx].name, deviceName, DEVICE_TABLE_NAME_LEN - 1);
     devices[dIdx].name[DEVICE_TABLE_NAME_LEN - 1] = '\0';
     rev++;
-    Log_info("DeviceTable: new device[%u] '%s' (rev=%u)", devices[dIdx].index, deviceName, rev);
+    Log_debug("DeviceTable: new device[%u] '%s' (rev=%u)", devices[dIdx].index, deviceName, rev);
   }
 
   DeviceSlot& dev = devices[dIdx];
@@ -176,8 +176,8 @@ bool DeviceTable::registerMetric(const char* deviceName, const char* metricName,
     m.unit[DEVICE_TABLE_UNIT_LEN - 1] = '\0';
     m.scale = scale;
     rev++;
-    Log_info("DeviceTable: new metric[%u] '%s' on device '%s' (rev=%u)",
-             m.id, metricName, deviceName, rev);
+    Log_debug("DeviceTable: new metric[%u] '%s' on device '%s' (rev=%u)",
+              m.id, metricName, deviceName, rev);
   }
 
   outDeviceIdx = dev.index;

@@ -22,6 +22,8 @@ static constexpr const char* LORA_ADDR_KEY      = "loraAddr";
 static constexpr const char* LORA_CPU_FREQ_KEY  = "cpuFreq";
 static constexpr const char* LORA_KEY_KEY       = "loraKey";
 static constexpr const char* LORA_AIR_RATE_KEY  = "loraAirRate";   // Stores the LoRaTransportClass::AirRate ordinal
+static constexpr const char* LORA_KEY_APPLIED_KEY = "loraKeyApld"; // Key last written to the E220 (its CRYPT registers cannot be read back)
+static constexpr uint32_t    LORA_KEY_APPLIED_UNKNOWN = 0x10000;   // Outside the uint16 range: no key written yet, so write it
 
 // Default configuration constants
 static constexpr uint8_t LORA_MIN_CHANNEL         = 0;      // Lowest E220 channel (410.125 MHz)
@@ -89,6 +91,11 @@ class LoRaConfigClass {
   LoRaTransportClass::AirRate getAirRate() const;
   /// Set the LoRa air data rate. Does not write NVS; call save() afterwards.
   void setAirRate(LoRaTransportClass::AirRate rate);
+
+  /// True if the current key is the one last written to the E220 (the module never returns its key, so this is tracked in NVS).
+  bool isKeyApplied() const;
+  /// Record in NVS that the current key has been written to the E220.
+  void markKeyApplied() const;
 
  private:
   uint8_t  channel = LORA_DEFAULT_CHANNEL;

@@ -1074,3 +1074,222 @@ Order (the plan step numbers are in brackets):
 9. Age, link indicator, `live` and `refresh` on the cache views [Step 13], tests with two nodes (sensor
    and control round trip, reboot of each side, both nodes crawling at once, lost frames, the consumer
    view after a LOCAL reboot) [Step 14], and cleanup and final docs [Step 15].
+
+---
+
+## 9. E220 stuck with AUX LOW after an ESP32 reset (timing, floating pins, power)
+
+### Symptoms
+
+Observed on the REMOTE prototype (ESP32 DevKitC and E220-400T22D on a breadboard, no pull resistors, node address
+`0x03`, channel `0x17`, air rate 62.5k, key 0) after the log messages were re-levelled so that most of them are
+DEBUG instead of INFO.
+
+| Situation | What happened |
+|---|---|
+| Power cycle of the whole node | Always booted normally. |
+| ESP32 reset (reset button or `GET /reboot`) at log level INFO | Often failed: status LED blinked SOS. A scripted loop of soft reboots gave 4 failures out of 4. |
+| ESP32 reset at log level DEBUG | Always booted normally (3 of 3 in the loop). |
+
+### The commands involved
+
+All commands are sent in Mode 3 (M1=1, M0=1) at 9600 8N1 and answered with `C1 <start> <len> <values>`
+(manual section 7.1). The register block for this node is
+`ADDH=00 ADDL=03 REG0=E7 REG1=00 REG2=17 REG3=40 CRYPT_H=00 CRYPT_L=00`. REG0 `E7` is 115200 baud (`E0`), 8N1 (`00`)
+and air rate 62.5k (`07`); REG3 `40` is fixed transmission.
+
+| Command | Bytes (hex) | Used by | Expected reply |
+|---|---|---|---|
+| Persistent write (all 8 registers) | `C0 00 08 00 03 E7 00 17 40 00 00` | `configureE220()` at every boot, before the read-first change | `C1 00 08 00 03 E7 00 17 40 00 00` (11 bytes) |
+| Read (all 8 registers) | `C1 00 08` | `configureE220()` now, and diagnostics step 3 and read-back | `C1 00 08 00 03 E7 00 17 40 00 00` (CRYPT reads back as `00 00`) |
+| Temporary write, test channel | `C2 00 08 00 03 E7 00 20 40 00 00` | diagnostics step 4 (channel `17` replaced by `20`) | `C1 00 08 00 03 E7 00 20 40 00 00` |
+| Temporary write, restore | `C2 00 08 00 03 E7 00 17 40 00 00` | diagnostics step 5 | `C1 00 08 00 03 E7 00 17 40 00 00` |
+| Wrong-format reply | (none) | module answer to a command it cannot parse | `FF FF FF` (3 bytes, manual section 7.1) |
+
+### The three failure modes
+
+**1. Boot halts in `LoRaTransport::begin()` (SOS).** The first command of the boot, the persistent write
+`C0 00 08 00 03 E7 00 17 40 00 00` (later the read `C1 00 08`), was never answered, on all 3 attempts:
+
+```
+[WARN ][LoRaTransport.cpp] Timeout waiting for AUX HIGH before config write (attempt 1/3)
+[WARN ][LoRaTransport.cpp] Invalid config response (attempt 1/3); retrying...
+  ... same for attempts 2/3 and 3/3 ...
+[ERROR][LoRaTransport.cpp] E220 config failed after 3 attempts. Halting.
+```
+
+AUX was LOW for the whole 1 s wait on every attempt, so the module was busy and a reply of the form
+`C1 00 08 ...` never came; the 11 byte read returned fewer bytes than expected, or none. At DEBUG the same boot
+succeeded on attempt 1 with `Config response: C1 00 08 00 03 E7 00 17 40 00 00`. The web server is started before
+`LoRaTransport.begin()`, so `GET /api/log` still worked in the SOS state and showed these lines.
+
+**2. Boot continues, AUX stays LOW at idle.** The configuration passed, but afterwards, with no radio traffic,
+AUX never went HIGH again:
+
+```
+[ERROR][Diagnostics.cpp] E220 diag:   FAIL AUX is LOW. AUX wire open, wrong pin, or module has no power.
+[WARN ][LoRaTransport.cpp] sendRawInternal - Timeout waiting for AUX HIGH (idle) before write   (every BEACON)
+```
+
+The state persisted for more than three minutes and the node was effectively off the air. A runtime
+reconfiguration with `PUT /api/lora/airrate` also failed: its first command, the read `C1 00 08`, timed out waiting
+for AUX HIGH (`Timeout waiting for AUX HIGH before config command 0xC1`, 3 attempts).
+
+**3. Diagnostics step 4 or 5 fails with a wrong-format reply.** At INFO the boot self-test reported:
+
+```
+[ERROR][Diagnostics.cpp] E220 diag:   FAIL write echo does not match what was written, got 3 bytes: FF FF FF
+```
+
+The command that failed was a temporary write, `C2 00 08 00 03 E7 00 20 40 00 00` (step 4) or the restore
+`C2 00 08 00 03 E7 00 17 40 00 00` (step 5), sent right after the previous command. The module answered `FF FF FF`
+instead of echoing `C1 00 08 ...`. The same step passed at DEBUG with the correct echo. A read sent directly after
+a write echo was rejected the same way, which is why `waitForWriteToSettle()` already existed.
+
+### Why log level mattered: log lines were hidden delays
+
+The console is a blocking 115200 baud UART (about 10 ms for a typical line). At DEBUG there were two or three
+log lines around the critical places; at INFO there were none:
+
+- before `setMode(HIGH, HIGH)` (entering Mode 3) in `configureE220()`,
+- between reading the config reply and `setMode(LOW, LOW)` (leaving Mode 3),
+- between the diagnostics steps.
+
+So the DEBUG build accidentally gave the module 20 to 30 ms of idle time at exactly the points where it needs it.
+At INFO the code ran the E220 transactions back to back. The lesson: **no E220 timing may depend on log output.**
+Every delay is now an explicit named constant (`MODE_REACT_DELAY_MS`, `CONFIG_SAVE_SETTLE_MS` in
+`LoRaTransport.h`, `COMMAND_GAP_DELAY_MS` in `Diagnostics.cpp`).
+
+Failure mode 3 is a genuine firmware race and is fixed by the delay. Removing `COMMAND_GAP_DELAY_MS` as a
+suspected workaround brought the `FF FF FF` failure straight back, so it is a real requirement.
+
+### Why a software reset could not clear the stuck state (modes 1 and 2)
+
+The E220 manual (section 5.6.4, Table 5-1) says:
+
+- While AUX is LOW the module is busy and "cannot conduct operating mode checking": a change of M0/M1 is not
+  evaluated until AUX is HIGH (note 2). A mode switch only takes effect after AUX has been HIGH for 2 ms (note 3).
+- When leaving Mode 3, or when switching modes while "still in reset process", the module resets its user
+  parameters and holds AUX LOW meanwhile (note 4).
+
+Consequences:
+
+1. If the module is in the busy state, toggling M0/M1 from the ESP32 does nothing. The recovery attempts (leave
+   Mode 3, dwell 100 ms in Mode 0, enter Mode 3 again) were therefore useless and were removed again.
+2. The E220-400T22D has **no reset pin**. An ESP32 reset does not touch the module: its supply stays up, only
+   M0, M1 and the UART lines float or change. The module only restarts through its power-on reset (power cycle) or
+   through its internal watchdog (the manual mentions an automatic restart "once an exception occurs"). In the
+   observed state the watchdog did not recover the module within minutes. That is why only a power cycle helped.
+3. The state is "sticky" across ESP32 resets, so a failed boot can leave the module stuck for the next boot too.
+   This explains why a failure sometimes survived one `GET /reboot` and sometimes cleared by itself on the next.
+
+### What probably got the module stuck (not proven)
+
+The manual gives no explanation for an AUX that stays LOW indefinitely. Hypotheses, in order of plausibility:
+
+1. **Floating M0, M1 or RXD during and after the ESP32 reset.** M0 (GPIO4), M1 (GPIO2) and TX2 (GPIO17, the E220
+   RXD) are floating inputs from the reset until `LoRaTransport.begin()` sets them up, which happens after WiFi
+   has connected (seconds). The E220 has only weak internal pull-ups on M0 and M1 (manual Table 3-1), so a floating
+   line can be read as HIGH, which is Mode 3 (configuration/sleep). A floating RXD can be taken as part of a
+   config command, after which the module waits for the rest and holds AUX LOW. GPIO2 is also an ESP32 strapping
+   pin (it must be LOW at reset), which makes it a poor line to leave undefined. Driving the pins later, by the
+   firmware, is then a Mode 3 to Mode 0 transition on top of a half-processed command: the module is mid-reload
+   (AUX LOW) when the next command arrives. The module has its own firmware (a small MCU plus the LLCC68 radio
+   chip, with a watchdog according to the manual), so floating or noisy control lines during its reload or
+   self-check could plausibly leave that firmware in a state the watchdog does not catch and only a power cycle
+   clears. This is a hypothesis: nothing in the manual documents it, and the fact that the node later booted
+   reliably with the resistors removed shows that floating lines alone do not hang the module every time.
+2. **Supply dips.** WiFi transmit bursts on a shared 3.3 V rail, or a weak supply, could reset or confuse the
+   module. The manual (section 9) recommends a clean, stable supply with at least 30% margin. The bill of
+   materials in `ReadMe.md` section 2 asks for a 100 uF capacitor on the module supply; whether one sat at the
+   module pins of the prototype was not verified. The USB cable showed about 1 W on average, but an average hides
+   the short current peaks of the ESP32 WiFi radio (a few hundred mA) and of the E220 transmitter (about 110 mA),
+   and a USB cable plus the DevKit regulator add resistance, so the 3.3 V at the module can dip briefly while the
+   meter still shows a calm value. The E220 draws these peaks right at start-up, which is when it is most
+   sensitive.
+3. **Marginal breadboard contacts and long wires** on M0, M1, AUX, RXD or ground, which behave like (1) and (2)
+   intermittently. The wiring used wires of up to 20 cm. Crosstalk matters here even at slow baud rates: GPIO edges
+   are fast (nanoseconds) regardless of the 9600 or 115200 baud data rate, so a TX wire running parallel to M0, M1
+   or AUX can couple spikes onto it. A spike on M0 or M1 looks like a mode change request, and a spike on RXD looks
+   like a start bit. High-impedance inputs with only a weak pull-up (M0, M1) are the most exposed. The same
+   applies to ground bounce on a shared, thin ground wire. Short wires, a solid ground and the pull resistors
+   reduce this.
+4. **A genuine firmware race** (no idle time between commands), see "Why log level mattered". This one is real
+   (failure mode 3) and has been fixed independently of the hardware causes.
+
+The experiments did not isolate one cause. With 10 kOhm pull-downs on M0 and M1 and a 10 kOhm pull-up on RXD, the
+first test did not change anything; later the node booted reliably, with resets and with power cycles, at all log
+levels. The resistors were then removed one by one and the node still booted reliably, as it also did after a
+clean rebuild of the Arduino project (cache deleted) and on the original wiring. The most likely reading is that a
+marginal breadboard contact was reseated by the rewiring and that the timing fix removed the firmware part.
+Because the real trigger is not known, the resistors stay recommended (see below).
+
+### What was changed
+
+In `src/lora/src/LoRaTransport.cpp`, `configureE220()`:
+
+- The UART is opened at 9600 baud **before** M0/M1 are driven to Mode 3, so TX2 idles HIGH while the module
+  switches mode.
+- The registers are **read first** (`C1 00 08`). The persistent write (`C0 ...`) is sent only if the readable
+  registers (ADDH, ADDL, REG0 to REG3) differ from the wanted values, or if the key marker in NVS differs. This
+  removes an unnecessary write to the **E220 non-volatile memory** on every boot (the ESP32 flash is not involved)
+  and the long AUX LOW phase while the module saves. CRYPT_H and CRYPT_L are write-only and read back as `00 00`,
+  so the last written key is remembered in NVS (`loraKeyApld`, see `LoRaConfigClass::isKeyApplied()`).
+- After a real write the code waits for AUX HIGH plus `CONFIG_SAVE_SETTLE_MS` (100 ms) before leaving Mode 3.
+- `setMode()` waits `MODE_REACT_DELAY_MS` (10 ms) after changing M0/M1 before polling AUX, because AUX still reads
+  HIGH for a moment after the change (manual Table 6-1: the module reacts about 1 ms after the change).
+- Every config exchange goes through `configTransaction()`, which waits for AUX HIGH, flushes stale RX bytes,
+  writes the command in one call and reads the reply.
+- `Diagnostics.cpp` `transact()` waits `COMMAND_GAP_DELAY_MS` (20 ms) before each command (failure mode 3).
+
+### Recommended hardware (documented in `ReadMe.md` and `doc/Feasibility.md`)
+
+Three 10 kOhm resistors: M0 to GND, M1 to GND, TX2 (E220 RXD) to 3.3 V. They give the three lines a defined level
+while the ESP32 pins float. They are not proven necessary, but cost nothing, and a PCB should include them.
+
+A supply capacitor is the second potential workaround: 100 to 470 uF low-ESR electrolytic across the E220 `VCC`
+and `GND`, plus 100 nF ceramic in parallel, with short leads at the module pins. It addresses the supply-dip cause
+(hypothesis 2) and the resistors address the floating-line cause (hypothesis 1); fitting both covers the two most
+likely hardware causes. Keep the wires between ESP32 and E220 as short as possible (hypothesis 3), route
+TX2 (GPIO17) away from M0, M1 and AUX, and use a short, thick ground wire.
+
+### If it happens again
+
+1. Read `GET /api/log` (it works even in the SOS state) and note which of the three failure modes occurred.
+2. Set the log level to DEBUG with `PUT /api/log/level` (header `Content-Type: application/json`) and reboot, to
+   see `Current registers:` and `Desired config:` for the failing boot.
+3. Check the AUX level as the very first action of `setup()` (before any `setMode`). AUX already LOW there points
+   to hardware or the reset window (floating lines, supply), AUX HIGH there points to the firmware sequence.
+4. Measure the 3.3 V at the E220 during an ESP32 reset and while WiFi connects. A multimeter averages and shows
+   nothing here; an oscilloscope (trigger on the falling edge, AC coupled) is needed to see dips and spikes.
+   Also isolation-test the module: disconnect TX, RX and AUX from the ESP32, tie M0 and M1 to GND, and watch AUX
+   on power-up. It should go HIGH within milliseconds and stay HIGH; if it stays LOW with no data pins attached,
+   the cause is the supply or a damaged module.
+5. Recover the node with a power cycle. `GET /reboot` does not reset the E220.
+6. Possible hardware hardening if it is real: a switched supply for the E220 (see the next section), so firmware can
+   power-cycle the module itself after a failed config. This is not implemented.
+
+### Option: switched E220 supply (not implemented)
+
+The E220-400T22D has no reset pin, so the only way to restart a module that is stuck with AUX LOW is to remove its
+power. Doing this from firmware needs a switch in the supply line:
+
+- **An ESP32 GPIO cannot be the supply itself.** The E220 draws about 110 mA at TX peak (manual Table 2-2, figure
+  for 30 dBm), while an ESP32 pin sources only a few tens of mA (check the datasheet DC characteristics for the
+  exact limit). The pin voltage would also sag under that load.
+- **Use a switch driven by the GPIO.** A logic-level P-channel MOSFET (or a load-switch IC) in the 3.3 V line to
+  the E220 `VCC`. The gate threshold (Vgs) must be well below 3.3 V so that the MOSFET is fully on at the 3.3 V
+  logic level. A 10 kOhm pull-up on the gate keeps the E220 **off** while the ESP32 pin floats during reset and
+  boot, and the GPIO pulls the gate low to turn it on.
+- **What this gives.** Every ESP32 reset power-cycles the E220 (off while the GPIO floats, on once the firmware
+  drives it), which removes the "ESP32 reset leaves the E220 running" case that the observed failures needed.
+  Firmware can also power-cycle the module after a failed `configureE220()` instead of halting with SOS: GPIO
+  off for a few hundred milliseconds, GPIO on, wait for AUX HIGH, retry.
+- **Parasitic supply caveat.** An unpowered E220 can be fed through the protection diodes of its input pins when
+  M0, M1 or RXD are driven HIGH, which can keep it partly alive and defeat the power cycle. The firmware must drive
+  M0, M1 and TX2 LOW before switching the supply off, and wait for the supply to decay before switching on again.
+  Where a pin has no pull-down, the 10 kOhm pull-downs recommended above help here too.
+- **Costs.** One MOSFET, one resistor, one GPIO (the pin map has no free pin documented here, so one has to be
+  chosen; avoid the strapping pins), a new boot step, and a new failure mode (the switch itself). The supply
+  capacitor then sits behind the switch, at the module pins. Use it only if the simpler measures (resistors,
+  capacitor, short wires, fixed timing) do not remove the failures.

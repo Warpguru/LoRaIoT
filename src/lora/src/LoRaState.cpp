@@ -97,8 +97,8 @@ bool LoRaStateClass::updateAndCheckDuplicate(uint8_t src, uint16_t seq,
   // Reboot detection: a non-zero boot_id that differs from the stored one means the
   // remote has rebooted. Reset SEQ state so the first frame of the new run is always new.
   if (bootId != 0 && bootId != e.lastBootId) {
-    Log_info("LoRaState: src=0x%02X boot_id changed 0x%08X -> 0x%08X; resetting SEQ state",
-             src, e.lastBootId, bootId);
+    Log_debug("LoRaState: src=0x%02X boot_id changed 0x%08X -> 0x%08X; resetting SEQ state",
+              src, e.lastBootId, bootId);
     e.lastBootId = bootId;
     e.seqValid   = false;   // next frame is always new, whatever its SEQ
   }
@@ -128,8 +128,8 @@ void LoRaStateClass::purgeStale() {
   uint8_t i = 0;
   while (i < entryCount) {
     if (now - entries[i].lastSeenMs > LORA_STATE_STALE_MS) {
-      Log_info("LoRaState: purging stale entry src=0x%02X (last seen %lu ms ago)",
-               entries[i].src, static_cast<unsigned long>(now - entries[i].lastSeenMs));
+      Log_debug("LoRaState: purging stale entry src=0x%02X (last seen %lu ms ago)",
+                entries[i].src, static_cast<unsigned long>(now - entries[i].lastSeenMs));
       // Compact: overwrite with the last entry.
       entries[i] = entries[--entryCount];
       // Do not increment i: re-check the slot that was just moved into position i.

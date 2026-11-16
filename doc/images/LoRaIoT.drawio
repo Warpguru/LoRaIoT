@@ -1,6 +1,6 @@
 <mxfile host="Electron">
   <diagram name="Page-1" id="b-0_DW-m0JjqkjMpmSZN">
-    <mxGraphModel dx="388" dy="302" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="187" dy="146" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -223,6 +223,67 @@
         </mxCell>
         <mxCell id="TX-8" parent="1" style="text;html=1;fontSize=8;align=center;verticalAlign=middle;fillColor=#ffffff;strokeColor=none;spacing=0;fontColor=#9933CC;" value="GPIO18" vertex="1">
           <mxGeometry height="10" width="36" x="240" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-1" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#BFBFBF;strokeColor=#BFBFBF;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="437" y="515" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-2" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FF8000;strokeColor=#FF8000;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="447" y="527" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-3" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFD700;strokeColor=#FFD700;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="417" y="377" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-4" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FF0000;strokeColor=#FF0000;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="402" y="267" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-5" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#000000;strokeColor=#000000;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="477" y="411" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-6" parent="1" style="rounded=0;html=1;fillColor=none;strokeColor=#000000;strokeWidth=2;verticalLabelPosition=top;verticalAlign=bottom;fontSize=8;spacingBottom=2.5;" value="10k pull-down" vertex="1">
+          <mxGeometry height="10" width="30" x="490" y="513" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-7" parent="1" style="rounded=0;html=1;fillColor=none;strokeColor=#000000;strokeWidth=2;verticalLabelPosition=bottom;verticalAlign=top;fontSize=8;spacingTop=2.5;" value="10k pull-down" vertex="1">
+          <mxGeometry height="10" width="30" x="530" y="525" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-8" parent="1" style="rounded=0;html=1;fillColor=none;strokeColor=#000000;strokeWidth=2;fontSize=8;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;spacingRight=3;" value="10k pull-up" vertex="1">
+          <mxGeometry height="30" width="10" x="400" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-9" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#000000;strokeColor=#000000;" value="" vertex="1">
+          <mxGeometry height="6" width="6" x="597" y="515" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-11" edge="1" parent="1" source="PR-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#BFBFBF;" target="PR-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-12" edge="1" parent="1" source="PR-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#FF8000;" target="PR-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-13" edge="1" parent="1" source="PR-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#FFD700;" target="PR-8">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="405" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="PR-14" edge="1" parent="1" source="PR-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#FF0000;" target="PR-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-15" edge="1" parent="1" source="PR-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#000000;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="PR-9">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="530" />
+            </Array>
+            <mxPoint x="600" y="530" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="PR-16" edge="1" parent="1" source="PR-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#000000;" target="PR-9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="PR-18" edge="1" parent="1" source="PR-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=none;endFill=0;strokeWidth=2;strokeColor=#000000;" target="PR-5">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="414" />
+            </Array>
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>

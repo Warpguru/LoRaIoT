@@ -71,7 +71,7 @@ static void sendPingAck(const LoRaFrame& ping) {
   uint8_t payloadBuf[loraiot_Ack_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Ack_fields, &ack)) {
-    Log_error("ACK encode failed for PING seq=%u: %s", ping.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("ACK encode failed for PING seq=%u: %s", ping.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -87,7 +87,7 @@ static void sendPingAck(const LoRaFrame& ping) {
   if (LoRaTransport.sendFrame(ackFrame)) {
     Log_info("ACK sent to 0x%02X acked_seq=%u", ping.src, ping.seq);
   } else {
-    Log_error("ACK sendFrame failed for PING seq=%u", ping.seq);
+    Log_warn("ACK sendFrame failed for PING seq=%u", ping.seq);
   }
 }
 
@@ -105,7 +105,7 @@ static void sendDataAck(const LoRaFrame& req, loraiot_Status status) {
   uint8_t payloadBuf[loraiot_Ack_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Ack_fields, &ack)) {
-    Log_error("ACK encode failed for DATA_ACK seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("ACK encode failed for DATA_ACK seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -122,7 +122,7 @@ static void sendDataAck(const LoRaFrame& req, loraiot_Status status) {
     Log_info("DATA_ACK ACK sent to 0x%02X acked_seq=%u status=%u",
              req.src, req.seq, static_cast<uint8_t>(status));
   } else {
-    Log_error("DATA_ACK ACK sendFrame failed for seq=%u", req.seq);
+    Log_warn("DATA_ACK ACK sendFrame failed for seq=%u", req.seq);
   }
 }
 
@@ -143,7 +143,7 @@ void loraPushData(uint8_t dstAddr, const loraiot_Data& data) {
   uint8_t payloadBuf[LORA_MAX_PAYLOAD_LEN];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Data_fields, &data)) {
-    Log_error("loraPushData: Data encode failed for dst=0x%02X: %s", dstAddr, PB_GET_ERROR(&pbOut));
+    Log_warn("loraPushData: Data encode failed for dst=0x%02X: %s", dstAddr, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -160,7 +160,7 @@ void loraPushData(uint8_t dstAddr, const loraiot_Data& data) {
     Log_info("DATA pushed to 0x%02X device=%u values=%u seq=%u",
              dstAddr, data.device, data.values_count, frame.seq);
   } else {
-    Log_error("loraPushData: sendFrame failed for dst=0x%02X", dstAddr);
+    Log_warn("loraPushData: sendFrame failed for dst=0x%02X", dstAddr);
   }
 }
 
@@ -179,7 +179,7 @@ static void sendBadRequestResponse(const LoRaFrame& req) {
   static uint8_t payloadBuf[loraiot_Response_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
-    Log_error("RESPONSE(BAD_REQUEST) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("RESPONSE(BAD_REQUEST) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -193,7 +193,7 @@ static void sendBadRequestResponse(const LoRaFrame& req) {
   memcpy(respFrame.payload, payloadBuf, respFrame.len);
 
   LoRaTransport.sendFrame(respFrame);
-  Log_info("RESPONSE(BAD_REQUEST) sent to 0x%02X request_seq=%u", req.src, req.seq);
+  Log_warn("RESPONSE(BAD_REQUEST) sent to 0x%02X request_seq=%u", req.src, req.seq);
 }
 
 /**
@@ -222,7 +222,7 @@ static void sendDescribeResponse(const LoRaFrame& req) {
   dev = loraiot_Device_init_zero;
   if (!ownedRegistry().toProtoDevice(req.src, deviceIdx, dev)) {
     // Device not found (includes device 0 which is the node itself, not in the registry)
-    Log_info("REQUEST(Describe{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
+    Log_warn("REQUEST(Describe{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
     pushTaskNotifyCrawlComplete(req.src);
     sendBadRequestResponse(req);
     return;
@@ -238,7 +238,7 @@ static void sendDescribeResponse(const LoRaFrame& req) {
   static uint8_t payloadBuf[loraiot_Response_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
-    Log_error("RESPONSE(Device) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("RESPONSE(Device) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -254,7 +254,7 @@ static void sendDescribeResponse(const LoRaFrame& req) {
   if (LoRaTransport.sendFrame(respFrame)) {
     Log_info("RESPONSE(Device{device=%u}) sent to 0x%02X request_seq=%u", deviceIdx, req.src, req.seq);
   } else {
-    Log_error("RESPONSE(Device) sendFrame failed for request_seq=%u", req.seq);
+    Log_warn("RESPONSE(Device) sendFrame failed for request_seq=%u", req.seq);
   }
 }
 
@@ -280,7 +280,7 @@ static void sendReadResponse(const LoRaFrame& req) {
   static loraiot_Data data;
   data = loraiot_Data_init_zero;
   if (!ownedRegistry().toProtoData(req.src, deviceIdx, data)) {
-    Log_info("REQUEST(Read{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
+    Log_warn("REQUEST(Read{device=%u}): not found, sending BAD_REQUEST", deviceIdx);
     sendBadRequestResponse(req);
     return;
   }
@@ -295,7 +295,7 @@ static void sendReadResponse(const LoRaFrame& req) {
   static uint8_t payloadBuf[loraiot_Response_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
-    Log_error("RESPONSE(Data) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("RESPONSE(Data) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -312,7 +312,7 @@ static void sendReadResponse(const LoRaFrame& req) {
     Log_info("RESPONSE(Data{device=%u, values=%u}) sent to 0x%02X request_seq=%u",
              deviceIdx, data.values_count, req.src, req.seq);
   } else {
-    Log_error("RESPONSE(Data) sendFrame failed for request_seq=%u", req.seq);
+    Log_warn("RESPONSE(Data) sendFrame failed for request_seq=%u", req.seq);
   }
 }
 
@@ -357,7 +357,7 @@ static void sendEchoResponse(const LoRaFrame& req) {
   static uint8_t payloadBuf[loraiot_Response_size];
   pb_ostream_t pbOut = pb_ostream_from_buffer(payloadBuf, sizeof(payloadBuf));
   if (!pb_encode(&pbOut, loraiot_Response_fields, &response)) {
-    Log_error("RESPONSE(echo) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
+    Log_warn("RESPONSE(echo) encode failed for seq=%u: %s", req.seq, PB_GET_ERROR(&pbOut));
     return;
   }
 
@@ -373,7 +373,7 @@ static void sendEchoResponse(const LoRaFrame& req) {
   if (LoRaTransport.sendFrame(respFrame)) {
     Log_info("RESPONSE(echo) sent to 0x%02X request_seq=%u", req.src, req.seq);
   } else {
-    Log_error("RESPONSE(echo) sendFrame failed for request_seq=%u", req.seq);
+    Log_warn("RESPONSE(echo) sendFrame failed for request_seq=%u", req.seq);
   }
 }
 
@@ -404,7 +404,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
   // because a retransmitted duplicate is just as good a proof of life. Unknown nodes
   // are ignored here; only a BEACON (on LOCAL) or PING (on REMOTE) creates a registry entry.
   if (cachedRegistry().markSeen(frame.src)) {
-    Log_info("Node 0x%02X is back online", frame.src);
+    Log_debug("Node 0x%02X is back online", frame.src);
     if (isLocal) {
       mqttServiceNotifyPeerStatus(frame.src, true);
       pushTaskNotifyNodeBack(frame.src);
@@ -419,7 +419,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
   if (!LoRaState.updateAndCheckDuplicate(frame.src, frame.seq,
                                           static_cast<uint8_t>(frame.type), bootId)) {
     if (frame.type == LoRaFrameType::DATA_ACK) {
-      Log_info("DATA_ACK from 0x%02X seq=%u is duplicate - re-sending ACK", frame.src, frame.seq);
+      Log_warn("DATA_ACK from 0x%02X seq=%u is duplicate - re-sending ACK", frame.src, frame.seq);
       sendDataAck(frame, loraiot_Status_STATUS_OK);
     }
     return;  // duplicate - already logged at DEBUG inside LoRaState
@@ -449,7 +449,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                    beacon.has_registry_rev ? beacon.registry_rev : 0,
                    crawlNeeded ? " (crawl scheduled)" : "");
           if (crawlNeeded) {
-            Log_info("PING from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
+            Log_debug("PING from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
           }
         } else {
           Log_warn("PING from 0x%02X seq=%u - Beacon decode failed: %s",
@@ -471,7 +471,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                      frame.src, beacon.boot_id, beacon.registry_rev,
                      crawlNeeded ? " (crawl scheduled)" : "");
           } else {
-            Log_debug("PING from 0x%02X seq=%u (REMOTE keep-alive)", frame.src, frame.seq);
+            Log_info("PING from 0x%02X seq=%u (REMOTE keep-alive)", frame.src, frame.seq);
           }
         } else {
           Log_warn("PING from 0x%02X seq=%u - Beacon decode failed: %s",
@@ -507,8 +507,8 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         Log_info("PING ACK from 0x%02X seq=%u rtt=%ums", frame.src, ack.acked_seq, rttMs);
         loraBrokerOnPingAck(frame.src, rttMs);
       } else if (ack.acked_type == static_cast<uint32_t>(LoRaFrameType::DATA_ACK)) {
-        Log_info("DATA_ACK ACK from 0x%02X seq=%u status=%u",
-                 frame.src, ack.acked_seq, static_cast<uint8_t>(ack.status));
+        Log_debug("DATA_ACK ACK from 0x%02X seq=%u status=%u",
+                  frame.src, ack.acked_seq, static_cast<uint8_t>(ack.status));
         loraBrokerOnDataAck(frame.src, ack.status);
       } else {
         Log_debug("ACK from 0x%02X: unhandled acked_type=%u, ignoring", frame.src, ack.acked_type);
@@ -596,7 +596,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
                    beacon.has_registry_rev ? beacon.registry_rev : 0,
                    crawlNeeded ? " (crawl scheduled)" : "");
           if (crawlNeeded) {
-            Log_info("BEACON from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
+            Log_debug("BEACON from 0x%02X: Describe crawl scheduled (rev changed)", frame.src);
           }
           // Answer the BEACON with a PING so the REMOTE learns it was discovered and
           // drops to the slow beacon rate. Queued, not sent here, because waiting for
@@ -631,7 +631,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         // unknown devices are lost (known metrics of a known device were still applied);
         // the owner pushes all current values again when the crawl completes.
         cachedRegistry().requestCrawl(frame.src);
-        Log_info("DATA from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
+        Log_warn("DATA from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
                  frame.src, data.device,
                  stored == DeviceTableResult::UNKNOWN_METRIC ? "metric" : "device");
       }
@@ -659,7 +659,7 @@ static void onLoRaReceive(const LoRaFrame& frame) {
         // Device or metric schema not yet known - schedule a crawl immediately and answer
         // BAD_REQUEST so the sender knows the schema must be described first.
         cachedRegistry().requestCrawl(frame.src);
-        Log_info("DATA_ACK from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
+        Log_warn("DATA_ACK from 0x%02X device=%u: %s unknown, Describe crawl scheduled",
                  frame.src, data.device,
                  stored == DeviceTableResult::UNKNOWN_METRIC ? "metric" : "device");
         sendDataAck(frame, loraiot_Status_STATUS_BAD_REQUEST);
@@ -709,7 +709,6 @@ void applicationSetup() {
   // Configuration details (log level, channel, address, key, CPU frequency) are
   // logged once by LoRaConfig.begin(); do not repeat them here.
   Log_info("Starting LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ")");
-  Serial.printf("\n--- LoRaIoT v1.0.0 (built " __DATE__ " " __TIME__ ") ---\n");
 
   // Initialize WiFi, construct service objects, register all routes, start server.
   // setupServer() blocks in the captive portal until the node is provisioned, and
@@ -764,7 +763,7 @@ void applicationLoop() {
   // transmitting. loraReady is written once and never cleared.
   if (!loraReady) {
     loraReady = true;
-    Log_info("applicationLoop: boot diagnostics complete - LoRa radio gate opened");
+    Log_debug("applicationLoop: boot diagnostics complete - LoRa radio gate opened");
   }
 
   // Purge stale LoRaState entries (both tiers; cheap when no entries are stale)

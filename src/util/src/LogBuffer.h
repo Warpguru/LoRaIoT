@@ -26,6 +26,54 @@
  *   Log_debug(fmt, ...)   - level DEBUG
  *   Log_trace(fmt, ...)   - level TRACE
  *
+ * Choosing the level (rule of thumb)
+ * ----------------------------------
+ * At the default INFO level a node in normal operation should log only a trickle:
+ * the boot summary and ONE line per transmitted or received message. Everything else
+ * is a state change or an anomaly (WARN), a failure that ends the node (ERROR), or
+ * technical detail that only matters when researching a problem (DEBUG / TRACE).
+ * Ask in this order and take the first match:
+ *
+ *   ERROR  Fatal, likely unrecoverable: no further functionality is to be expected.
+ *          Halt or SOS blink, kernel-panic-like states, a mutex / queue / task that
+ *          could not be created, the node has no role (tier not configured), a failed
+ *          boot self-test. A recoverable failure (encode or sendFrame failed, NVS save
+ *          failed, a rejected MQTT /set message) is NOT an error: use WARN.
+ *
+ *   WARN   Something changed or is not as expected, but the node keeps working.
+ *          - State changes: peer offline / online again / rebooted, WiFi or MQTT
+ *            connected or lost, IP address obtained from DHCP.
+ *          - Configuration changes at runtime (REST API, captive portal) and
+ *            defaults used because nothing was stored.
+ *          - Non-default or unexpected behaviour: BAD_REQUEST responses, an unknown
+ *            device, a duplicate frame that needs a re-ACK, a retransmit, a timeout,
+ *            a full queue or table, dropped or rejected input, a decode failure.
+ *
+ *   INFO   Business-level activity, readable like a heartbeat:
+ *          - Boot and configuration summary (banner, config loaded, "LoRa started").
+ *          - Exactly ONE line per TX or RX message (PING, BEACON, ACK, DATA, REQUEST,
+ *            RESPONSE) so the activity is visible. Details of that message go to DEBUG.
+ *          - The outcome of a multi-step job (crawl complete, push OK, diagnostics PASS).
+ *          - An explicit operator action (e.g. GET /api/diag/e220 requested).
+ *
+ *   DEBUG  Technical detail that is typically only interesting when researching an
+ *          issue: REST access logs (GET /...), task start messages, registry
+ *          bookkeeping, register values, config commands, routine successes of
+ *          internal steps, the step-by-step lines of the boot self-tests, frames that
+ *          are dropped by design (foreign DST, duplicates).
+ *
+ *   TRACE  High-volume dumps that would flood even DEBUG: per-frame hex dumps.
+ *
+ * Further rules:
+ *   - Log an event once, at the place that owns it. If two layers would log the same
+ *     event (e.g. the task and the registry both noticing a peer is offline), keep the
+ *     one that states the cause at its level and demote the other to DEBUG.
+ *   - Every message that leaves the node over the console or GET /api/log goes through
+ *     a Log_* macro. Do not use Serial.print*, printf or ESP_LOG*, and do not write a
+ *     helper that logs with a hard-wired level: pass the level in (see logHex() in
+ *     LoRaTransport.cpp, which also skips formatting when that level is inactive).
+ *   - Build expensive log text (hex dumps, JSON) only after checking getLogLevel().
+ *
  * Output format (level field is always left-justified in 5 chars via %-5s):
  *   [INFO ][Application.cpp:52] Starting SerialController v1.0.0 ...
  *
